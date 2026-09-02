@@ -20,11 +20,13 @@ interface CommonOptions {
 interface SqliteOptions extends CommonOptions {
   backend: "sqlite";
   path: string;
+  migrationDirectory?: string | URL;
 }
 
 interface PostgresOptions extends CommonOptions {
   backend: "postgresql";
   connectionString: string;
+  migrationDirectory?: string | URL;
   poolMax?: number;
   connectionTimeoutMs?: number;
 }

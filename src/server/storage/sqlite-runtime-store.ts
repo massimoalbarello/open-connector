@@ -21,6 +21,7 @@ import type { IRunLogStore, RunLog, RunLogListInput, RunLogPage, RunLogWriteResu
 import type { IRuntimeTokenStore, RuntimeTokenRecord } from "./runtime-token-service.ts";
 
 import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseRuntimeActionHttpResult } from "../api/runtime-api.ts";
 import { PlainTextSecretCodec } from "../secrets/secret-codec-core.ts";
@@ -42,6 +43,7 @@ export interface SqliteRuntimeDatabaseOptions {
   logger?: RuntimeLogger;
   runLimit?: number;
   secretCodec?: ISecretCodec;
+  migrationDirectory?: string | URL;
 }
 
 interface SecretJsonInput {
@@ -95,7 +97,7 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
   constructor(filename: string, options: SqliteRuntimeDatabaseOptions = {}) {
     this.database = new DatabaseSync(filename);
     this.secretCodec = options.secretCodec ?? new PlainTextSecretCodec();
-    this.initialize(options.logger);
+    this.initialize(options.logger, options.migrationDirectory);
     this.connectionStore = new SqliteConnectionStore(this.database, this.secretCodec);
     this.oauthClientConfigStore = new SqliteOAuthClientConfigStore(this.database, this.secretCodec);
     this.oauthStateStore = new SqliteOAuthStateStore(this.database, this.secretCodec);
@@ -156,9 +158,9 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
     `);
   }
 
-  private initialize(logger?: RuntimeLogger): void {
+  private initialize(logger?: RuntimeLogger, directory?: string | URL): void {
     this.database.exec("pragma journal_mode = wal;");
-    runSqliteMigrations(this.database, logger);
+    runSqliteMigrations(this.database, logger, directory);
   }
 }
 
@@ -648,7 +650,11 @@ function insertRun(database: DatabaseSync, run: RunLog): void {
     );
 }
 
-function runSqliteMigrations(database: DatabaseSync, logger?: RuntimeLogger): void {
+function runSqliteMigrations(
+  database: DatabaseSync,
+  logger?: RuntimeLogger,
+  directory: string | URL = migrationDirectory,
+): void {
   const startedAt = Date.now();
   database.exec(`
     create table if not exists runtime_migrations (
@@ -662,7 +668,7 @@ function runSqliteMigrations(database: DatabaseSync, logger?: RuntimeLogger): vo
       .all()
       .map((row) => readString(row, "name")),
   );
-  const migrationFiles = readdirSync(migrationDirectory)
+  const migrationFiles = readdirSync(directory)
     .filter((name) => /^\d+_.*\.sql$/.test(name))
     .sort();
   let newlyAppliedCount = 0;
@@ -675,7 +681,10 @@ function runSqliteMigrations(database: DatabaseSync, logger?: RuntimeLogger): vo
     const migrationStartedAt = Date.now();
     logger?.info({ migration: file }, "sqlite migration started");
     try {
-      const sql = readFileSync(new URL(file, migrationDirectory), "utf8");
+      const sql = readFileSync(
+        typeof directory === "string" ? join(directory, file) : new URL(file, directory),
+        "utf8",
+      );
       runInTransaction(database, () => {
         database.exec(sql);
         database

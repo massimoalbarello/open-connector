@@ -41,6 +41,7 @@ export interface PostgresRuntimeDatabaseOptions {
   logger?: RuntimeLogger;
   runLimit?: number;
   secretCodec?: ISecretCodec;
+  migrationDirectory?: string | URL;
   poolMax?: number;
   connectionTimeoutMs?: number;
 }
@@ -86,7 +87,7 @@ export class PostgresRuntimeDatabase implements RuntimeDatabase {
     });
 
     try {
-      await assertPostgresSchemaReady(pool);
+      await assertPostgresSchemaReady(pool, options.migrationDirectory);
       return new PostgresRuntimeDatabase(pool, options);
     } catch (error) {
       await pool.end();

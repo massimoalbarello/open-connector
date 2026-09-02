@@ -23,13 +23,17 @@ import { S3TransitFileService } from "./files/s3-transit-files.ts";
 import { TransitFileService } from "./files/transit-files.ts";
 import { logger } from "./logger.ts";
 import { createSecretCodec } from "./secrets/secret-codec.ts";
+import { prepareServerAssets } from "./standalone-assets.ts";
 import { createNodeRuntimeDatabase } from "./storage/node-runtime-database.ts";
 import { DEFAULT_RUN_LIMIT } from "./storage/runtime-store.ts";
 
-const port = Number(process.env.PORT ?? 3000);
-const hostname = process.env.HOST ?? "127.0.0.1";
-const publicOrigin = process.env.OOMOL_CONNECT_ORIGIN ?? `http://localhost:${port}`;
-const dataDir = process.env.OOMOL_CONNECT_DATA_DIR ?? join(process.cwd(), "data");
+const nibrunPort = optionalEnv("NIBRUN_HTTP_PORT");
+const port = Number(process.env.PORT ?? nibrunPort ?? 3000);
+const nibrunHostname = optionalEnv("NIBRUN_HOSTNAME");
+const hostname = process.env.HOST ?? (nibrunHostname ? "0.0.0.0" : "127.0.0.1");
+const publicOrigin =
+  process.env.OOMOL_CONNECT_ORIGIN ?? (nibrunHostname ? `https://${nibrunHostname}` : `http://localhost:${port}`);
+const dataDir = process.env.OOMOL_CONNECT_DATA_DIR ?? optionalEnv("NIBRUN_DATA_DIR") ?? join(process.cwd(), "data");
 const transitFileTtlSeconds = readPositiveIntegerEnv("OOMOL_CONNECT_TRANSIT_FILE_TTL_SECONDS", 86_400);
 const transitFileMaxBytes = readPositiveIntegerEnv("OOMOL_CONNECT_TRANSIT_FILE_MAX_BYTES", 100 * 1024 * 1024);
 const runLimit = readPositiveIntegerEnv("OOMOL_CONNECT_RUN_LIMIT", DEFAULT_RUN_LIMIT);
@@ -45,6 +49,18 @@ try {
 }
 
 async function main(): Promise<void> {
+  await mkdir(dataDir, { recursive: true });
+  const assets = await prepareServerAssets({
+    materializationParentDirectory: dataDir,
+  });
+  try {
+    await runServer(assets);
+  } finally {
+    await assets.dispose();
+  }
+}
+
+async function runServer(assets: Awaited<ReturnType<typeof prepareServerAssets>>): Promise<void> {
   setPrivateNetworkAccessAllowed(parsePrivateNetworkAccessFlag(process.env.OOMOL_CONNECT_ALLOW_PRIVATE_NETWORK));
   setEgressTrustedHosts(parseEgressTrustedHosts(process.env.OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS));
 
@@ -64,15 +80,15 @@ async function main(): Promise<void> {
   });
   const allowedCustomOAuth = parseActionPolicyList(process.env.OOMOL_CONNECT_ALLOWED_CUSTOM_OAUTH);
 
-  await mkdir(dataDir, { recursive: true });
-  const staticRoot = await resolveStaticRoot(join(process.cwd(), "dist/web"));
-  const catalog = await loadCatalog(undefined, {
+  const staticRoot = await resolveStaticRoot(assets.staticRoot);
+  const catalog = await loadCatalog(assets.catalogDir, {
     executableServices: Object.keys(executorModules),
   });
   const runtimeDatabase = databaseUrl
     ? await createNodeRuntimeDatabase({
         backend: "postgresql",
         connectionString: databaseUrl,
+        migrationDirectory: assets.migrationDirectory ? join(assets.migrationDirectory, "postgresql") : undefined,
         logger,
         secretCodec,
         runLimit,
@@ -82,6 +98,7 @@ async function main(): Promise<void> {
     : await createNodeRuntimeDatabase({
         backend: "sqlite",
         path: join(dataDir, "connect.sqlite"),
+        migrationDirectory: assets.migrationDirectory,
         logger,
         secretCodec,
         runLimit,
