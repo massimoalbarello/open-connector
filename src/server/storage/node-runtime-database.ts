@@ -1,4 +1,5 @@
 import type { RuntimeLogger } from "../../core/types.ts";
+import type { ISyncStore } from "../../sync/sync-store.ts";
 import type { ISecretCodec } from "../secrets/secret-codec-core.ts";
 import type { RuntimeDatabase } from "./runtime-database.ts";
 
@@ -6,6 +7,8 @@ import { PostgresRuntimeDatabase } from "./postgres-runtime-store.ts";
 import { SqliteRuntimeDatabase } from "./sqlite-runtime-store.ts";
 
 export interface NodeRuntimeDatabase extends RuntimeDatabase {
+  /** Present only for the local SQLite backend that can host the embedded sync engine. */
+  readonly syncStore?: ISyncStore;
   close(): void | Promise<void>;
   resetRuntimeData(): void | Promise<void>;
   rotateSecretCodec(nextSecretCodec: ISecretCodec): Promise<void>;

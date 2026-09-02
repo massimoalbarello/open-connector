@@ -278,6 +278,7 @@ Issues and pull requests are welcome.
 - [Runtime API and MCP](docs/runtime-api.md)
 - [Fly.io deployment](docs/fly-io.md)
 - [Standalone binary and nibrun deployment](docs/single-binary.md)
+- [Sync engine architecture](docs/sync-engine-architecture.md)
 - [Cloudflare deployment](docs/cloudflare.md)
 - [Docker image (GHCR)](docs/docker-ghcr.md)
 - [Configuration](docs/configuration.md)

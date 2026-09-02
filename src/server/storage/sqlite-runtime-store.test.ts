@@ -51,6 +51,7 @@ describe("SqliteRuntimeDatabase", () => {
       "0010_connection_revision.sql",
       "0011_runtime_token_connection_scope.sql",
       "0012_marketplace.sql",
+      "0013_sync_state.sql",
     ];
     expect(entries.filter((entry) => entry.message === "sqlite migration started")).toEqual(
       migrations.map((migration) => ({ fields: { migration }, message: "sqlite migration started" })),
@@ -591,6 +592,9 @@ describe("SqliteRuntimeDatabase", () => {
         .prepare("select name from runtime_migrations where name = ?")
         .get("0011_runtime_token_connection_scope.sql"),
     ).toBeDefined();
+    expect(
+      inspected.prepare("select name from runtime_migrations where name = ?").get("0013_sync_state.sql"),
+    ).toBeDefined();
     expect(inspected.prepare("pragma table_info(connections)").all()).toContainEqual(
       expect.objectContaining({ name: "id", notnull: 1 }),
     );
@@ -794,7 +798,7 @@ describe("SqliteRuntimeDatabase", () => {
   it("resets runtime data", async () => {
     const databasePath = await createDatabasePath();
     const database = new SqliteRuntimeDatabase(databasePath);
-    await database.connectionStore.set("github", "default", {
+    const connection = await database.connectionStore.set("github", "default", {
       authType: "api_key",
       apiKey: "github-token",
       values: { apiKey: "github-token" },
@@ -818,12 +822,42 @@ describe("SqliteRuntimeDatabase", () => {
       now: "2026-06-30T00:00:00.000Z",
       expiresAt: "2026-07-01T00:00:00.000Z",
     });
+    await database.syncStore.createInstallation({
+      id: "github-prs",
+      definitionId: "github.pull-requests",
+      definitionVersion: "1.0.0",
+      provider: "github",
+      connectionId: connection.id,
+      config: { owner: "openai", repository: "openai-node" },
+      createdAt: "2026-06-30T00:00:00.000Z",
+    });
+    await database.syncStore.startRun({
+      id: "sync-run-1",
+      installationId: "github-prs",
+      definitionVersion: "1.0.0",
+      reason: "backfill",
+      leaseOwner: "worker-1",
+      leaseExpiresAt: "2026-06-30T01:00:00.000Z",
+      startedAt: "2026-06-30T00:00:00.000Z",
+    });
+    await database.syncStore.commitPage({
+      installationId: "github-prs",
+      runId: "sync-run-1",
+      lease: { owner: "worker-1", generation: 1, observedAt: "2026-06-30T00:01:00.000Z" },
+      expectedCheckpointRevision: 0,
+      nextCheckpoint: { cursor: "page-1" },
+      upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1 } }],
+      committedAt: "2026-06-30T00:01:00.000Z",
+    });
 
     database.resetRuntimeData();
 
     await expect(database.connectionStore.get("github", "default")).resolves.toBeUndefined();
     await expect(database.runLogStore.list()).resolves.toEqual({ items: [] });
     await expect(database.runtimePolicyStore.get()).resolves.toBeUndefined();
+    await expect(database.syncStore.getInstallation("github-prs")).resolves.toBeUndefined();
+    await expect(database.syncStore.getCheckpoint("github-prs")).resolves.toBeUndefined();
+    await expect(database.syncStore.listChanges()).resolves.toEqual({ items: [], nextSequence: undefined });
     await expect(
       database.idempotencyStore.claim({
         keyHash: "key-hash",
