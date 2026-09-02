@@ -23,6 +23,7 @@ import type { IRuntimeTokenStore, RuntimeTokenRecord } from "./runtime-token-ser
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { SqliteSyncStore } from "../../sync/sqlite-sync-store.ts";
 import { parseRuntimeActionHttpResult } from "../api/runtime-api.ts";
 import { PlainTextSecretCodec } from "../secrets/secret-codec-core.ts";
 import {
@@ -90,6 +91,7 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
   readonly runLogStore: SqliteRunLogStore;
   readonly idempotencyStore: SqliteIdempotencyStore;
   readonly marketplaceStore: SqliteMarketplaceStore;
+  readonly syncStore: SqliteSyncStore;
 
   private readonly database: DatabaseSync;
   private readonly secretCodec: ISecretCodec;
@@ -106,6 +108,7 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
     this.runLogStore = new SqliteRunLogStore(this.database, options.runLimit ?? DEFAULT_RUN_LIMIT);
     this.idempotencyStore = new SqliteIdempotencyStore(this.database, this.secretCodec);
     this.marketplaceStore = new SqliteMarketplaceStore(this.database);
+    this.syncStore = new SqliteSyncStore(this.database);
   }
 
   close(): void {
@@ -146,6 +149,14 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
 
   resetRuntimeData(): void {
     this.database.exec(`
+      delete from sync_outbox;
+      delete from sync_sinks;
+      delete from sync_snapshots;
+      delete from sync_records;
+      delete from sync_changes;
+      delete from sync_checkpoints;
+      delete from sync_runs;
+      delete from sync_installations;
       delete from connections;
       delete from oauth_client_configs;
       delete from oauth_states;
