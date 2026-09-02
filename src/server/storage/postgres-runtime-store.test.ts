@@ -2,6 +2,9 @@ import type { RuntimeActionHttpResult } from "../api/runtime-api.ts";
 
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AesGcmSecretCodec } from "../secrets/secret-codec.ts";
@@ -62,6 +65,21 @@ describe("PostgreSQL migrations with PGlite", () => {
         new Date().toISOString(),
       ]);
       await expect(assertPostgresSchemaReady(pool)).resolves.toBeUndefined();
+
+      const customMigrationDirectory = await mkdtemp(join(tmpdir(), "open-connector-postgres-migrations-"));
+      try {
+        await writeFile(join(customMigrationDirectory, "9998_standalone.sql"), "select 1;");
+        await expect(assertPostgresSchemaReady(pool, customMigrationDirectory)).rejects.toThrow(
+          "Missing migrations: 9998_standalone.sql",
+        );
+        await pool.query("insert into runtime_migrations (name, applied_at) values ($1, $2)", [
+          "9998_standalone.sql",
+          new Date().toISOString(),
+        ]);
+        await expect(assertPostgresSchemaReady(pool, customMigrationDirectory)).resolves.toBeUndefined();
+      } finally {
+        await rm(customMigrationDirectory, { recursive: true, force: true });
+      }
     } finally {
       await pool.end();
     }

@@ -19,6 +19,10 @@ OpenConnector is an open-source connector gateway for AI agents and an alternati
 Connect user app accounts once, then expose a shared catalog of 1,000+ providers and 10,000+
 prebuilt Actions to agents and applications.
 
+<p align="center">
+  <a href="https://app.nibrun.com/deploy?name=open-connector&amp;binary=https%3A%2F%2Fgithub.com%2Foomol-lab%2Fopen-connector%2Freleases%2Fdownload%2Fnibrun-latest%2Fopen-connector-linux-x64&amp;port=3000&amp;env=OOMOL_CONNECT_ENCRYPTION_KEY&amp;env=OOMOL_CONNECT_ADMIN_TOKEN&amp;env=OOMOL_CONNECT_RUNTIME_TOKEN"><img src="https://nibrun.com/button.svg" alt="Deploy on nibrun"></a>
+</p>
+
 <table>
   <tr>
     <td width="33.33%" align="center"><img src="assets/deployment-options/oomol.svg" alt="OOMOL" width="140"></td>
@@ -273,6 +277,7 @@ Issues and pull requests are welcome.
 - [Instagram OAuth and Actions](docs/instagram-oauth.md)
 - [Runtime API and MCP](docs/runtime-api.md)
 - [Fly.io deployment](docs/fly-io.md)
+- [Standalone binary and nibrun deployment](docs/single-binary.md)
 - [Cloudflare deployment](docs/cloudflare.md)
 - [Docker image (GHCR)](docs/docker-ghcr.md)
 - [Configuration](docs/configuration.md)

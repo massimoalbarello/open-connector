@@ -2,6 +2,7 @@ import type { RuntimeLogger } from "../../core/types.ts";
 import type { Pool, PoolClient } from "pg";
 
 import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 const migrationDirectory = new URL("../../../migrations/postgresql/", import.meta.url);
 const migrationLockNamespace = 1_326_382_671;
@@ -86,8 +87,11 @@ export async function migratePostgresDatabase(options: PostgresMigrationOptions)
   }
 }
 
-export async function assertPostgresSchemaReady(pool: Pool): Promise<void> {
-  const migrations = readPostgresMigrations();
+export async function assertPostgresSchemaReady(
+  pool: Pool,
+  directory: string | URL = migrationDirectory,
+): Promise<void> {
+  const migrations = readPostgresMigrations(directory);
   const relation = await pool.query<{ name: string | null }>("select to_regclass($1) as name", ["runtime_migrations"]);
   if (!relation.rows[0]?.name) {
     throw new Error(
@@ -104,13 +108,13 @@ export async function assertPostgresSchemaReady(pool: Pool): Promise<void> {
   }
 }
 
-function readPostgresMigrations(): PostgresMigration[] {
-  return readdirSync(migrationDirectory)
+function readPostgresMigrations(directory: string | URL = migrationDirectory): PostgresMigration[] {
+  return readdirSync(directory)
     .filter((name) => /^\d+_.*\.sql$/.test(name))
     .sort()
     .map((name) => ({
       name,
-      sql: readFileSync(new URL(name, migrationDirectory), "utf8"),
+      sql: readFileSync(typeof directory === "string" ? join(directory, name) : new URL(name, directory), "utf8"),
     }));
 }
 

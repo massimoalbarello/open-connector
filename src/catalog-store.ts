@@ -1,5 +1,6 @@
-import type { ActionDefinition, AuthType, ProviderDefinition, ProviderScenario } from "./core/types.ts";
+import type { ActionDefinition, AuthType, JsonSchema, ProviderDefinition, ProviderScenario } from "./core/types.ts";
 
+import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { sortProviders } from "./core/catalog.ts";
@@ -78,6 +79,22 @@ export interface LoadCatalogOptions extends CreateCatalogStoreOptions {
   executableServices?: Iterable<string>;
 }
 
+interface ActionSchemas {
+  inputSchema: JsonSchema;
+  outputSchema: JsonSchema;
+}
+
+const actionSchemaSource = Symbol("catalog action schema source");
+const schemaCacheSize = 8;
+
+interface LazyActionDefinition extends ActionDefinition {
+  [actionSchemaSource]?: FileActionSchemaSource;
+}
+
+interface LazyRuntimeActionDefinition extends RuntimeActionDefinition {
+  [actionSchemaSource]: FileActionSchemaSource;
+}
+
 export function createCatalogStore(
   providers: ProviderDefinition[],
   options: CreateCatalogStoreOptions = {},
@@ -85,12 +102,17 @@ export function createCatalogStore(
   const sortedProviders = sortProviders(providers);
   const executableActions = new Set(options.executableActionIds ?? []);
   const runtimeProviders = sortedProviders.map((provider): RuntimeProviderDefinition => {
-    const actions = provider.actions.map(
-      (action): RuntimeActionDefinition => ({
+    const actions = provider.actions.map((action): RuntimeActionDefinition => {
+      const runtimeAction: RuntimeActionDefinition = {
         ...action,
         execution: createActionExecutionStatus(provider, action, executableActions),
-      }),
-    );
+      };
+      const source = (action as LazyActionDefinition)[actionSchemaSource];
+      if (source) {
+        attachLazyActionSchemas(runtimeAction, source);
+      }
+      return runtimeAction;
+    });
 
     return {
       ...provider,
@@ -136,29 +158,120 @@ function weakEtag(content: string): string {
 function toProviderSummary(provider: RuntimeProviderDefinition): ProviderSummaryDefinition {
   return {
     ...provider,
-    actions: provider.actions.map(({ inputSchema: _inputSchema, outputSchema: _outputSchema, ...action }) => action),
+    actions: provider.actions.map((action) => {
+      const summary: Record<string, unknown> = {};
+      for (const key of Object.keys(action)) {
+        if (key === "inputSchema" || key === "outputSchema") {
+          continue;
+        }
+        summary[key] = action[key as keyof RuntimeActionDefinition];
+      }
+      return summary as ActionSummaryDefinition;
+    }),
   };
 }
 
 /**
- * Load generated provider catalog files from disk.
+ * Load catalog metadata from disk while keeping the large action schemas
+ * file-backed and bounded by a small least-recently-used cache.
  */
 export async function loadCatalog(
   catalogDir: string = join(process.cwd(), "catalog/apps"),
   options: LoadCatalogOptions = {},
 ): Promise<CatalogStore> {
   const entries = await readdir(catalogDir, { withFileTypes: true });
-  const providers = await Promise.all(
-    entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .map(async (entry) => {
-        const content = await readFile(join(catalogDir, entry.name), "utf8");
-        return JSON.parse(content) as ProviderDefinition;
-      }),
-  );
+  const providers: ProviderDefinition[] = [];
+  const schemaLoader = new FileActionSchemaLoader(schemaCacheSize);
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) {
+      continue;
+    }
+    const filePath = join(catalogDir, entry.name);
+    const content = await readFile(filePath, "utf8");
+    const provider = JSON.parse(content) as ProviderDefinition;
+    const source = new FileActionSchemaSource(filePath, schemaLoader);
+    providers.push({
+      ...provider,
+      actions: provider.actions.map((action) => createLazyActionDefinition(action, source)),
+    });
+  }
   return createCatalogStore(providers, {
     executableActionIds: resolveExecutableActionIds(providers, options),
   });
+}
+
+function createLazyActionDefinition(action: ActionDefinition, source: FileActionSchemaSource): ActionDefinition {
+  const { inputSchema: _inputSchema, outputSchema: _outputSchema, ...metadata } = action;
+  Object.defineProperty(metadata, actionSchemaSource, { value: source });
+  return metadata as ActionDefinition;
+}
+
+function attachLazyActionSchemas(action: RuntimeActionDefinition, source: FileActionSchemaSource): void {
+  Object.defineProperties(action, {
+    [actionSchemaSource]: { value: source },
+    inputSchema: { get: readLazyInputSchema, enumerable: true },
+    outputSchema: { get: readLazyOutputSchema, enumerable: true },
+  });
+}
+
+function readLazyInputSchema(this: LazyRuntimeActionDefinition): JsonSchema {
+  return this[actionSchemaSource].get(this.id).inputSchema;
+}
+
+function readLazyOutputSchema(this: LazyRuntimeActionDefinition): JsonSchema {
+  return this[actionSchemaSource].get(this.id).outputSchema;
+}
+
+class FileActionSchemaSource {
+  readonly filePath: string;
+  private readonly loader: FileActionSchemaLoader;
+
+  constructor(filePath: string, loader: FileActionSchemaLoader) {
+    this.filePath = filePath;
+    this.loader = loader;
+  }
+
+  get(actionId: string): ActionSchemas {
+    return this.loader.get(this.filePath, actionId);
+  }
+}
+
+class FileActionSchemaLoader {
+  private readonly cache = new Map<string, Map<string, ActionSchemas>>();
+  private readonly maxCachedFiles: number;
+
+  constructor(maxCachedFiles: number) {
+    this.maxCachedFiles = maxCachedFiles;
+  }
+
+  get(filePath: string, actionId: string): ActionSchemas {
+    let schemas = this.cache.get(filePath);
+    if (schemas) {
+      this.cache.delete(filePath);
+      this.cache.set(filePath, schemas);
+    } else {
+      const provider = JSON.parse(readFileSync(filePath, "utf8")) as ProviderDefinition;
+      schemas = new Map(
+        provider.actions.map((action) => [
+          action.id,
+          { inputSchema: action.inputSchema, outputSchema: action.outputSchema },
+        ]),
+      );
+      this.cache.set(filePath, schemas);
+      if (this.cache.size > this.maxCachedFiles) {
+        const oldestFile = this.cache.keys().next().value;
+        if (oldestFile) {
+          this.cache.delete(oldestFile);
+        }
+      }
+    }
+
+    const result = schemas.get(actionId);
+    if (!result) {
+      throw new Error(`Catalog action schemas not found for ${actionId} in ${filePath}`);
+    }
+    return result;
+  }
 }
 
 /** Resolve provider-level executable services into the exact action ids present in a loaded catalog. */
