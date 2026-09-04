@@ -72,5 +72,24 @@
         <a href="https://repocloud.io/details/Open%20Connector/"><strong>一键部署</strong></a>
       </td>
     </tr>
+    <tr>
+      <td valign="middle" align="center">
+        <a href="https://nibrun.com/"><img src="../../assets/deployment-options/nibrun.svg" alt="nibrun" width="140"></a>
+      </td>
+      <td valign="top">
+        在独立的 Firecracker microVM 中运行 Linux x64 发行版二进制文件，带持久化磁盘和 HTTPS 地址。部署链接会
+        预填二进制文件地址、端口和环境变量，并列出需要你在表单里填写的密钥。除 nibrun 外，不需要 Dockerfile 或
+        其他云账号。
+        <br><br>
+        <strong>优点：</strong>单文件二进制一键部署，前几个应用免费，闲置应用 5 分钟后休眠并在下次请求时唤醒。
+        <br><br>
+        <strong>价格：</strong>前 3 个应用免费，之后每个应用 $1/月。每个应用配 1 vCPU、256 MiB RAM 和 8 GiB
+        磁盘，因此部署链接会开启 <code>OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS</code> 以控制在该内存上限内。见
+        <a href="https://nibrun.com/#pricing">nibrun 定价</a>。
+      </td>
+      <td valign="middle" align="center">
+        <a href="https://app.nibrun.com/deploy?name=open-connector&amp;binary=https%3A%2F%2Fgithub.com%2Foomol-lab%2Fopen-connector%2Freleases%2Flatest%2Fdownload%2Fopen-connector-linux-x64&amp;port=3000&amp;env=HOST%3D0.0.0.0&amp;env=OOMOL_CONNECT_DATA_DIR%3D%24%7BNIBRUN_DATA_DIR%7D&amp;env=OOMOL_CONNECT_ORIGIN%3Dhttps%3A%2F%2F%24%7BNIBRUN_HOSTNAME%7D&amp;env=OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS%3Dtrue&amp;env=OOMOL_CONNECT_ENCRYPTION_KEY&amp;env=OOMOL_CONNECT_ADMIN_TOKEN&amp;env=OOMOL_CONNECT_RUNTIME_TOKEN"><strong>一键部署</strong></a>
+      </td>
+    </tr>
   </tbody>
 </table>

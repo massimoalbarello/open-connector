@@ -81,5 +81,26 @@ platform에서는 OAuth app을 직접 등록해야 합니다. 관리형 OAuth가
         <a href="https://repocloud.io/details/Open%20Connector/"><strong>원클릭 배포</strong></a>
       </td>
     </tr>
+    <tr>
+      <td valign="middle" align="center">
+        <a href="https://nibrun.com/"><img src="../../assets/deployment-options/nibrun.svg" alt="nibrun" width="140"></a>
+      </td>
+      <td valign="top">
+        Linux x64 release binary를 전용 Firecracker microVM에서 실행하며 영구 disk와 HTTPS URL이
+        제공됩니다. deploy link가 binary URL, port, 환경 변수를 미리 채우고 폼에서 입력할 secret을
+        나열합니다. nibrun 계정 외에 Dockerfile이나 다른 클라우드 계정은 필요 없습니다.
+        <br><br>
+        <strong>장점:</strong> single binary를 원클릭으로 배포할 수 있고, 처음 몇 개의 app은 무료이며,
+        유휴 app은 5분 후 절전되었다가 다음 요청에서 깨어납니다.
+        <br><br>
+        <strong>가격:</strong> 처음 3개 app은 무료이고 그 이후에는 app당 $1/월입니다. 각 app은 1 vCPU,
+        256 MiB RAM, 8 GiB disk를 사용하므로 deploy link는 이 메모리 한도를 지키기 위해
+        <code>OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS</code>를 활성화합니다.
+        <a href="https://nibrun.com/#pricing">nibrun 가격</a>을 참조하세요.
+      </td>
+      <td valign="middle" align="center">
+        <a href="https://app.nibrun.com/deploy?name=open-connector&amp;binary=https%3A%2F%2Fgithub.com%2Foomol-lab%2Fopen-connector%2Freleases%2Flatest%2Fdownload%2Fopen-connector-linux-x64&amp;port=3000&amp;env=HOST%3D0.0.0.0&amp;env=OOMOL_CONNECT_DATA_DIR%3D%24%7BNIBRUN_DATA_DIR%7D&amp;env=OOMOL_CONNECT_ORIGIN%3Dhttps%3A%2F%2F%24%7BNIBRUN_HOSTNAME%7D&amp;env=OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS%3Dtrue&amp;env=OOMOL_CONNECT_ENCRYPTION_KEY&amp;env=OOMOL_CONNECT_ADMIN_TOKEN&amp;env=OOMOL_CONNECT_RUNTIME_TOKEN"><strong>원클릭 배포</strong></a>
+      </td>
+    </tr>
   </tbody>
 </table>

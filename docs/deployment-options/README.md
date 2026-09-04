@@ -80,5 +80,27 @@ path that includes managed OAuth.
         <a href="https://repocloud.io/details/Open%20Connector/"><strong>One-click deploy</strong></a>
       </td>
     </tr>
+    <tr>
+      <td valign="middle" align="center">
+        <a href="https://nibrun.com/"><img src="../../assets/deployment-options/nibrun.svg" alt="nibrun" width="140"></a>
+      </td>
+      <td valign="top">
+        Run the Linux x64 release binary in a Firecracker microVM of its own, with a persistent
+        disk and an HTTPS URL. The deploy link prefills the binary URL, port, and environment
+        variables and lists the secrets you fill in on the form. No Dockerfile or cloud account
+        beyond nibrun.
+        <br><br>
+        <strong>Advantages:</strong> one-click deploy of the single binary, the first apps are
+        free, and an idle app sleeps after five minutes and wakes on the next request.
+        <br><br>
+        <strong>Pricing:</strong> the first 3 apps are free; each app after that is $1/month. Every
+        app gets 1 vCPU, 256 MiB RAM, and 8 GiB disk, so the deploy link turns on
+        <code>OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS</code> to stay under that memory limit. See
+        <a href="https://nibrun.com/#pricing">nibrun pricing</a>.
+      </td>
+      <td valign="middle" align="center">
+        <a href="https://app.nibrun.com/deploy?name=open-connector&amp;binary=https%3A%2F%2Fgithub.com%2Foomol-lab%2Fopen-connector%2Freleases%2Flatest%2Fdownload%2Fopen-connector-linux-x64&amp;port=3000&amp;env=HOST%3D0.0.0.0&amp;env=OOMOL_CONNECT_DATA_DIR%3D%24%7BNIBRUN_DATA_DIR%7D&amp;env=OOMOL_CONNECT_ORIGIN%3Dhttps%3A%2F%2F%24%7BNIBRUN_HOSTNAME%7D&amp;env=OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS%3Dtrue&amp;env=OOMOL_CONNECT_ENCRYPTION_KEY&amp;env=OOMOL_CONNECT_ADMIN_TOKEN&amp;env=OOMOL_CONNECT_RUNTIME_TOKEN"><strong>One-click deploy</strong></a>
+      </td>
+    </tr>
   </tbody>
 </table>

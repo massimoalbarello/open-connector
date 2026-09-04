@@ -81,5 +81,29 @@ les apps OAuth ; OOMOL hébergé est le chemin qui inclut l'OAuth géré.
         <a href="https://repocloud.io/details/Open%20Connector/"><strong>Déployer en un clic</strong></a>
       </td>
     </tr>
+    <tr>
+      <td valign="middle" align="center">
+        <a href="https://nibrun.com/"><img src="../../assets/deployment-options/nibrun.svg" alt="nibrun" width="140"></a>
+      </td>
+      <td valign="top">
+        Exécute le binaire de release Linux x64 dans une microVM Firecracker dédiée, avec un disque
+        persistant et une URL HTTPS. Le lien de déploiement préremplit l'URL du binaire, le port et
+        les variables d'environnement, et liste les secrets que vous renseignez dans le formulaire.
+        Aucun Dockerfile ni compte cloud supplémentaire n'est requis hors nibrun.
+        <br><br>
+        <strong>Avantages :</strong> déploiement en un clic du binaire unique, les premières
+        applications sont gratuites, et une application inactive se met en veille au bout de cinq
+        minutes puis se réveille à la requête suivante.
+        <br><br>
+        <strong>Prix :</strong> les 3 premières applications sont gratuites ; chaque application
+        suivante coûte 1 $/mois. Chaque application dispose de 1 vCPU, 256 Mio de RAM et 8 Gio de
+        disque, donc le lien de déploiement active
+        <code>OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS</code> pour rester sous cette limite de mémoire.
+        Voir <a href="https://nibrun.com/#pricing">les tarifs nibrun</a>.
+      </td>
+      <td valign="middle" align="center">
+        <a href="https://app.nibrun.com/deploy?name=open-connector&amp;binary=https%3A%2F%2Fgithub.com%2Foomol-lab%2Fopen-connector%2Freleases%2Flatest%2Fdownload%2Fopen-connector-linux-x64&amp;port=3000&amp;env=HOST%3D0.0.0.0&amp;env=OOMOL_CONNECT_DATA_DIR%3D%24%7BNIBRUN_DATA_DIR%7D&amp;env=OOMOL_CONNECT_ORIGIN%3Dhttps%3A%2F%2F%24%7BNIBRUN_HOSTNAME%7D&amp;env=OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS%3Dtrue&amp;env=OOMOL_CONNECT_ENCRYPTION_KEY&amp;env=OOMOL_CONNECT_ADMIN_TOKEN&amp;env=OOMOL_CONNECT_RUNTIME_TOKEN"><strong>Déployer en un clic</strong></a>
+      </td>
+    </tr>
   </tbody>
 </table>

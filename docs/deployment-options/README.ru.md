@@ -80,5 +80,28 @@
         <a href="https://repocloud.io/details/Open%20Connector/"><strong>Развернуть в один клик</strong></a>
       </td>
     </tr>
+    <tr>
+      <td valign="middle" align="center">
+        <a href="https://nibrun.com/"><img src="../../assets/deployment-options/nibrun.svg" alt="nibrun" width="140"></a>
+      </td>
+      <td valign="top">
+        Запускает release binary для Linux x64 в отдельной Firecracker microVM с постоянным диском и
+        HTTPS-адресом. Ссылка на развертывание заранее заполняет URL бинарника, port и переменные
+        окружения и перечисляет секреты, которые вы вводите в форме. Кроме nibrun не нужны Dockerfile
+        или другие облачные аккаунты.
+        <br><br>
+        <strong>Преимущества:</strong> развертывание одного бинарника в один клик, первые приложения
+        бесплатны, а простаивающее приложение засыпает через пять минут и просыпается на следующем
+        запросе.
+        <br><br>
+        <strong>Цена:</strong> первые 3 приложения бесплатны, каждое следующее стоит $1/месяц. Каждое
+        приложение получает 1 vCPU, 256 MiB RAM и 8 GiB диска, поэтому ссылка на развертывание
+        включает <code>OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS</code>, чтобы уложиться в этот лимит
+        памяти. См. <a href="https://nibrun.com/#pricing">тарифы nibrun</a>.
+      </td>
+      <td valign="middle" align="center">
+        <a href="https://app.nibrun.com/deploy?name=open-connector&amp;binary=https%3A%2F%2Fgithub.com%2Foomol-lab%2Fopen-connector%2Freleases%2Flatest%2Fdownload%2Fopen-connector-linux-x64&amp;port=3000&amp;env=HOST%3D0.0.0.0&amp;env=OOMOL_CONNECT_DATA_DIR%3D%24%7BNIBRUN_DATA_DIR%7D&amp;env=OOMOL_CONNECT_ORIGIN%3Dhttps%3A%2F%2F%24%7BNIBRUN_HOSTNAME%7D&amp;env=OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS%3Dtrue&amp;env=OOMOL_CONNECT_ENCRYPTION_KEY&amp;env=OOMOL_CONNECT_ADMIN_TOKEN&amp;env=OOMOL_CONNECT_RUNTIME_TOKEN"><strong>Развернуть в один клик</strong></a>
+      </td>
+    </tr>
   </tbody>
 </table>
