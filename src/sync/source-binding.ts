@@ -2,7 +2,7 @@ import type { ConnectionService, VerifiedSourceConnection } from "../connection-
 import type { SyncInstallation, ISyncStore } from "./sync-store.ts";
 
 export interface BindSyncSourceInput {
-  /** Optional stable internal binding ID, primarily for explicit legacy resolution. */
+  /** Optional stable internal binding ID. */
   id?: string;
   definitionId: string;
   definitionVersion: string;
@@ -10,8 +10,6 @@ export interface BindSyncSourceInput {
   config: unknown;
   verifiedConnection: VerifiedSourceConnection;
   expectedBindingRevision: number;
-  /** Operator attestation that this legacy installation belongs to the verified source. */
-  resolveLegacyIdentity?: boolean;
   createdAt: string;
 }
 
@@ -28,7 +26,6 @@ export interface VerifySyncSourceInput {
   provider: string;
   connectionName?: string;
   config?: unknown;
-  resolveLegacyIdentity?: boolean;
   signal?: AbortSignal;
 }
 
@@ -58,7 +55,6 @@ export class SyncSourceBindingService {
       config: input.config ?? {},
       verifiedConnection,
       expectedBindingRevision,
-      resolveLegacyIdentity: input.resolveLegacyIdentity,
       createdAt: new Date().toISOString(),
     });
     return (await this.store.getInstallation(id))!;

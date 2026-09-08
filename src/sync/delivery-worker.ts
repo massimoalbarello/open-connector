@@ -39,7 +39,6 @@ export class SyncDeliveryWorker {
   }
 
   private async deliver(signal: AbortSignal): Promise<boolean> {
-    this.options.store.purge();
     const lease = await this.options.store.claim(new Date().toISOString());
     if (!lease) return false;
     let acknowledged = false;

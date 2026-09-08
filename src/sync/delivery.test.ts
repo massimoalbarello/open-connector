@@ -215,6 +215,42 @@ describe("durable sync delivery", () => {
     }
   });
 
+  it("closes an interrupted attempt when a receiver changes and rejects its late ACK", async () => {
+    const f = await setup();
+    await f.register("first");
+    await f.commit();
+    const old = (await f.database.syncStore.delivery.claim(now()))!;
+    await f.database.syncStore.delivery.register({
+      id: "first",
+      url: "https://new.example.com/records",
+      bearerToken: "rotated-token",
+      enabled: true,
+    });
+    const sql = new DatabaseSync(f.path);
+    try {
+      expect(
+        sql
+          .prepare("select completed_at, error_code from sync_delivery_attempts where batch_id = ? and attempt = 1")
+          .get(old.id),
+      ).toEqual({ completed_at: expect.any(String), error_code: "receiver_reconfigured" });
+    } finally {
+      sql.close();
+    }
+    expect(() => f.database.syncStore.delivery.complete({ lease: old, acknowledged: true, now: now() })).toThrow(
+      "lease",
+    );
+    const retry = (await f.database.syncStore.delivery.claim(now()))!;
+    expect(retry).toMatchObject({
+      id: old.id,
+      body: old.body,
+      attempt: 2,
+      url: "https://new.example.com/records",
+      bearerToken: "rotated-token",
+    });
+    f.database.syncStore.delivery.complete({ lease: retry, acknowledged: true, now: now() });
+    expect((await f.database.syncStore.delivery.list())[0]).toMatchObject({ deliveredRecords: 1, pendingRecords: 0 });
+  });
+
   it("keeps immutable payloads until all ACKs, retries identical batches after restart, and bootstraps one new receiver", async () => {
     const f = await setup();
     await f.register("first");
