@@ -70,20 +70,8 @@ export class SqliteSyncSourceStore implements ISyncSourceStore {
         : undefined;
       if (target && (target.definition_id !== definition.id || target.provider !== definition.provider))
         throw conflict("Target belongs to a different definition or provider.");
-      if (target && target.source_id === null && !input.resolveLegacyIdentity)
-        throw conflict("Legacy account identity is unverified; explicit resolution is required.");
-      if (target?.source_id && target.source_id !== source?.id)
+      if (target && target.source_id !== source?.id)
         throw conflict("A different account or authorization boundary cannot inherit this binding.");
-      // Even the same credential handle may have represented another account before this migration.
-      if (
-        !target &&
-        this.database
-          .prepare(
-            "select id from sync_installations where source_id is null and definition_id = ? and connection_id = ?",
-          )
-          .get(definition.id, connection.id)
-      )
-        throw conflict("Resolve the existing legacy installation explicitly before binding this credential.");
       if (!source) {
         const id = randomUUIDv7();
         this.database
@@ -105,16 +93,6 @@ export class SqliteSyncSourceStore implements ISyncSourceStore {
       if (binding && (binding.definition_version !== definition.version || binding.config_value !== config.json))
         throw conflict("Definition version or configuration changed; migrate progress explicitly before rebinding.");
       const id = binding ? String(binding.id) : (input.id ?? randomUUIDv7());
-      if (binding && binding.source_id === null) {
-        const kinds = new Set(definition.kinds.map((item) => item.kind));
-        const legacyKinds = this.database
-          .prepare(
-            "select distinct model from sync_records where installation_id = ? union select distinct model from sync_changes where installation_id = ?",
-          )
-          .all(id, id);
-        if (legacyKinds.some((row) => !kinds.has(String(row.model))))
-          throw conflict("Legacy records contain undeclared kinds; migrate them explicitly.");
-      }
       let allKindsBound = true;
       for (const kind of definition.kinds) {
         const owner = this.database
@@ -140,7 +118,7 @@ export class SqliteSyncSourceStore implements ISyncSourceStore {
           .run(id, id);
         this.database
           .prepare(
-            "update sync_installations set source_id = ?, connection_id = ?, credential_revision = ?, binding_revision = ?, state = case when source_id is null and state = 'needs_attention' then 'enabled' else state end, updated_at = ? where id = ?",
+            "update sync_installations set source_id = ?, connection_id = ?, credential_revision = ?, binding_revision = ?, updated_at = ? where id = ?",
           )
           .run(sourceId, connection.id, connection.revision, revision, createdAt, id);
         // Acquired pages from the previous credential must never commit under the new binding.

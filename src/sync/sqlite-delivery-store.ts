@@ -59,6 +59,11 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
       // Reconfiguration fences an old worker's ACK while preserving stable batch membership.
       this.database
         .prepare(
+          "update sync_delivery_attempts set completed_at = ?, error_code = 'receiver_reconfigured' where completed_at is null and batch_id in (select id from sync_delivery_batches where sink_id = ?)",
+        )
+        .run(now, input.id);
+      this.database
+        .prepare(
           "update sync_delivery_batches set state = 'pending', lease_generation = lease_generation + 1, next_attempt_at = ?, lease_expires_at = null where sink_id = ? and state != 'delivered'",
         )
         .run(now, input.id);

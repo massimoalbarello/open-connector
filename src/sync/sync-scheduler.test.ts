@@ -87,8 +87,6 @@ async function fixture(custom?: SyncDefinitionRuntime, contract: SyncDefinition 
       connections,
       connectionStore: database.connectionStore,
       registrations: [{ definition: contract, load: async () => runtime }],
-      catalog,
-      loader,
     });
     delivery = new SyncDeliveryWorker({ store: database.syncStore.delivery, fetcher });
     scheduler = new SyncScheduler({ store: database.syncStore, runner, delivery });

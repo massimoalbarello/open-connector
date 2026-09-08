@@ -1,12 +1,7 @@
 import type { CredentialValidators, ResolvedCredential, VerifiedSourceIdentity } from "../core/types.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { SyncDefinitionContract } from "./record-contract.ts";
-import type { BindSyncSourceInput } from "./source-binding.ts";
 
-import { mkdtemp, mkdir, readdir, copyFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../catalog-store.ts";
 import { ConnectionService } from "../connection-service.ts";
@@ -22,7 +17,6 @@ const definition: SyncDefinitionContract = {
 };
 const identity: VerifiedSourceIdentity = { accountId: "native-123", authorizationBoundary: "workspace-456" };
 const databases: SqliteRuntimeDatabase[] = [];
-const directories: string[] = [];
 const now = () => new Date().toISOString();
 
 function credential(token = "first"): ResolvedCredential {
@@ -95,7 +89,6 @@ async function seed(database: SqliteRuntimeDatabase, installationId: string, run
 
 afterEach(async () => {
   for (const database of databases.splice(0)) database.close();
-  for (const directory of directories.splice(0)) await rm(directory, { force: true, recursive: true });
 });
 
 describe("verified source binding", () => {
@@ -296,117 +289,5 @@ describe("verified source binding", () => {
       code: "connection_cancelled",
     });
     expect(database.syncStore.sources.getBindingRevision()).toBe(0);
-  });
-});
-
-describe("PR3 source migration", () => {
-  it("preserves records, revisions, changes, outbox and checkpoint until explicitly resolving legacy ownership", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "sync-source-migration-"));
-    directories.push(directory);
-    const migrationDirectory = join(directory, "migrations");
-    await mkdir(migrationDirectory);
-    const original = new URL("../../migrations/", import.meta.url);
-    for (const file of await readdir(original)) {
-      if (file.endsWith(".sql") && file < "0014")
-        await copyFile(new URL(file, original), join(migrationDirectory, file));
-    }
-    const path = join(directory, "legacy.sqlite");
-    const legacy = new SqliteRuntimeDatabase(path, { migrationDirectory });
-    const connection = await legacy.connectionStore.set("test", "default", credential());
-    legacy.close();
-    const sql = new DatabaseSync(path);
-    const at = now();
-    sql
-      .prepare(
-        `insert into sync_installations (id, definition_id, definition_version, provider, connection_id, config_value, state, created_at, updated_at) values ('legacy', 'test.records', '1', 'test', ?, '{}', 'enabled', ?, ?)`,
-      )
-      .run(connection.id, at, at);
-    sql
-      .prepare(
-        `insert into sync_runs (id, installation_id, definition_version, reason, state, lease_owner, lease_generation, lease_expires_at, checkpoint_revision, started_at) values ('old-run', 'legacy', '1', 'manual', 'running', 'old-worker', 1, ?, 7, ?)`,
-      )
-      .run(new Date(Date.now() + 60_000).toISOString(), at);
-    sql.prepare(`insert into sync_checkpoints values ('legacy', '1', 7, '{"cursor":"keep"}', 'old-run', ?)`).run(at);
-    sql
-      .prepare(
-        `insert into sync_changes (sequence, event_id, installation_id, provider, connection_id, definition_id, definition_version, model, record_id, operation, record_revision, payload, payload_hash, run_id, committed_at) values (1, 'original-event', 'legacy', 'test', ?, 'test.records', '1', 'record', 'native-record', 'updated', 9, '{"body":"Legacy Markdown"}', 'original-hash', 'old-run', ?)`,
-      )
-      .run(connection.id, at);
-    sql
-      .prepare(
-        `insert into sync_records (installation_id, model, record_id, payload, payload_hash, revision, created_sequence, last_change_sequence, first_seen_at, last_changed_at) values ('legacy', 'record', 'native-record', '{"body":"Legacy Markdown"}', 'original-hash', 9, 1, 1, ?, ?)`,
-      )
-      .run(at, at);
-    sql.prepare(`insert into sync_sinks values ('receiver', 'http', 1, ?, ?)`).run(at, at);
-    sql
-      .prepare(
-        `insert into sync_outbox (sink_id, change_sequence, state, next_attempt_at) values ('receiver', 1, 'pending', ?)`,
-      )
-      .run(at);
-    sql
-      .prepare(
-        `insert into sync_snapshots values ('old-snapshot', 'legacy', 'old-run', '["record"]', 1, 'active', ?, null)`,
-      )
-      .run(at);
-    // A second legacy installation makes duplicate-account resolution ambiguous.
-    sql.exec(
-      `insert into sync_installations select 'ambiguous', definition_id, definition_version, provider, connection_id, config_value, state, schedule_seconds, next_due_at, last_success_at, created_at, updated_at from sync_installations where id = 'legacy'`,
-    );
-    sql.exec(
-      `insert into sync_installations select 'disabled', definition_id, definition_version, provider, connection_id, config_value, 'disabled', schedule_seconds, next_due_at, last_success_at, created_at, updated_at from sync_installations where id = 'legacy'`,
-    );
-    sql.close();
-
-    const database = new SqliteRuntimeDatabase(path, { syncDefinitions: [definition] });
-    databases.push(database);
-    const store = database.syncStore;
-    expect(await store.getInstallation("legacy")).toMatchObject({ state: "needs_attention", sourceId: undefined });
-    expect(await store.getRun("old-run")).toMatchObject({
-      state: "cancelled",
-      errorCode: "source_verification_required",
-    });
-    const originalRecord = await store.getRecord("legacy", "record", "native-record");
-    const originalCheckpoint = await store.getCheckpoint("legacy");
-    const originalOutbox = await store.listOutbox("receiver");
-    const input: BindSyncSourceInput = {
-      ...bindingInput,
-      config: {},
-      createdAt: at,
-      expectedBindingRevision: 0,
-      verifiedConnection: { id: connection.id, revision: connection.revision, service: "test", identity },
-    };
-    await expect(store.sources.bind(input)).rejects.toMatchObject({ code: "binding_conflict" });
-    await expect(store.sources.bind({ ...input, id: "legacy" })).rejects.toMatchObject({ code: "binding_conflict" });
-    expect(await store.sources.bind({ ...input, id: "legacy", resolveLegacyIdentity: true })).toBe("legacy");
-    const bound = (await store.getInstallation("legacy"))!;
-    expect(await store.getRecord("legacy", "record", "native-record")).toEqual({
-      ...originalRecord,
-      sourceId: bound.sourceId,
-    });
-    expect(await store.getCheckpoint("legacy")).toEqual(originalCheckpoint);
-    expect(await store.listOutbox("receiver")).toEqual(originalOutbox);
-    expect((await store.listChanges()).items[0]).toMatchObject({
-      eventId: "original-event",
-      recordRevision: 9,
-      contentHash: "original-hash",
-      sourceId: bound.sourceId,
-    });
-    await expect(
-      store.sources.bind({ ...input, expectedBindingRevision: 1, id: "ambiguous", resolveLegacyIdentity: true }),
-    ).rejects.toMatchObject({ code: "binding_conflict" });
-    expect((await store.getInstallation("ambiguous"))?.sourceId).toBeUndefined();
-    expect(store.sources.getBindingRevision()).toBe(1);
-    expect((await store.getInstallation("disabled"))?.state).toBe("disabled");
-    await expect(
-      store.startRun({
-        id: "unverified",
-        installationId: "disabled",
-        definitionVersion: "1",
-        reason: "manual",
-        leaseOwner: "worker",
-        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-        startedAt: now(),
-      }),
-    ).rejects.toMatchObject({ code: "binding_conflict" });
   });
 });
