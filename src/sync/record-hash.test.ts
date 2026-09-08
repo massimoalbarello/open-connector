@@ -14,6 +14,30 @@ describe("sync record canonicalization", () => {
     expect(canonicalizeJsonValue({ cursor: null, offset: -0 }).json).toBe('{"cursor":null,"offset":0}');
   });
 
+  it("preserves prototype-named JSON keys in payloads and hashes", () => {
+    const value = JSON.parse('{"body":"hello","__proto__":{"x":1},"nested":{"__proto__":null}}');
+    const result = canonicalizeJsonObject(value);
+
+    expect(result.json).toBe('{"__proto__":{"x":1},"body":"hello","nested":{"__proto__":null}}');
+    expect(Object.getPrototypeOf(result.value)).toBe(Object.prototype);
+    expect(Object.hasOwn(result.value, "__proto__")).toBe(true);
+    expect(result.sha256).not.toBe(canonicalizeJsonObject({ body: "hello", nested: {} }).sha256);
+    expect(canonicalizeJsonValue(value).json).toBe(result.json);
+  });
+
+  it("rejects accessors without invoking them", () => {
+    let invoked = false;
+    const value = Object.defineProperty({}, "body", {
+      enumerable: true,
+      get() {
+        invoked = true;
+        return "hello";
+      },
+    });
+    expect(() => canonicalizeJsonObject(value)).toThrow("data property");
+    expect(invoked).toBe(false);
+  });
+
   it.each([
     { label: "non-finite number", value: { count: Number.POSITIVE_INFINITY } },
     { label: "undefined", value: { missing: undefined } },

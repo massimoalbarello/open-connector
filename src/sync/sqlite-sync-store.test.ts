@@ -1,10 +1,10 @@
-import type { SyncLeaseInput } from "./sync-store.ts";
+import type { FinishSyncRunInput, SyncLeaseInput } from "./sync-store.ts";
 
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite-runtime-store.ts";
 
 const t0 = "2026-09-02T10:00:00.000Z";
@@ -24,7 +24,13 @@ interface Fixture {
 
 const fixtures: Fixture[] = [];
 
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(t0);
+});
+
 afterEach(async () => {
+  vi.useRealTimers();
   for (const fixture of fixtures.splice(0)) {
     fixture.database.close();
     await rm(fixture.directory, { recursive: true, force: true });
@@ -206,13 +212,6 @@ describe("SQLite sync state", () => {
         upserts: [{ model: "PullRequest", id: "PR_2", payload: { number: 2 } }],
       }),
     ).rejects.toMatchObject({ code: "checkpoint_conflict" });
-    await expect(
-      store.commitPage({
-        ...commitIdentity(fixture, 1, "2026-09-02T12:00:00.000Z"),
-        nextCheckpoint: { cursor: "expired" },
-      }),
-    ).rejects.toMatchObject({ code: "lease_lost" });
-
     const renewed = await store.renewRunLease({
       runId: "run-1",
       ...fixture.lease,
@@ -226,13 +225,358 @@ describe("SQLite sync state", () => {
       }),
     ).rejects.toMatchObject({ code: "lease_lost" });
 
-    fixture.lease = { owner: "worker-1", generation: 2, observedAt: t2 };
+    fixture.lease = { owner: "worker-1", generation: 2 };
     await expect(
       store.commitPage({
         ...commitIdentity(fixture, 1, t2),
         nextCheckpoint: { cursor: "page-2" },
       }),
     ).resolves.toMatchObject({ checkpoint: { revision: 2 } });
+
+    vi.setSystemTime("2026-09-02T12:00:00.000Z");
+    await expect(
+      store.commitPage({
+        ...commitIdentity(fixture, 2, t2),
+        nextCheckpoint: { cursor: "expired" },
+      }),
+    ).rejects.toMatchObject({ code: "lease_lost" });
+  });
+
+  it("uses transaction-time lease expiry even when callers reuse old timestamps", async () => {
+    const fixture = await createFixture();
+    const store = fixture.database.syncStore;
+    await store.startSnapshot({
+      id: "snapshot-1",
+      installationId: "github-prs",
+      runId: "run-1",
+      models: ["PullRequest"],
+      lease: fixture.lease,
+      expectedCheckpointRevision: 0,
+      startedAt: t1,
+    });
+    vi.setSystemTime(leaseExpiry);
+
+    await expect(
+      store.commitPage({
+        ...commitIdentity(fixture, 0, t1),
+        snapshotId: "snapshot-1",
+        nextCheckpoint: { cursor: "late" },
+        upserts: [{ model: "PullRequest", id: "PR_1", payload: { body: "Late" } }],
+      }),
+    ).rejects.toMatchObject({ code: "lease_lost" });
+    await expect(
+      store.renewRunLease({
+        runId: "run-1",
+        ...fixture.lease,
+        expiresAt: "2026-09-02T12:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "lease_lost" });
+    await expect(
+      store.finishSnapshot({
+        installationId: "github-prs",
+        runId: "run-1",
+        snapshotId: "snapshot-1",
+        lease: fixture.lease,
+        expectedCheckpointRevision: 0,
+        nextCheckpoint: null,
+        committedAt: t1,
+      }),
+    ).rejects.toMatchObject({ code: "lease_lost" });
+    await expect(
+      store.startSnapshot({
+        id: "snapshot-2",
+        installationId: "github-prs",
+        runId: "run-1",
+        models: ["PullRequest"],
+        lease: fixture.lease,
+        expectedCheckpointRevision: 0,
+        startedAt: t1,
+      }),
+    ).rejects.toMatchObject({ code: "lease_lost" });
+    await expect(
+      store.finishRun({
+        runId: "run-1",
+        ...fixture.lease,
+        state: "failed",
+        completedAt: t1,
+      }),
+    ).rejects.toMatchObject({ code: "lease_lost" });
+    await expect(store.getCheckpoint("github-prs")).resolves.toBeUndefined();
+    await expect(store.listChanges()).resolves.toMatchObject({ items: [] });
+    await expect(store.listOutbox("consumer-http")).resolves.toEqual([]);
+  });
+
+  it("rejects expired initial leases and renewals", async () => {
+    const fixture = await createFixture();
+    const store = fixture.database.syncStore;
+    await expect(
+      store.startRun({
+        id: "run-past",
+        installationId: "github-prs",
+        definitionVersion: "1.0.0",
+        reason: "retry",
+        leaseOwner: "worker-2",
+        startedAt: "2026-09-01T00:00:00.000Z",
+        leaseExpiresAt: t0,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(
+      store.renewRunLease({
+        runId: "run-1",
+        ...fixture.lease,
+        expiresAt: t0,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(store.getRun("run-1")).resolves.toMatchObject({ leaseGeneration: 1 });
+  });
+
+  it("rejects nonterminal finishRun states without changing run state", async () => {
+    const fixture = await createFixture();
+    await expect(
+      fixture.database.syncStore.finishRun({
+        runId: "run-1",
+        ...fixture.lease,
+        state: "running" as FinishSyncRunInput["state"],
+        completedAt: t1,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(fixture.database.syncStore.getRun("run-1")).resolves.toMatchObject({
+      state: "running",
+      completedAt: undefined,
+    });
+  });
+
+  it.each([
+    { table: "sync_changes", operation: "insert", condition: "when new.record_id = 'PR_2'" },
+    { table: "sync_records", operation: "insert", condition: "when new.record_id = 'PR_2'" },
+    { table: "sync_outbox", operation: "insert", condition: "when new.change_sequence = 3" },
+    { table: "sync_checkpoints", operation: "update", condition: "" },
+    { table: "sync_runs", operation: "update", condition: "" },
+  ])(
+    "rolls back record, event, outbox, and progress writes on $table failure",
+    async ({ table, operation, condition }) => {
+      const fixture = await createFixture();
+      const store = fixture.database.syncStore;
+      await store.commitPage({
+        ...commitIdentity(fixture, 0, t1),
+        nextCheckpoint: { cursor: "seed" },
+        upserts: [{ model: "PullRequest", id: "PR_1", payload: { body: "Original" } }],
+      });
+      const before = await store.listChanges();
+      const injector = new DatabaseSync(fixture.databasePath);
+      try {
+        injector.exec(`create trigger fail_commit before ${operation} on ${table} ${condition} begin
+        select raise(abort, 'injected failure'); end;`);
+      } finally {
+        injector.close();
+      }
+      await expect(
+        store.commitPage({
+          ...commitIdentity(fixture, 1, t2),
+          nextCheckpoint: { cursor: "updated" },
+          upserts: [
+            { model: "PullRequest", id: "PR_1", payload: { body: "Updated" } },
+            { model: "PullRequest", id: "PR_2", payload: { body: "Second" } },
+          ],
+        }),
+      ).rejects.toThrow("injected failure");
+      fixture.database.close();
+      fixture.database = new SqliteRuntimeDatabase(fixture.databasePath);
+      const reopened = fixture.database.syncStore;
+      await expect(reopened.getRecord("github-prs", "PullRequest", "PR_1")).resolves.toMatchObject({
+        revision: 1,
+        payload: { body: "Original" },
+      });
+      await expect(reopened.getRecord("github-prs", "PullRequest", "PR_2")).resolves.toBeUndefined();
+      await expect(reopened.getCheckpoint("github-prs")).resolves.toMatchObject({
+        revision: 1,
+        value: { cursor: "seed" },
+      });
+      await expect(reopened.listChanges()).resolves.toEqual(before);
+      await expect(reopened.listOutbox("consumer-http")).resolves.toHaveLength(1);
+      await expect(reopened.getRun("run-1")).resolves.toMatchObject({
+        checkpointRevision: 1,
+        pageCount: 1,
+        changeCount: 1,
+      });
+    },
+  );
+
+  it("rolls back snapshot tombstones and completion when checkpoint persistence fails", async () => {
+    const fixture = await createFixture();
+    const store = fixture.database.syncStore;
+    await store.commitPage({
+      ...commitIdentity(fixture, 0, t1),
+      nextCheckpoint: null,
+      upserts: [{ model: "PullRequest", id: "PR_1", payload: { body: "Still present" } }],
+    });
+    await store.startSnapshot({
+      id: "snapshot-1",
+      installationId: "github-prs",
+      runId: "run-1",
+      models: ["PullRequest"],
+      lease: fixture.lease,
+      expectedCheckpointRevision: 1,
+      startedAt: t2,
+    });
+    const injector = new DatabaseSync(fixture.databasePath);
+    try {
+      injector.exec(`create trigger fail_snapshot before update on sync_checkpoints begin
+        select raise(abort, 'checkpoint failed'); end;`);
+    } finally {
+      injector.close();
+    }
+    const completion = {
+      installationId: "github-prs",
+      runId: "run-1",
+      snapshotId: "snapshot-1",
+      lease: fixture.lease,
+      expectedCheckpointRevision: 1,
+      nextCheckpoint: { cursor: "complete" },
+      committedAt: t3,
+    };
+    await expect(store.finishSnapshot(completion)).rejects.toThrow("checkpoint failed");
+    fixture.database.close();
+    fixture.database = new SqliteRuntimeDatabase(fixture.databasePath);
+    const reopened = fixture.database.syncStore;
+    await expect(reopened.getRecord("github-prs", "PullRequest", "PR_1")).resolves.toMatchObject({
+      revision: 1,
+      deletedAt: undefined,
+    });
+    await expect(reopened.listChanges()).resolves.toMatchObject({ items: [{ operation: "added" }] });
+    await expect(reopened.listOutbox("consumer-http")).resolves.toHaveLength(1);
+    await expect(reopened.getCheckpoint("github-prs")).resolves.toMatchObject({ revision: 1 });
+    const repair = new DatabaseSync(fixture.databasePath);
+    try {
+      expect(repair.prepare("select state from sync_snapshots where id = ?").get("snapshot-1")?.state).toBe("active");
+      repair.exec("drop trigger fail_snapshot");
+    } finally {
+      repair.close();
+    }
+    await expect(reopened.finishSnapshot(completion)).resolves.toMatchObject({
+      checkpoint: { revision: 2 },
+      changes: [{ operation: "deleted", recordRevision: 2 }],
+    });
+  });
+
+  it("retains exact earlier change payloads and fans out only to enabled sinks", async () => {
+    const fixture = await createFixture();
+    const store = fixture.database.syncStore;
+    await store.registerSink({ id: "second", kind: "http", enabled: true, updatedAt: t0 });
+    await store.registerSink({ id: "disabled", kind: "http", enabled: false, updatedAt: t0 });
+    const first = await store.commitPage({
+      ...commitIdentity(fixture, 0, t1),
+      nextCheckpoint: null,
+      upserts: [{ model: "PullRequest", id: "PR_1", payload: { body: "First revision" } }],
+    });
+    await store.commitPage({
+      ...commitIdentity(fixture, 1, t2),
+      nextCheckpoint: null,
+      upserts: [{ model: "PullRequest", id: "PR_1", payload: { body: "Second revision" } }],
+    });
+    expect((await store.listChanges()).items[0]).toEqual(first.changes[0]);
+    await expect(store.listOutbox("second")).resolves.toHaveLength(2);
+    await expect(store.listOutbox("disabled")).resolves.toEqual([]);
+  });
+
+  it("keeps the current binding and record revision across in-place credential replacement", async () => {
+    const fixture = await createFixture();
+    const store = fixture.database.syncStore;
+    const upserts = [{ model: "PullRequest", id: "PR_1", payload: { body: "Same record" } }];
+    await store.commitPage({ ...commitIdentity(fixture, 0, t1), nextCheckpoint: null, upserts });
+    const connection = await fixture.database.connectionStore.get("github", "default");
+    if (connection?.credential.authType !== "api_key") {
+      throw new Error("Expected the API-key fixture connection.");
+    }
+    const updated = await fixture.database.connectionStore.set("github", "default", {
+      ...connection.credential,
+      apiKey: "replacement-token",
+      values: { apiKey: "replacement-token" },
+    });
+    expect(updated.id).toBe(fixture.connectionId);
+    await expect(
+      store.commitPage({ ...commitIdentity(fixture, 1, t2), nextCheckpoint: null, upserts }),
+    ).resolves.toMatchObject({ changes: [] });
+    await expect(store.getRecord("github-prs", "PullRequest", "PR_1")).resolves.toMatchObject({ revision: 1 });
+  });
+
+  it.each(["2026-02-30T00:00:00.000Z", "2026-09-02", "2026-09-02T10:00:00", "1", ""])(
+    "rejects invalid or ambiguous timestamps: %s",
+    async (createdAt) => {
+      const fixture = await createFixture({ createInstallation: false });
+      await expect(
+        fixture.database.syncStore.createInstallation({
+          id: "invalid-time",
+          definitionId: "github.pull-requests",
+          definitionVersion: "1.0.0",
+          provider: "github",
+          connectionId: fixture.connectionId,
+          config: {},
+          createdAt,
+        }),
+      ).rejects.toMatchObject({ code: "invalid_input" });
+      await expect(fixture.database.syncStore.getInstallation("invalid-time")).resolves.toBeUndefined();
+    },
+  );
+
+  it("normalizes timezone offsets for durable timestamps", async () => {
+    const fixture = await createFixture({ createInstallation: false });
+    await expect(
+      fixture.database.syncStore.createInstallation({
+        id: "offset-time",
+        definitionId: "github.pull-requests",
+        definitionVersion: "1.0.0",
+        provider: "github",
+        connectionId: fixture.connectionId,
+        config: {},
+        createdAt: "2026-09-02T11:00:00+01:00",
+      }),
+    ).resolves.toMatchObject({ createdAt: t0 });
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid change-page limits: %s",
+    async (limit) => {
+      const fixture = await createFixture();
+      await expect(fixture.database.syncStore.listChanges({ limit })).rejects.toMatchObject({ code: "invalid_input" });
+    },
+  );
+
+  it("requires explicit snapshot participation so an unchanged record cannot be marked unseen", async () => {
+    const fixture = await createFixture();
+    const store = fixture.database.syncStore;
+    const upserts = [{ model: "PullRequest", id: "PR_1", payload: { body: "Unchanged" } }];
+    await store.commitPage({ ...commitIdentity(fixture, 0, t1), nextCheckpoint: null, upserts });
+    await store.startSnapshot({
+      id: "snapshot-1",
+      installationId: "github-prs",
+      runId: "run-1",
+      models: ["PullRequest"],
+      lease: fixture.lease,
+      expectedCheckpointRevision: 1,
+      startedAt: t2,
+    });
+    await expect(
+      store.commitPage({ ...commitIdentity(fixture, 1, t3), nextCheckpoint: null, upserts }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(store.getCheckpoint("github-prs")).resolves.toMatchObject({ revision: 1 });
+    await store.commitPage({
+      ...commitIdentity(fixture, 1, t3),
+      snapshotId: "snapshot-1",
+      nextCheckpoint: null,
+      upserts,
+    });
+    await expect(
+      store.finishSnapshot({
+        installationId: "github-prs",
+        runId: "run-1",
+        snapshotId: "snapshot-1",
+        lease: fixture.lease,
+        expectedCheckpointRevision: 2,
+        nextCheckpoint: null,
+        committedAt: t4,
+      }),
+    ).resolves.toMatchObject({ changes: [], deleteCount: 0 });
   });
 
   it("tombstones only baseline records missing from a successfully finished snapshot", async () => {
@@ -378,7 +722,7 @@ async function createFixture(options: { createInstallation?: boolean } = {}): Pr
     databasePath,
     database,
     connectionId: connection.id,
-    lease: { owner: "worker-1", generation: 1, observedAt: t1 },
+    lease: { owner: "worker-1", generation: 1 },
   };
   fixtures.push(fixture);
   if (options.createInstallation !== false) {
@@ -411,12 +755,12 @@ async function createFixture(options: { createInstallation?: boolean } = {}): Pr
   return fixture;
 }
 
-function commitIdentity(fixture: Fixture, revision: number, observedAt: string) {
+function commitIdentity(fixture: Fixture, revision: number, committedAt: string) {
   return {
     installationId: "github-prs",
     runId: "run-1",
-    lease: { ...fixture.lease, observedAt },
+    lease: fixture.lease,
     expectedCheckpointRevision: revision,
-    committedAt: observedAt,
+    committedAt,
   };
 }

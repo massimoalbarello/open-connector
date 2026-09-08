@@ -29,6 +29,7 @@ import type {
 } from "./sync-store.ts";
 import type { DatabaseSync } from "node:sqlite";
 
+import { z } from "zod";
 import { optionalRawString } from "../core/cast.ts";
 import { randomUUIDv7 } from "../core/uuid-v7.ts";
 import { parseJson, readString } from "../server/storage/runtime-sql.ts";
@@ -39,6 +40,7 @@ const defaultChangeLimit = 100;
 const maximumChangeLimit = 1_000;
 const maximumIdentifierLength = 1_024;
 const modelPattern = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
+const timestampSchema = z.iso.datetime({ offset: true });
 
 interface PreparedUpsert {
   model: string;
@@ -83,6 +85,15 @@ interface InsertChangeInput extends ChangeSource {
   deletedAt?: string;
 }
 
+interface WriteCheckpointInput {
+  installation: SyncInstallation;
+  run: SyncRun;
+  expectedRevision: number;
+  value: JsonValue;
+  valueJson: string | null;
+  committedAt: string;
+}
+
 /** SQLite implementation of the durable sync state and record cache. */
 export class SqliteSyncStore implements ISyncStore {
   private readonly database: DatabaseSync;
@@ -102,7 +113,7 @@ export class SqliteSyncStore implements ISyncStore {
     assertInstallationState(state);
     const scheduleSeconds = readScheduleSeconds(input.scheduleSeconds);
     const createdAt = requiredTimestamp(input.createdAt, "createdAt");
-    const nextDueAt = input.nextDueAt ? requiredTimestamp(input.nextDueAt, "nextDueAt") : undefined;
+    const nextDueAt = input.nextDueAt === undefined ? undefined : requiredTimestamp(input.nextDueAt, "nextDueAt");
 
     runInTransaction(this.database, () => {
       const connection = this.database
@@ -145,6 +156,9 @@ export class SqliteSyncStore implements ISyncStore {
     const id = requiredIdentifier(input.id, "sink id");
     const kind = requiredIdentifier(input.kind, "sink kind");
     const updatedAt = requiredTimestamp(input.updatedAt, "updatedAt");
+    if (typeof input.enabled !== "boolean") {
+      throw invalidInput("Sink enabled must be a boolean.");
+    }
     this.database
       .prepare(
         `
@@ -174,6 +188,12 @@ export class SqliteSyncStore implements ISyncStore {
 
     runInTransaction(this.database, () => {
       const installation = this.requireInstallation(installationId);
+      if (installation.state !== "enabled") {
+        throw invalidInput("A run cannot start for an installation that is not enabled.");
+      }
+      if (Date.parse(leaseExpiresAt) <= Date.now()) {
+        throw invalidInput("leaseExpiresAt must be in the future.");
+      }
       if (installation.definitionVersion !== definitionVersion) {
         throw invalidInput(
           `Run definition version ${definitionVersion} does not match installation version ${installation.definitionVersion}.`,
@@ -202,12 +222,11 @@ export class SqliteSyncStore implements ISyncStore {
     const runId = requiredIdentifier(input.runId, "run id");
     const lease = normalizeLease(input);
     const expiresAt = requiredTimestamp(input.expiresAt, "expiresAt");
-    if (expiresAt <= lease.observedAt) {
-      throw invalidInput("expiresAt must be later than observedAt.");
-    }
-
     runInTransaction(this.database, () => {
       this.assertLease(runId, lease);
+      if (Date.parse(expiresAt) <= Date.now()) {
+        throw invalidInput("expiresAt must be in the future.");
+      }
       const result = this.database
         .prepare(
           `
@@ -228,13 +247,17 @@ export class SqliteSyncStore implements ISyncStore {
     const runId = requiredIdentifier(input.runId, "run id");
     const lease = normalizeLease(input);
     const completedAt = requiredTimestamp(input.completedAt, "completedAt");
+    const state = input.state;
+    if (state !== "succeeded" && state !== "failed" && state !== "cancelled" && state !== "lease_expired") {
+      throw invalidInput("A finished run must have a terminal state.");
+    }
 
     runInTransaction(this.database, () => {
       const run = this.assertLease(runId, lease);
       const activeSnapshot = this.database
         .prepare("select id from sync_snapshots where run_id = ? and state = 'active'")
         .get(runId);
-      if (activeSnapshot && input.state === "succeeded") {
+      if (activeSnapshot && state === "succeeded") {
         throw invalidInput("A run cannot succeed while it has an active snapshot.");
       }
       if (activeSnapshot) {
@@ -253,8 +276,8 @@ export class SqliteSyncStore implements ISyncStore {
           where id = ?
         `,
         )
-        .run(input.state, completedAt, input.errorCode ?? null, input.errorMessage ?? null, runId);
-      if (input.state === "succeeded") {
+        .run(state, completedAt, input.errorCode ?? null, input.errorMessage ?? null, runId);
+      if (state === "succeeded") {
         this.database
           .prepare("update sync_installations set last_success_at = ?, updated_at = ? where id = ?")
           .run(completedAt, completedAt, run.installationId);
@@ -387,7 +410,10 @@ export class SqliteSyncStore implements ISyncStore {
   }
 
   async listChanges(input: ListSyncChangesInput = {}): Promise<SyncChangePage> {
-    const limit = Math.max(1, Math.min(input.limit ?? defaultChangeLimit, maximumChangeLimit));
+    if (input.limit !== undefined && (!Number.isSafeInteger(input.limit) || input.limit <= 0)) {
+      throw invalidInput("limit must be a positive safe integer.");
+    }
+    const limit = Math.min(input.limit ?? defaultChangeLimit, maximumChangeLimit);
     const conditions: string[] = [];
     const values: Array<number | string> = [];
     if (input.afterSequence !== undefined) {
@@ -445,6 +471,12 @@ export class SqliteSyncStore implements ISyncStore {
     const snapshot = input.snapshotId
       ? this.requireActiveSnapshot(input.snapshotId, input.installationId, input.runId)
       : undefined;
+    if (
+      !snapshot &&
+      this.database.prepare("select id from sync_snapshots where run_id = ? and state = 'active'").get(input.runId)
+    ) {
+      throw invalidInput("Page commits during an active snapshot must include its snapshotId.");
+    }
     if (snapshot) {
       const models = new Set(snapshot.models);
       for (const record of [...input.upserts, ...input.deletes]) {
@@ -652,14 +684,7 @@ export class SqliteSyncStore implements ISyncStore {
     };
   }
 
-  private writeCheckpoint(input: {
-    installation: SyncInstallation;
-    run: SyncRun;
-    expectedRevision: number;
-    value: JsonValue;
-    valueJson: string | null;
-    committedAt: string;
-  }): SyncCheckpoint {
+  private writeCheckpoint(input: WriteCheckpointInput): SyncCheckpoint {
     const nextRevision = input.expectedRevision + 1;
     const result =
       input.expectedRevision === 0
@@ -740,7 +765,7 @@ export class SqliteSyncStore implements ISyncStore {
       run.state !== "running" ||
       run.leaseOwner !== lease.owner ||
       run.leaseGeneration !== lease.generation ||
-      run.leaseExpiresAt <= lease.observedAt ||
+      Date.parse(run.leaseExpiresAt) <= Date.now() ||
       (installationId !== undefined && run.installationId !== installationId)
     ) {
       throw leaseLost(runId);
@@ -891,7 +916,7 @@ function prepareCommit(input: CommitSyncPageInput): PreparedCommit {
   const expectedCheckpointRevision = readRevision(input.expectedCheckpointRevision);
   const checkpoint = readCanonicalValue(input.nextCheckpoint, "Sync checkpoint");
   const committedAt = requiredTimestamp(input.committedAt, "committedAt");
-  const snapshotId = input.snapshotId ? requiredIdentifier(input.snapshotId, "snapshot id") : undefined;
+  const snapshotId = input.snapshotId === undefined ? undefined : requiredIdentifier(input.snapshotId, "snapshot id");
   const keys = new Set<string>();
   const upserts = (input.upserts ?? []).map((record) => {
     const model = requiredModel(record.model);
@@ -1083,7 +1108,7 @@ function requiredIdentifier(value: string, label: string): string {
 }
 
 function requiredModel(value: string): string {
-  if (!modelPattern.test(value)) {
+  if (typeof value !== "string" || !modelPattern.test(value)) {
     throw invalidInput(
       "model must start with a letter and contain at most 128 letters, digits, dots, underscores, or hyphens.",
     );
@@ -1096,9 +1121,9 @@ function requiredRecordId(value: string): string {
 }
 
 function requiredTimestamp(value: string, label: string): string {
-  const milliseconds = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  const milliseconds = timestampSchema.safeParse(value).success ? Date.parse(value) : Number.NaN;
   if (!Number.isFinite(milliseconds)) {
-    throw invalidInput(`${label} must be a valid timestamp.`);
+    throw invalidInput(`${label} must be a valid timezone-qualified ISO timestamp.`);
   }
   return new Date(milliseconds).toISOString();
 }
@@ -1128,7 +1153,6 @@ function normalizeLease(input: SyncLeaseInput): SyncLeaseInput {
   return {
     owner: requiredIdentifier(input.owner, "lease owner"),
     generation,
-    observedAt: requiredTimestamp(input.observedAt, "lease observedAt"),
   };
 }
 

@@ -78,7 +78,6 @@ export interface SyncRun {
 export interface SyncLeaseInput {
   owner: string;
   generation: number;
-  observedAt: string;
 }
 
 export interface RenewSyncRunLeaseInput extends SyncLeaseInput {
@@ -231,6 +230,7 @@ export interface ISyncStore {
   renewRunLease(input: RenewSyncRunLeaseInput): Promise<SyncRun>;
   finishRun(input: FinishSyncRunInput): Promise<SyncRun>;
   getCheckpoint(installationId: string): Promise<SyncCheckpoint | undefined>;
+  /** Persist already-acquired data and progress together; never perform network I/O in the transaction. */
   commitPage(input: CommitSyncPageInput): Promise<SyncCommitResult>;
   startSnapshot(input: StartSyncSnapshotInput): Promise<SyncSnapshot>;
   finishSnapshot(input: FinishSyncSnapshotInput): Promise<SyncCommitResult>;

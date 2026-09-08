@@ -831,23 +831,24 @@ describe("SqliteRuntimeDatabase", () => {
       config: { owner: "openai", repository: "openai-node" },
       createdAt: "2026-06-30T00:00:00.000Z",
     });
+    const syncStartedAt = new Date().toISOString();
     await database.syncStore.startRun({
       id: "sync-run-1",
       installationId: "github-prs",
       definitionVersion: "1.0.0",
       reason: "backfill",
       leaseOwner: "worker-1",
-      leaseExpiresAt: "2026-06-30T01:00:00.000Z",
-      startedAt: "2026-06-30T00:00:00.000Z",
+      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      startedAt: syncStartedAt,
     });
     await database.syncStore.commitPage({
       installationId: "github-prs",
       runId: "sync-run-1",
-      lease: { owner: "worker-1", generation: 1, observedAt: "2026-06-30T00:01:00.000Z" },
+      lease: { owner: "worker-1", generation: 1 },
       expectedCheckpointRevision: 0,
       nextCheckpoint: { cursor: "page-1" },
       upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1 } }],
-      committedAt: "2026-06-30T00:01:00.000Z",
+      committedAt: syncStartedAt,
     });
 
     database.resetRuntimeData();

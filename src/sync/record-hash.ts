@@ -84,7 +84,13 @@ function normalizeJson(value: unknown, path: string, ancestors: Set<object>): Js
       if (!descriptor.enumerable || !("value" in descriptor)) {
         throw new TypeError(`${path}.${key} must be an enumerable data property.`);
       }
-      normalized[key] = normalizeJson(descriptor.value, `${path}.${key}`, ancestors);
+      // JSON permits __proto__ as an ordinary key; assignment would invoke Object's setter.
+      Object.defineProperty(normalized, key, {
+        value: normalizeJson(descriptor.value, `${path}.${key}`, ancestors),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     }
     if (Object.getOwnPropertySymbols(value).length > 0) {
       throw new TypeError(`${path} contains a symbol property.`);
