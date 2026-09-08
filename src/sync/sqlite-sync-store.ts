@@ -180,6 +180,7 @@ export class SqliteSyncStore implements ISyncStore {
       if (this.database.prepare("select 1 from sync_runs where state = 'running'").get())
         throw new SyncStoreError("run_busy", "Another acquisition is already running.");
       const installation = this.requireInstallation(installationId);
+      if (installation.removedAt) throw invalidInput("Restore this sync before starting another iteration.");
       if (installation.requiresBackfill && input.resetCheckpoint === undefined)
         throw invalidInput("Interrupted snapshot requires an explicit backfill run.");
       const targetReceiverId = input.targetReceiverId ?? installation.bootstrapReceiverId;
@@ -645,9 +646,9 @@ export class SqliteSyncStore implements ISyncStore {
         const current = this.readRecord(input.installationId, upsert.model, upsert.id)!;
         const inserted = this.database
           .prepare(
-            "insert or ignore into sync_outbox(sink_id, change_sequence, state, next_attempt_at) values (?, ?, 'pending', ?)",
+            "insert or ignore into sync_outbox(sink_id, change_sequence, state, next_attempt_at, run_id) values (?, ?, 'pending', ?, ?)",
           )
-          .run(input.targetReceiverId, current.lastChangeSequence, input.committedAt);
+          .run(input.targetReceiverId, current.lastChangeSequence, input.committedAt, input.runId);
         if (inserted.changes)
           this.database
             .prepare("update sync_changes set payload = ? where sequence = ? and payload = 'null'")
@@ -742,12 +743,12 @@ export class SqliteSyncStore implements ISyncStore {
       .prepare(
         `
         insert into sync_outbox (
-          sink_id, change_sequence, state, attempt_count, next_attempt_at, lease_generation
+          sink_id, change_sequence, state, attempt_count, next_attempt_at, lease_generation, run_id
         )
-        select id, ?, 'pending', 0, ?, 0 from sync_sinks where enabled = 1
+        select id, ?, 'pending', 0, ?, 0, ? from sync_sinks where enabled = 1
       `,
       )
-      .run(sequence, input.committedAt);
+      .run(sequence, input.committedAt, input.run.id);
     return {
       sourceId: input.installation.sourceId,
       sequence,
@@ -974,7 +975,7 @@ export class SqliteSyncStore implements ISyncStore {
       .prepare(
         `
         select source_id, credential_revision, binding_revision, id, definition_id, definition_version, provider, connection_id, config_value,
-          state, schedule_seconds, next_due_at, last_success_at, created_at, updated_at, consecutive_failures, last_error, requires_backfill, bootstrap_receiver_id
+          state, schedule_seconds, next_due_at, last_success_at, created_at, updated_at, consecutive_failures, last_error, requires_backfill, bootstrap_receiver_id, removed_at
         from sync_installations where id = ?
       `,
       )
@@ -1002,7 +1003,7 @@ export class SqliteSyncStore implements ISyncStore {
       `,
       )
       .get(id);
-    return row ? readRunRow(row) : undefined;
+    return row ? { ...readRunRow(row), delivery: this.delivery.runStatus(id) } : undefined;
   }
 
   private readCheckpoint(installationId: string): SyncCheckpoint | undefined {
@@ -1088,6 +1089,7 @@ function readInstallationRow(row: RuntimeRow): SyncInstallation {
   const state = readString(row, "state");
   assertInstallationState(state);
   return {
+    removedAt: readOptionalString(row, "removed_at"),
     sourceId: readOptionalString(row, "source_id"),
     credentialRevision: readOptionalString(row, "credential_revision"),
     bindingRevision: readNumber(row, "binding_revision"),
@@ -1110,7 +1112,7 @@ function readInstallationRow(row: RuntimeRow): SyncInstallation {
   };
 }
 
-function readRunRow(row: RuntimeRow): SyncRun {
+function readRunRow(row: RuntimeRow): Omit<SyncRun, "delivery"> {
   const reason = readString(row, "reason");
   const state = readString(row, "state");
   assertRunReason(reason);

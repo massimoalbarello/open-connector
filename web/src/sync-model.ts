@@ -1,4 +1,4 @@
-/** Read-only shapes returned by the sync administration API. */
+/** Wire shapes returned by the sync administration API. */
 export interface SyncStatus {
   acquisitionRunning: boolean;
   schedulerRunning: boolean;
@@ -6,6 +6,16 @@ export interface SyncStatus {
   runs: SyncRun[];
   receivers: SyncReceiver[];
   bindingErrors: SyncBindingError[];
+  definitions: SyncDefinition[];
+}
+
+export interface SyncDefinition {
+  id: string;
+  version: string;
+  provider: string;
+  scheduleSeconds: number;
+  defaultConfig: Record<string, unknown>;
+  requiredScopes: string[];
 }
 
 export interface SyncInstallation {
@@ -27,9 +37,11 @@ export interface SyncInstallation {
   recordCount: number;
   deliveredCount: number;
   pendingCount: number;
+  config: Record<string, unknown>;
 }
 
 export interface SyncRun {
+  delivery: SyncRunDelivery;
   id: string;
   installationId: string;
   reason: "backfill" | "manual" | "reconcile" | "retry" | "schedule" | "webhook";
@@ -41,6 +53,17 @@ export interface SyncRun {
   changeCount: number;
   errorCode?: string;
   errorMessage?: string;
+}
+
+export interface SyncRunDelivery {
+  state: "none" | "pending" | "delivering" | "retrying" | "delivered" | "cancelled";
+  totalRecords: number;
+  deliveredRecords: number;
+  pendingRecords: number;
+  cancelledRecords: number;
+  lastError?: string;
+  nextAttemptAt?: string;
+  lastDeliveredAt?: string;
 }
 
 export interface SyncReceiver {

@@ -39,7 +39,8 @@
     "actions": "Actions",
     "runs": "Exécutions",
     "access": "API Key",
-    "docs": "Docs"
+    "docs": "Docs",
+    "destinations": "Destinations"
   },
   "shell": {
     "invalidUnlockToken": "Saisissez un token administrateur valide pour déverrouiller la console.",
@@ -77,6 +78,9 @@
       },
       "resources": {
         "title": "Ressources"
+      },
+      "destinations": {
+        "title": "Destinations"
       }
     }
   },
@@ -680,7 +684,8 @@
       "failed": "Échec",
       "lease_expired": "Interrompu",
       "succeeded": "Réussi",
-      "enabled": "Activé"
+      "enabled": "Activé",
+      "notConfigured": "Non configurée"
     },
     "connection": {
       "missing": "La connexion à la source a été supprimée. Reconnectez le compte pour reprendre l’interrogation.",
@@ -693,6 +698,74 @@
       "retry": "Nouvelle tentative",
       "schedule": "Planifié",
       "webhook": "Webhook"
+    },
+    "deliveryStates": {
+      "none": "Rien à livrer",
+      "pending": "En attente",
+      "delivering": "Livraison en cours",
+      "retrying": "Nouvelle tentative",
+      "delivered": "Livré",
+      "cancelled": "Annulé"
+    },
+    "manage": {
+      "unavailable": "Synchronisation indisponible",
+      "deliveryUnavailable": "État de livraison indisponible",
+      "noDeliveryDestination": "Aucune destination lors de la collecte",
+      "nothingToDeliver": "Rien à livrer",
+      "deliveryProgress": "{{delivered}} sur {{total}} livrés",
+      "pendingCount": "{{count}} en attente",
+      "cancelledCount": "{{count}} annulés",
+      "historyLimit": "Les 100 dernières itérations de cette synchronisation",
+      "pollingResult": "Interrogation",
+      "delivery": "Livraison",
+      "iterationDeliveryHint": "Les compteurs concernent les enregistrements mis en file par cette itération, y compris les reprises historiques. Interrogation et livraison se terminent indépendamment.",
+      "invalidConfig": "La configuration doit être un objet JSON.",
+      "saveFailed": "Impossible d’enregistrer les modifications.",
+      "edit": "Modifier",
+      "add": "Ajouter une synchronisation",
+      "editDescription": "Modifiez l’intervalle d’interrogation. La progression est conservée.",
+      "addDescription": "Choisissez une synchronisation et un compte connecté. Elle reprend la progression enregistrée ou commence au début si elle est nouvelle.",
+      "definition": "Définition de synchronisation",
+      "account": "Compte connecté",
+      "connectAccount": "Connectez d’abord un compte compatible dans",
+      "intervalMinutes": "Intervalle d’interrogation (minutes)",
+      "config": "Configuration",
+      "save": "Enregistrer",
+      "start": "Démarrer",
+      "remove": "Supprimer",
+      "overviewDescription": "Suivez les interrogations et livraisons de vos synchronisations. Ouvrez-en une pour consulter son historique et ses commandes.",
+      "manageDestinations": "Gérer les destinations",
+      "noMatchingSyncs": "Aucune synchronisation ne correspond à votre recherche.",
+      "latestDelivery": "Livraison de la dernière itération",
+      "availableHint": "Les synchronisations disponibles peuvent démarrer après la connexion d’un compte.",
+      "search": "Rechercher une synchronisation ou un compte",
+      "detailDescription": "Gérez les interrogations et suivez les livraisons de chaque itération.",
+      "allSyncs": "Toutes les synchronisations",
+      "runQueued": "Interrogation mise en file. Elle démarrera dès que le processus sera disponible.",
+      "stop": "Arrêter",
+      "resume": "Reprendre",
+      "runNow": "Exécuter maintenant",
+      "stopHint": "L’arrêt annule l’interrogation en cours et conserve la progression validée. Les enregistrements déjà en file continuent d’être livrés.",
+      "removeSync": "Supprimer la synchronisation ?",
+      "removeSyncDescription": "Les interrogations s’arrêtent et la synchronisation est masquée. Enregistrements, historique et progression sont conservés ; l’ajouter à nouveau la restaure. Les livraisons en file continuent."
     }
+  },
+  "destinations": {
+    "description": "Gérez les destinations webhook qui reçoivent les enregistrements de toutes vos synchronisations.",
+    "add": "Ajouter une destination",
+    "edit": "Modifier la destination",
+    "formDescription": "Utilisez une adresse HTTPS publique et le jeton Bearer attendu par le récepteur.",
+    "id": "Identifiant de destination",
+    "url": "URL du webhook",
+    "token": "Jeton Bearer",
+    "keepToken": "Laissez vide pour conserver le jeton enregistré.",
+    "tokenHint": "Envoyé dans l’en-tête Authorization de chaque livraison.",
+    "enabled": "Activée",
+    "disabledHint": "Une destination désactivée ne reçoit aucun nouveau changement. Les livraisons déjà en file attendent sa réactivation.",
+    "updateHint": "Les livraisons en attente utiliseront l’URL et le jeton mis à jour.",
+    "emptyDescription": "Ajoutez une destination pour recevoir les modifications des enregistrements.",
+    "newRecordsHint": "Les nouvelles destinations reçoivent les changements futurs. L’envoi des enregistrements existants nécessite une reprise historique ciblée via l’API de synchronisation.",
+    "remove": "Supprimer la destination ?",
+    "removeDescription": "Le jeton enregistré sera supprimé et {{count}} livraisons en attente seront annulées. L’historique est conservé. Une requête déjà en cours peut encore arriver."
   }
 }

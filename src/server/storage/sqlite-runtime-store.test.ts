@@ -55,6 +55,7 @@ describe("SqliteRuntimeDatabase", () => {
       "0014_sync_sources.sql",
       "0015_sync_delivery.sql",
       "0016_sync_scheduling.sql",
+      "0017_sync_management.sql",
     ];
     expect(entries.filter((entry) => entry.message === "sqlite migration started")).toEqual(
       migrations.map((migration) => ({ fields: { migration }, message: "sqlite migration started" })),
@@ -89,6 +90,43 @@ describe("SqliteRuntimeDatabase", () => {
         message: "sqlite migrations ready",
       },
     ]);
+  });
+
+  it("migrates existing outbox entries without changing their delivery state or payload", async () => {
+    const path = await createDatabasePath();
+    const raw = new DatabaseSync(path);
+    try {
+      const directory = new URL("../../../migrations/", import.meta.url);
+      raw.exec("create table runtime_migrations(name text primary key, applied_at text not null)");
+      for (const file of (await readdir(directory)).filter((name) => name.endsWith(".sql") && name < "0017").sort()) {
+        raw.exec(readFileSync(new URL(file, directory), "utf8"));
+        raw.prepare("insert into runtime_migrations values (?, ?)").run(file, new Date().toISOString());
+      }
+      raw.exec(`
+        insert into sync_installations(id, definition_id, definition_version, provider, connection_id, config_value, state, created_at, updated_at)
+          values ('sync', 'github.test', '1', 'github', 'connection', '{}', 'enabled', '2026-09-08', '2026-09-08');
+        insert into sync_runs(id, installation_id, definition_version, reason, state, lease_owner, lease_generation, lease_expires_at, checkpoint_revision, started_at)
+          values ('run', 'sync', '1', 'schedule', 'failed', 'owner', 1, '2026-09-08', 1, '2026-09-08');
+        insert into sync_changes(event_id, installation_id, provider, connection_id, definition_id, definition_version, model, record_id, operation, record_revision, payload, payload_hash, run_id, committed_at)
+          values ('event', 'sync', 'github', 'connection', 'github.test', '1', 'record', 'one', 'added', 1, '{"body":"Retained"}', 'hash', 'run', '2026-09-08');
+        insert into sync_sinks values ('destination', 'http', 1, '2026-09-08', '2026-09-08');
+        insert into sync_receivers values ('destination', 'https://receiver.example.com', 'synthetic-secret');
+        insert into sync_outbox(sink_id, change_sequence, state, next_attempt_at) values ('destination', 1, 'pending', '2026-09-08');
+      `);
+    } finally {
+      raw.close();
+    }
+    const migrated = new SqliteRuntimeDatabase(path);
+    try {
+      expect((await migrated.syncStore.getRun("run"))?.delivery).toMatchObject({ state: "pending", totalRecords: 1 });
+      expect((await migrated.syncStore.listChanges()).items[0]).toMatchObject({
+        eventId: "event",
+        content: { body: "Retained" },
+      });
+      expect((await migrated.syncStore.delivery.list())[0]).toMatchObject({ id: "destination", pendingRecords: 1 });
+    } finally {
+      migrated.close();
+    }
   });
 
   it("persists local runtime state across database instances", async () => {

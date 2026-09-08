@@ -210,6 +210,7 @@ describe("durable sync delivery", () => {
       expect(status.runs).toHaveLength(100);
       expect(status.runs.some((run) => run.id === "run")).toBe(false);
       expect(status.installations[0]?.latestRun).toMatchObject({ id: "run", state: "succeeded" });
+      expect((await f.database.syncStore.schedule.status(f.id)).runs.map((run) => run.id)).toEqual(["run"]);
     } finally {
       raw.close();
     }
@@ -354,5 +355,144 @@ describe("durable sync delivery", () => {
     await worker.tick();
     expect(received).toHaveLength(2);
     expect((await f.database.syncStore.delivery.list())[0]?.pendingRecords).toBe(0);
+  });
+});
+
+describe("iteration delivery and destination management", () => {
+  it("keeps delivery progress for failed polls across retries and restarts", async () => {
+    const f = await setup();
+    await f.register("first");
+    const store = f.database.syncStore;
+    await f.commit();
+    await store.finishRun({
+      runId: "run",
+      owner: "owner",
+      generation: 1,
+      state: "failed",
+      completedAt: now(),
+      errorCode: "acquisition_failed",
+    });
+    expect((await store.getRun("run"))?.delivery).toMatchObject({
+      state: "pending",
+      totalRecords: 1,
+      pendingRecords: 1,
+    });
+    const first = (await store.delivery.claim(now()))!;
+    expect((await store.getRun("run"))?.delivery.state).toBe("delivering");
+    store.delivery.complete({ lease: first, acknowledged: false, errorCode: "http_503", retryAt: now(), now: now() });
+    f.restart();
+    expect((await f.database.syncStore.getRun("run"))?.delivery).toMatchObject({
+      state: "retrying",
+      lastError: "http_503",
+      pendingRecords: 1,
+    });
+    const retry = (await f.database.syncStore.delivery.claim(now()))!;
+    f.database.syncStore.delivery.complete({ lease: retry, acknowledged: true, now: now() });
+    expect(await f.database.syncStore.getRun("run")).toMatchObject({
+      state: "failed",
+      errorCode: "acquisition_failed",
+      delivery: { state: "delivered", deliveredRecords: 1, pendingRecords: 0 },
+    });
+  });
+
+  it("attributes a targeted backfill to the iteration that queued it without recounting prior delivery", async () => {
+    const f = await setup();
+    const store = f.database.syncStore;
+    await f.register("first");
+    await f.commit();
+    const first = (await store.delivery.claim(now()))!;
+    store.delivery.complete({ lease: first, acknowledged: true, now: now() });
+    await store.finishRun({
+      runId: "run",
+      owner: "owner",
+      generation: 1,
+      state: "succeeded",
+      completedAt: now(),
+    });
+    await f.register("second");
+    await store.startRun({
+      id: "backfill",
+      installationId: f.id,
+      definitionVersion: "1",
+      reason: "backfill",
+      leaseOwner: "owner",
+      leaseExpiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      startedAt: now(),
+    });
+    const page = {
+      installationId: f.id,
+      runId: "backfill",
+      lease: { owner: "owner", generation: 1 },
+      expectedCheckpointRevision: 1,
+      nextCheckpoint: {},
+      upserts: [{ kind: "record", record: { id: "one", body: "# Complete record" } }],
+      committedAt: now(),
+      targetReceiverId: "second",
+    };
+    expect((await store.commitPage(page)).changes).toHaveLength(0);
+    await store.commitPage({ ...page, expectedCheckpointRevision: 2 });
+    expect((await store.getRun("run"))?.delivery).toMatchObject({ state: "delivered", totalRecords: 1 });
+    expect((await store.getRun("backfill"))?.delivery).toMatchObject({ state: "pending", totalRecords: 1 });
+    const pending = (await store.delivery.claim(now()))!;
+    store.delivery.complete({ lease: pending, acknowledged: true, now: now() });
+    expect((await store.getRun("backfill"))?.delivery).toMatchObject({ state: "delivered", totalRecords: 1 });
+  });
+
+  it("updates a destination without returning or replacing its token and fences old acknowledgements", async () => {
+    const f = await setup();
+    await f.register("first");
+    await f.commit();
+    const delivery = f.database.syncStore.delivery;
+    const old = (await delivery.claim(now()))!;
+    await delivery.update({ id: "first", url: "https://updated.example.com/records" });
+    expect(() => delivery.complete({ lease: old, acknowledged: true, now: now() })).toThrow("no longer owned");
+    const fresh = (await delivery.claim(now()))!;
+    expect(fresh.url).toBe("https://updated.example.com/records");
+    expect(fresh.bearerToken).toBe("receiver-secret");
+    expect(fresh.body).toBe(old.body);
+    expect(JSON.stringify(await delivery.list())).not.toContain("receiver-secret");
+    await expect(delivery.update({ id: "missing", enabled: false })).rejects.toMatchObject({
+      code: "receiver_not_found",
+    });
+    await expect(delivery.update({ id: "first", url: "https://127.0.0.1" })).rejects.toThrow();
+  });
+
+  it("removes tokens and pending delivery while retaining history and other destinations' payloads", async () => {
+    const f = await setup();
+    await f.register("first");
+    await f.register("second");
+    await f.commit();
+    const store = f.database.syncStore;
+    const old = (await store.delivery.claim(now()))!;
+    store.delivery.remove("first");
+    expect(() => store.delivery.complete({ lease: old, acknowledged: true, now: now() })).toThrow("no longer owned");
+    expect(await store.delivery.list()).toMatchObject([{ id: "second", pendingRecords: 1 }]);
+    expect((await store.getRun("run"))?.delivery).toMatchObject({
+      totalRecords: 2,
+      pendingRecords: 1,
+      cancelledRecords: 1,
+    });
+    expect((await store.getRecord(f.id, "record", "one"))?.content).toBeDefined();
+    const raw = new DatabaseSync(f.path);
+    try {
+      expect(raw.prepare("select bearer_secret from sync_receivers where id = 'first'").get()?.bearer_secret).toBe("");
+    } finally {
+      raw.close();
+    }
+    f.restart();
+    const second = (await f.database.syncStore.delivery.claim(now()))!;
+    expect(second.url).toBe("https://second.example.com/records");
+    f.database.syncStore.delivery.complete({ lease: second, acknowledged: true, now: now() });
+    expect((await f.database.syncStore.getRun("run"))?.delivery).toMatchObject({
+      state: "cancelled",
+      deliveredRecords: 1,
+      cancelledRecords: 1,
+      pendingRecords: 0,
+    });
+    expect((await f.database.syncStore.getRecord(f.id, "record", "one"))?.content).toBeUndefined();
+    expect(await f.database.syncStore.delivery.claim(now())).toBeUndefined();
+    await expect(f.register("first")).rejects.toThrow("Use a new destination ID");
+    await f.register("new");
+    expect(await f.database.syncStore.delivery.claim(now())).toBeUndefined();
   });
 });

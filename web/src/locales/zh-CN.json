@@ -39,7 +39,8 @@
     "actions": "操作",
     "runs": "运行记录",
     "access": "API Key",
-    "docs": "文档"
+    "docs": "文档",
+    "destinations": "目标地址"
   },
   "shell": {
     "invalidUnlockToken": "请输入有效的管理员 token 来解锁控制台。",
@@ -77,6 +78,9 @@
       },
       "resources": {
         "title": "资源"
+      },
+      "destinations": {
+        "title": "目标地址"
       }
     }
   },
@@ -657,7 +661,8 @@
       "failed": "失败",
       "lease_expired": "已中断",
       "succeeded": "成功",
-      "enabled": "已启用"
+      "enabled": "已启用",
+      "notConfigured": "未配置"
     },
     "connection": {
       "missing": "数据源连接已移除。重新连接账号以恢复轮询。",
@@ -670,6 +675,74 @@
       "retry": "重试",
       "schedule": "定时",
       "webhook": "Webhook"
+    },
+    "deliveryStates": {
+      "none": "无需投递",
+      "pending": "等待中",
+      "delivering": "投递中",
+      "retrying": "重试中",
+      "delivered": "已投递",
+      "cancelled": "已取消"
+    },
+    "manage": {
+      "unavailable": "同步不可用",
+      "deliveryUnavailable": "投递状态不可用",
+      "noDeliveryDestination": "采集时未设置目标地址",
+      "nothingToDeliver": "无需投递",
+      "deliveryProgress": "已投递 {{delivered}} / {{total}} 条",
+      "pendingCount": "{{count}} 条等待中",
+      "cancelledCount": "{{count}} 条已取消",
+      "historyLimit": "此同步最近的 100 次迭代",
+      "pollingResult": "轮询",
+      "delivery": "投递",
+      "iterationDeliveryHint": "计数对应本次迭代加入队列的记录，包括回填。轮询与投递独立完成。",
+      "invalidConfig": "配置必须是 JSON 对象。",
+      "saveFailed": "无法保存更改。",
+      "edit": "编辑",
+      "add": "添加同步",
+      "editDescription": "修改轮询间隔，保留已保存的进度。",
+      "addDescription": "选择同步定义和已连接账号。轮询将从已保存的进度继续，新同步则从头开始。",
+      "definition": "同步定义",
+      "account": "已连接账号",
+      "connectAccount": "请先在以下页面连接受支持的账号：",
+      "intervalMinutes": "轮询间隔（分钟）",
+      "config": "配置",
+      "save": "保存",
+      "start": "启动",
+      "remove": "移除",
+      "overviewDescription": "查看各同步的轮询和投递状态。打开同步可查看历史并进行操作。",
+      "manageDestinations": "管理目标地址",
+      "noMatchingSyncs": "没有符合搜索条件的同步。",
+      "latestDelivery": "最近迭代的投递状态",
+      "availableHint": "连接账号后即可启动可用的同步。",
+      "search": "搜索同步或账号",
+      "detailDescription": "管理轮询并查看每次迭代的投递进度。",
+      "allSyncs": "所有同步",
+      "runQueued": "轮询已排队，将在工作进程空闲时启动。",
+      "stop": "停止",
+      "resume": "恢复",
+      "runNow": "立即运行",
+      "stopHint": "停止将取消当前轮询并保留已提交的进度。已加入队列的记录仍会继续投递。",
+      "removeSync": "移除同步？",
+      "removeSyncDescription": "轮询将停止，此同步将被隐藏。记录、历史和进度会保留；再次添加相同同步即可恢复。队列中的投递仍会继续。"
     }
+  },
+  "destinations": {
+    "description": "管理接收所有同步记录的 Webhook 目标地址。",
+    "add": "添加目标地址",
+    "edit": "编辑目标地址",
+    "formDescription": "使用公共 HTTPS 端点和接收端要求的 Bearer 令牌。",
+    "id": "目标地址 ID",
+    "url": "Webhook 地址",
+    "token": "Bearer 令牌",
+    "keepToken": "留空以保留已保存的令牌。",
+    "tokenHint": "通过每次投递的 Authorization 请求头发送。",
+    "enabled": "已启用",
+    "disabledHint": "禁用期间不会接收新的变更。已排队的投递会等待重新启用。",
+    "updateHint": "等待中的投递将使用更新后的地址和令牌。",
+    "emptyDescription": "添加目标地址以接收同步记录的变更。",
+    "newRecordsHint": "新的目标地址接收未来的变更。要发送已有记录，需通过同步 API 显式执行定向回填。",
+    "remove": "移除目标地址？",
+    "removeDescription": "这将删除已保存的令牌并取消 {{count}} 条等待投递的记录。投递历史会保留，已经发出的请求仍可能到达。"
   }
 }

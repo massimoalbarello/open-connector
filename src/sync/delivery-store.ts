@@ -9,6 +9,22 @@ export interface SyncReceiverInput {
   bearerToken: string;
   enabled: boolean;
 }
+export interface UpdateSyncReceiverInput {
+  id: string;
+  url?: string;
+  bearerToken?: string;
+  enabled?: boolean;
+}
+export interface SyncRunDelivery {
+  state: "none" | "pending" | "delivering" | "retrying" | "delivered" | "cancelled";
+  totalRecords: number;
+  deliveredRecords: number;
+  pendingRecords: number;
+  cancelledRecords: number;
+  lastError?: string;
+  nextAttemptAt?: string;
+  lastDeliveredAt?: string;
+}
 export interface SyncReceiverStatus {
   id: string;
   url: string;
@@ -57,7 +73,10 @@ export interface CompleteSyncDeliveryInput {
 }
 export interface ISyncDeliveryStore {
   register(input: SyncReceiverInput): Promise<void>;
+  update(input: UpdateSyncReceiverInput): Promise<void>;
+  remove(id: string): void;
   list(): Promise<SyncReceiverStatus[]>;
+  runStatus(runId: string): SyncRunDelivery;
   claim(now: string): Promise<SyncDeliveryLease | undefined>;
   complete(input: CompleteSyncDeliveryInput): void;
   purge(): void;

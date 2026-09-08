@@ -39,7 +39,8 @@
     "actions": "動作",
     "runs": "執行記錄",
     "access": "API 金鑰",
-    "docs": "文件"
+    "docs": "文件",
+    "destinations": "目標位址"
   },
   "shell": {
     "invalidUnlockToken": "請輸入有效的管理員權杖以解鎖控制台。",
@@ -77,6 +78,9 @@
       },
       "resources": {
         "title": "資源"
+      },
+      "destinations": {
+        "title": "目標位址"
       }
     }
   },
@@ -657,7 +661,8 @@
       "failed": "失敗",
       "lease_expired": "已中斷",
       "succeeded": "成功",
-      "enabled": "已啟用"
+      "enabled": "已啟用",
+      "notConfigured": "尚未設定"
     },
     "connection": {
       "missing": "資料來源連線已移除。重新連接帳號以恢復輪詢。",
@@ -670,6 +675,74 @@
       "retry": "重試",
       "schedule": "定時",
       "webhook": "Webhook"
+    },
+    "deliveryStates": {
+      "none": "無需投遞",
+      "pending": "等待中",
+      "delivering": "投遞中",
+      "retrying": "重試中",
+      "delivered": "已投遞",
+      "cancelled": "已取消"
+    },
+    "manage": {
+      "unavailable": "同步無法使用",
+      "deliveryUnavailable": "投遞狀態無法取得",
+      "noDeliveryDestination": "擷取時未設定目標位址",
+      "nothingToDeliver": "無需投遞",
+      "deliveryProgress": "已投遞 {{delivered}} / {{total}} 筆",
+      "pendingCount": "{{count}} 筆等待中",
+      "cancelledCount": "{{count}} 筆已取消",
+      "historyLimit": "此同步最近的 100 次迭代",
+      "pollingResult": "輪詢",
+      "delivery": "投遞",
+      "iterationDeliveryHint": "計數對應本次迭代加入佇列的記錄，包括回填。輪詢與投遞獨立完成。",
+      "invalidConfig": "設定必須是 JSON 物件。",
+      "saveFailed": "無法儲存變更。",
+      "edit": "編輯",
+      "add": "新增同步",
+      "editDescription": "修改輪詢間隔，保留已儲存的進度。",
+      "addDescription": "選擇同步定義和已連線帳號。輪詢將從已儲存的進度繼續，新同步則從頭開始。",
+      "definition": "同步定義",
+      "account": "已連線帳號",
+      "connectAccount": "請先在以下頁面連接支援的帳號：",
+      "intervalMinutes": "輪詢間隔（分鐘）",
+      "config": "設定",
+      "save": "儲存",
+      "start": "啟動",
+      "remove": "移除",
+      "overviewDescription": "查看各同步的輪詢和投遞狀態。開啟同步可查看歷史並進行操作。",
+      "manageDestinations": "管理目標位址",
+      "noMatchingSyncs": "沒有符合搜尋條件的同步。",
+      "latestDelivery": "最近迭代的投遞狀態",
+      "availableHint": "連接帳號後即可啟動可用的同步。",
+      "search": "搜尋同步或帳號",
+      "detailDescription": "管理輪詢並查看每次迭代的投遞進度。",
+      "allSyncs": "所有同步",
+      "runQueued": "輪詢已排入佇列，將在工作程序空閒時啟動。",
+      "stop": "停止",
+      "resume": "恢復",
+      "runNow": "立即執行",
+      "stopHint": "停止將取消目前的輪詢並保留已提交的進度。已加入佇列的記錄仍會繼續投遞。",
+      "removeSync": "移除同步？",
+      "removeSyncDescription": "輪詢將停止，此同步將被隱藏。記錄、歷史和進度會保留；再次新增相同同步即可恢復。佇列中的投遞仍會繼續。"
     }
+  },
+  "destinations": {
+    "description": "管理接收所有同步記錄的 Webhook 目標位址。",
+    "add": "新增目標位址",
+    "edit": "編輯目標位址",
+    "formDescription": "使用公開 HTTPS 端點和接收端要求的 Bearer 權杖。",
+    "id": "目標位址 ID",
+    "url": "Webhook 位址",
+    "token": "Bearer 權杖",
+    "keepToken": "留空以保留已儲存的權杖。",
+    "tokenHint": "透過每次投遞的 Authorization 請求標頭傳送。",
+    "enabled": "已啟用",
+    "disabledHint": "停用期間不會接收新的變更。已排入佇列的投遞會等待重新啟用。",
+    "updateHint": "等待中的投遞將使用更新後的位址和權杖。",
+    "emptyDescription": "新增目標位址以接收同步記錄的變更。",
+    "newRecordsHint": "新的目標位址接收未來的變更。若要傳送現有記錄，需透過同步 API 明確執行指定目標的回填。",
+    "remove": "移除目標位址？",
+    "removeDescription": "這將刪除已儲存的權杖並取消 {{count}} 筆等待投遞的記錄。投遞歷史會保留，已經發出的請求仍可能抵達。"
   }
 }

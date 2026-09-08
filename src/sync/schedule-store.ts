@@ -46,6 +46,7 @@ export interface ConfigureSyncScheduleInput {
   installationId: string;
   enabled: boolean;
   scheduleSeconds?: number;
+  restore?: boolean;
 }
 export interface ScheduledSyncInstallation {
   installation: SyncInstallation;
@@ -62,5 +63,7 @@ export interface ISyncScheduleStore {
   failBeforeRun(input: FailedSyncPollInput): void;
   recover(now: string): number;
   configure(input: ConfigureSyncScheduleInput): void;
-  status(): Promise<SyncScheduleStatus>;
+  remove(installationId: string): void;
+  requestRun(installationId: string): void;
+  status(installationId?: string): Promise<SyncScheduleStatus>;
 }

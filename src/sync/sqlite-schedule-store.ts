@@ -240,14 +240,15 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
     )
       throw new SyncStoreError("invalid_input", "Schedule interval must be between 60 and 86400 seconds.");
     const installation = this.readers.installation(input.installationId);
-    if (!installation) throw new SyncStoreError("installation_not_found", "Sync installation not found.");
+    if (!installation || (installation.removedAt && !input.restore))
+      throw new SyncStoreError("installation_not_found", "Sync installation not found.");
     if (input.enabled && installation.requiresBackfill)
       throw new SyncStoreError("invalid_input", "Interrupted snapshot requires an explicit backfill run.");
     const now = new Date().toISOString();
     runSyncTransaction(this.database, () => {
       this.database
         .prepare(
-          "update sync_installations set state = ?, schedule_seconds = ?, next_due_at = ?, updated_at = ? where id = ?",
+          "update sync_installations set state = ?, schedule_seconds = ?, next_due_at = ?, updated_at = ?, removed_at = null where id = ?",
         )
         .run(
           input.enabled ? "enabled" : "disabled",
@@ -276,7 +277,27 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
     });
   }
 
-  async status(): Promise<SyncScheduleStatus> {
+  remove(installationId: string): void {
+    this.configure({ installationId, enabled: false });
+    this.database
+      .prepare("update sync_installations set removed_at = ? where id = ?")
+      .run(new Date().toISOString(), installationId);
+  }
+
+  requestRun(installationId: string): void {
+    const installation = this.readers.installation(installationId);
+    if (!installation || installation.removedAt)
+      throw new SyncStoreError("installation_not_found", "Sync installation not found.");
+    if (
+      this.database
+        .prepare("select 1 from sync_runs where installation_id = ? and state = 'running'")
+        .get(installationId)
+    )
+      throw new SyncStoreError("run_busy", "This sync is already running.");
+    this.configure({ installationId, enabled: true });
+  }
+
+  async status(installationId?: string): Promise<SyncScheduleStatus> {
     const installations: SyncInstallationStatus[] = this.database
       .prepare(`select i.id, c.connection_name,
         case when c.id is null then 'missing' when c.revision is not i.credential_revision then 'changed' else 'connected' end as connection_status,
@@ -285,11 +306,11 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
         coalesce(d.delivered, 0) as delivered_count, coalesce(d.pending, 0) as pending_count
         from sync_installations i left join connections c on c.id = i.connection_id
         left join (
-          select ch.installation_id, sum(o.state = 'delivered') as delivered, sum(o.state != 'delivered') as pending
+          select ch.installation_id, sum(o.state = 'delivered') as delivered, sum(o.state in ('pending', 'leased')) as pending
           from sync_changes ch join sync_outbox o on o.change_sequence = ch.sequence
           join sync_receivers r on r.id = o.sink_id group by ch.installation_id
-        ) d on d.installation_id = i.id order by i.created_at, i.id`)
-      .all()
+        ) d on d.installation_id = i.id where i.removed_at is null and (? is null or i.id = ?) order by i.created_at, i.id`)
+      .all(installationId ?? null, installationId ?? null)
       .map((row) => ({
         ...this.readers.installation(readString(row, "id"))!,
         connectionName: row.connection_name === null ? undefined : readString(row, "connection_name"),
@@ -300,8 +321,10 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
         pendingCount: Number(row.pending_count),
       }));
     const runs = this.database
-      .prepare("select id from sync_runs order by started_at desc, id desc limit 100")
-      .all()
+      .prepare(
+        "select r.id from sync_runs r where not exists(select 1 from sync_installations i where i.id = r.installation_id and i.removed_at is not null) and (? is null or r.installation_id = ?) order by r.started_at desc, r.id desc limit 100",
+      )
+      .all(installationId ?? null, installationId ?? null)
       .map((row) => this.readers.run(readString(row, "id"))!);
     const bindingErrors: SyncBindingCandidateError[] = this.database
       .prepare(

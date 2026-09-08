@@ -50,6 +50,19 @@ Set `OOMOL_CONNECT_SYNC_ENABLED=0` to use only the manual endpoints, including w
 
 `GET /api/sync/status` returns installations, the latest 100 runs, binding errors and receiver backlog. `PATCH /api/sync/installations/:id` accepts `{"enabled":false}` to stop an installation, or `{"enabled":true,"scheduleSeconds":900}` to resume/configure it. Intervals range from one minute to one day. Receiver delivery remains independent of acquisition enablement.
 
+The dashboard's **Syncs** table links to individual sync pages with polling controls, counts and recent iterations. Each iteration reports polling and delivery separately: committed pages from a failed poll can still be delivered. Delivery counts track records queued by that iteration, including targeted backfills. Existing outbox entries are attributed to their original change's run during migration; old targeted backfills cannot be distinguished retrospectively.
+
+The authenticated administration API also supports:
+
+- `POST /api/sync/installations` with `definitionId`, optional `connectionName`, `config`, `scheduleSeconds`, and `enabled` (default `true`) to bind or restore a sync. Source configuration remains fixed after binding; editing the interval preserves its checkpoint.
+- `GET /api/sync/installations/:id/status` for that sync and its latest 100 iterations.
+- `POST /api/sync/installations/:id/run` to queue an immediate poll (202). This requires the scheduler to be running and resumes a paused sync.
+- `DELETE /api/sync/installations/:id` to stop and hide a sync. Records, history and checkpoints remain, queued deliveries continue, and automatic discovery does not restart it. Add the same source and definition again to restore it.
+- `PATCH /api/sync/receivers/:id` with optional `url`, `bearerToken` and `enabled`. Omitting the token preserves the saved secret. Pending deliveries use the updated settings.
+- `DELETE /api/sync/receivers/:id` to remove its saved token and cancel its pending deliveries while retaining delivery history. A request already in flight may still arrive. Removed destination IDs remain reserved; use a new ID when registering a replacement.
+
+The separate **Destinations** page exposes destination registration, editing and removal. Stopping a sync cancels its current poll and retains committed progress; resuming makes it due immediately. New destinations receive future changes; use the targeted backfill described above for existing records.
+
 Leases renew during acquisition. An expired worker is fenced and committed progress resumes after recovery. Interrupted authoritative snapshots are abandoned and require an explicit `backfill:true` run before further acquisition; they cannot infer deletions from an incomplete scan. A backward checkpoint reset is persisted atomically with its new run. Targeted receiver backfills also persist their target until completion, so scheduled continuation survives restart. Run shutdown aborts provider and delivery requests before closing storage; the server forces exit after ten seconds if work cannot stop, leaving leases for restart recovery.
 
 For a remote smoke test: use persistent SQLite storage, connect GitHub, start and expose the local receiver, register its public HTTPS endpoint, then use a targeted backfill if acquisition ran before registration. Watch `/api/sync/status` alongside the receiver's console output. The test suite exercises this path with the compiled GitHub definition, paginated provider fixtures and a real local HTTP receiver; live account authorization is a separate deployment step.

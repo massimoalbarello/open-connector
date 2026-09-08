@@ -1,4 +1,4 @@
-import type { ISyncDeliveryStore } from "./delivery-store.ts";
+import type { ISyncDeliveryStore, SyncRunDelivery } from "./delivery-store.ts";
 import type { ISyncScheduleStore } from "./schedule-store.ts";
 import type { ISyncSourceStore } from "./source-binding.ts";
 
@@ -15,6 +15,7 @@ export type SyncRunState = "cancelled" | "failed" | "lease_expired" | "running" 
 export type SyncChangeOperation = "added" | "deleted" | "updated";
 
 export interface SyncInstallation {
+  removedAt?: string;
   consecutiveFailures: number;
   lastError?: string;
   requiresBackfill: boolean;
@@ -57,6 +58,7 @@ export interface StartSyncRunInput {
 }
 
 export interface SyncRun {
+  delivery: SyncRunDelivery;
   id: string;
   installationId: string;
   definitionVersion: string;
@@ -253,6 +255,7 @@ export type SyncStoreErrorCode =
   | "credential_changed"
   | "checkpoint_conflict"
   | "installation_not_found"
+  | "receiver_not_found"
   | "invalid_input"
   | "lease_lost"
   | "cursor_expired"
