@@ -234,23 +234,20 @@ export class SyncRunner {
               throw new SyncStoreError("invalid_input", "Invalid or duplicate sync record identity.");
             identities.add(key);
           }
-          const normalized = records.map((item) => {
+          if (result.preview!.length + records.length > 100)
+            throw new SyncStoreError("invalid_input", "Dry-run preview exceeds 100 records; lower maxPages.");
+          for (const item of records) {
             const kind = definition.kinds.find((kind) => kind.kind === item.kind);
             if (!kind) throw new SyncStoreError("invalid_input", "Sync emitted an undeclared kind.");
             const value = normalizeSyncRecord(item.record, kind);
             if (Buffer.byteLength(value.content.json) > maximumRecordBytes)
               throw new SyncStoreError("invalid_input", "Record exceeds the 8 MiB delivery limit.");
-            return { kind: item.kind, value };
-          });
-          for (const record of normalized) {
-            if (result.preview!.length >= 100)
-              throw new SyncStoreError("invalid_input", "Dry-run preview exceeds 100 records; lower maxPages.");
             const preview: JsonObject = {
               provider: definition.provider,
               sourceId: "dry-run",
-              kind: record.kind,
-              id: record.value.id,
-              content: record.value.content.value,
+              kind: item.kind,
+              id: value.id,
+              content: value.content.value,
             };
             previewBytes += Buffer.byteLength(JSON.stringify(preview)) + 1;
             if (previewBytes > 16 * 1024 * 1024)
