@@ -6,7 +6,6 @@ import { requiredResponseRecord, providerResponseError } from "../../providers/p
 import { SyncStoreError } from "../../sync/sync-store.ts";
 import { actorSelection, collectNodes, pageSelection } from "./graphql.ts";
 import { renderPullRequest } from "./render.ts";
-import { pullResponse, commentResponse, reviewResponse, commitResponse, threadResponse } from "./response-schemas.ts";
 
 const commentsSelection = `id body url createdAt updatedAt author { ${actorSelection} }`;
 const reviewsSelection = `id body url submittedAt state author { ${actorSelection} }`;
@@ -21,7 +20,10 @@ const hydrateQuery = `query SyncPullRequest($id: ID!) { node(id: $id) { ... on P
 } } }`;
 
 async function hydrate(context: SyncContext, id: string): Promise<SyncRecordInput> {
-  const pull = pullResponse.parse((await context.provider.graphql(hydrateQuery, { id })).node);
+  const pull = requiredResponseRecord(
+    (await context.provider.graphql(hydrateQuery, { id })).node,
+    "GitHub pull request",
+  );
   const comments = await collectNodes(context, id, "PullRequest", "comments", commentsSelection, pull.comments);
   const reviews = await collectNodes(context, id, "PullRequest", "reviews", reviewsSelection, pull.reviews);
   const commits = await collectNodes(context, id, "PullRequest", "commits", commitsSelection, pull.commits);
@@ -46,16 +48,11 @@ async function hydrate(context: SyncContext, id: string): Promise<SyncRecordInpu
   );
   if (latest.updatedAt !== pull.updatedAt || latest.headRefOid !== pull.headRefOid)
     throw providerResponseError("Pull request changed during hydration; retry the record.");
-  for (const thread of threads) {
-    threadResponse.parse(thread);
-    if (!Array.isArray(thread.comments)) throw providerResponseError("Missing review discussion.");
-    thread.comments = thread.comments.map((value) => commentResponse.parse(value));
-  }
   return renderPullRequest({
     pull,
-    comments: comments.map((value) => commentResponse.parse(value)),
-    reviews: reviews.map((value) => reviewResponse.parse(value)),
-    commits: commits.map((value) => commitResponse.parse(value)),
+    comments,
+    reviews,
+    commits,
     threads,
   });
 }

@@ -14,8 +14,8 @@ export type SyncRunState = "cancelled" | "failed" | "lease_expired" | "running" 
 export type SyncChangeOperation = "added" | "deleted" | "updated";
 
 export interface SyncInstallation {
-  sourceId?: string;
-  credentialRevision?: string;
+  sourceId: string;
+  credentialRevision: string;
   bindingRevision: number;
   id: string;
   definitionId: string;
@@ -151,7 +151,7 @@ export interface SyncSnapshot {
 }
 
 export interface SyncRecord {
-  sourceId?: string;
+  sourceId: string;
   provider: string;
   installationId: string;
   kind: string;
@@ -169,7 +169,7 @@ export interface SyncRecord {
 }
 
 export interface SyncChange {
-  sourceId?: string;
+  sourceId: string;
   sequence: number;
   eventId: string;
   installationId: string;

@@ -91,8 +91,6 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
         connections,
         connectionStore: options.runtimeDatabase.connectionStore,
         registrations: syncRegistrations,
-        catalog: options.catalog,
-        loader: options.providerLoader,
       })
     : undefined;
   const syncDelivery = options.syncStore ? new SyncDeliveryWorker({ store: options.syncStore.delivery }) : undefined;

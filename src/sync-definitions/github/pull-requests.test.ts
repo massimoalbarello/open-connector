@@ -98,7 +98,7 @@ function fixture() {
     throw new Error("Unexpected query");
   });
   const context: SyncContext = {
-    provider: { graphql, get: async () => null, action: async () => null },
+    provider: { graphql },
     checkpoint: githubPullRequests.initialCheckpoint,
     config: { scope: "authored" },
     sourceId: "source",

@@ -1,6 +1,4 @@
-import type { CatalogStore } from "../catalog-store.ts";
 import type { ConnectionService, IConnectionStore } from "../connection-service.ts";
-import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { SyncRegistration } from "./sync-definition.ts";
 import type { ISyncStore, JsonObject, JsonValue, SyncRun } from "./sync-store.ts";
 
@@ -18,8 +16,6 @@ export interface SyncRunnerOptions {
   connections: ConnectionService;
   connectionStore: IConnectionStore;
   registrations: readonly SyncRegistration[];
-  catalog: CatalogStore;
-  loader: IProviderLoader;
 }
 
 export interface RunSyncInput {
@@ -174,8 +170,6 @@ export class SyncRunner {
         connections: connectionStore,
         definition,
         signal,
-        catalog: this.options.catalog,
-        loader: this.options.loader,
       });
       for await (const page of runtime.run({
         provider,
