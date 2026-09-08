@@ -163,6 +163,7 @@ export class SyncRunner {
       records: 0,
       preview: input.dryRun ? [] : undefined,
     };
+    let previewBytes = 2;
     try {
       const runtime = await registration.load();
       const provider = createSyncProvider({
@@ -184,29 +185,6 @@ export class SyncRunner {
         const records = page.records ?? [];
         if (typeof page.complete !== "boolean" || records.length + (page.deletes?.length ?? 0) > 1000)
           throw new SyncStoreError("invalid_input", "Invalid or oversized sync page.");
-        const identities = new Set<string>();
-        for (const item of [
-          ...records.map((item) => ({ kind: item.kind, id: item.record.id })),
-          ...(page.deletes ?? []),
-        ]) {
-          const key = JSON.stringify([item.kind, item.id]);
-          if (
-            !definition.kinds.some((kind) => kind.kind === item.kind) ||
-            typeof item.id !== "string" ||
-            !item.id.trim() ||
-            identities.has(key)
-          )
-            throw new SyncStoreError("invalid_input", "Invalid or duplicate sync record identity.");
-          identities.add(key);
-        }
-        const normalized = records.map((item) => {
-          const kind = definition.kinds.find((kind) => kind.kind === item.kind);
-          if (!kind) throw new SyncStoreError("invalid_input", "Sync emitted an undeclared kind.");
-          const value = normalizeSyncRecord(item.record, kind);
-          if (Buffer.byteLength(value.content.json) > maximumRecordBytes)
-            throw new SyncStoreError("invalid_input", "Record exceeds the 8 MiB delivery limit.");
-          return { kind: item.kind, value };
-        });
         if (installation) {
           await heartbeatWork;
           signal.throwIfAborted();
@@ -223,20 +201,47 @@ export class SyncRunner {
           });
           checkpointRevision = committed.checkpoint.revision;
         } else {
+          const identities = new Set<string>();
+          for (const item of [
+            ...records.map((item) => ({ kind: item.kind, id: item.record.id })),
+            ...(page.deletes ?? []),
+          ]) {
+            const key = JSON.stringify([item.kind, item.id]);
+            if (
+              !definition.kinds.some((kind) => kind.kind === item.kind) ||
+              typeof item.id !== "string" ||
+              !item.id.trim() ||
+              identities.has(key)
+            )
+              throw new SyncStoreError("invalid_input", "Invalid or duplicate sync record identity.");
+            identities.add(key);
+          }
+          const normalized = records.map((item) => {
+            const kind = definition.kinds.find((kind) => kind.kind === item.kind);
+            if (!kind) throw new SyncStoreError("invalid_input", "Sync emitted an undeclared kind.");
+            const value = normalizeSyncRecord(item.record, kind);
+            if (Buffer.byteLength(value.content.json) > maximumRecordBytes)
+              throw new SyncStoreError("invalid_input", "Record exceeds the 8 MiB delivery limit.");
+            return { kind: item.kind, value };
+          });
           for (const record of normalized) {
             if (result.preview!.length >= 100)
               throw new SyncStoreError("invalid_input", "Dry-run preview exceeds 100 records; lower maxPages.");
-            result.preview!.push({
+            const preview: JsonObject = {
               provider: definition.provider,
               sourceId: "dry-run",
               kind: record.kind,
               id: record.value.id,
               content: record.value.content.value,
-            });
+            };
+            previewBytes += Buffer.byteLength(JSON.stringify(preview)) + 1;
+            if (previewBytes > 16 * 1024 * 1024)
+              throw new SyncStoreError("invalid_input", "Dry-run preview exceeds 16 MiB; lower maxPages.");
+            result.preview!.push(preview);
           }
         }
         result.pages++;
-        result.records += normalized.length;
+        result.records += records.length;
         result.complete = page.complete;
         if (page.complete || result.pages >= maxPages) break;
       }

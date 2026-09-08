@@ -107,6 +107,24 @@ describe("compiled sync runner", () => {
     expect(result.installationId).toBeUndefined();
   });
 
+  it("bounds dry-run preview bytes across pages without persisting progress", async () => {
+    const { database, runner } = await setup({
+      async *run() {
+        for (let cursor = 1; cursor <= 3; cursor++)
+          yield {
+            records: [{ kind: "test", record: { id: String(cursor), body: "x".repeat(6 * 1024 * 1024) } }],
+            checkpoint: { cursor },
+            complete: cursor === 3,
+          };
+      },
+    });
+    await expect(runner.run({ definitionId: definition.id, dryRun: true, maxPages: 3 })).rejects.toThrow(
+      "preview exceeds 16 MiB",
+    );
+    expect(database.syncStore.sources.getBindingRevision()).toBe(0);
+    expect((await database.syncStore.listChanges()).items).toEqual([]);
+  });
+
   it("does not commit partial pages or invalid progress after required hydration fails", async () => {
     const { database, runner } = await setup({
       async *run() {
