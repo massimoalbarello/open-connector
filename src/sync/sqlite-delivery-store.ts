@@ -73,7 +73,8 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
       .prepare(`select r.id, r.url, s.enabled,
       (select count(*) from sync_outbox where sink_id = r.id and state != 'delivered') as pending,
       (select count(*) from sync_outbox where sink_id = r.id and state = 'delivered') as delivered,
-      b.last_error, b.next_attempt_at from sync_receivers r join sync_sinks s on s.id = r.id
+      (select max(delivered_at) from sync_delivery_batches where sink_id = r.id) as last_delivered_at,
+      b.last_error, b.next_attempt_at, b.attempt_count from sync_receivers r join sync_sinks s on s.id = r.id
       left join sync_delivery_batches b on b.sink_id = r.id and b.state != 'delivered' order by r.id`)
       .all()
       .map((row) => ({
@@ -82,6 +83,8 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
         enabled: row.enabled === 1,
         pendingRecords: Number(row.pending),
         deliveredRecords: Number(row.delivered),
+        lastDeliveredAt: row.last_delivered_at === null ? undefined : String(row.last_delivered_at),
+        attemptCount: Number(row.attempt_count ?? 0),
         lastError: row.last_error === null ? undefined : String(row.last_error),
         nextAttemptAt: row.next_attempt_at === null ? undefined : String(row.next_attempt_at),
       }));

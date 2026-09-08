@@ -31,6 +31,7 @@
     "fr": "Français"
   },
   "nav": {
+    "syncs": "Syncs",
     "overview": "Overview",
     "providers": "Providers",
     "marketplace": "Marketplace",
@@ -54,6 +55,7 @@
       "dark": "Dark"
     },
     "headings": {
+      "syncs": { "title": "Syncs" },
       "overview": {
         "title": "Overview"
       },
@@ -597,6 +599,94 @@
     "openapi": {
       "title": "OpenAPI JSON",
       "description": "Use the generated spec from scripts or tool importers."
+    }
+  },
+  "syncs": {
+    "description": "Monitor source polling and record delivery to your webhook destinations.",
+    "updated": "Updated",
+    "autoRefresh": "Refreshes every 10 seconds",
+    "loadFailed": "Could not load sync status.",
+    "stale": "Showing the last successful refresh.",
+    "unavailableTitle": "Sync monitoring is unavailable",
+    "unavailableDescription": "This server does not expose the sync API. Use a Node deployment with SQLite and sync support.",
+    "loading": "Loading sync status…",
+    "schedulerStopped": "Automatic polling and delivery are stopped on this server. Saved schedules and queued deliveries will resume when the scheduler starts.",
+    "syncedRecords": "Synced records",
+    "uniqueRecords": "Current unique records",
+    "delivered": "Delivered",
+    "acknowledged": "Record deliveries acknowledged",
+    "pending": "Pending",
+    "awaitingAck": "Record deliveries awaiting acknowledgement",
+    "destinations": "Destinations",
+    "enabledCount": "{{count}} enabled",
+    "polling": "Source syncs",
+    "acquisitionIdle": "Polling idle",
+    "noSyncsTitle": "No syncs yet",
+    "noSyncsDescription": "Connect a supported account in Providers. The scheduler creates a sync after verifying the source.",
+    "sync": "Sync",
+    "status": "Status",
+    "lastIteration": "Last iteration",
+    "nextPoll": "Next poll",
+    "records": "Records",
+    "never": "Never",
+    "lastSuccess": "Last successful iteration",
+    "interval": "Polling interval",
+    "everySeconds": "Every {{count}} seconds",
+    "failures": "Consecutive failures",
+    "sourceId": "Source ID",
+    "backfillRequired": "A previous backfill was interrupted. An explicit backfill is required before polling can resume.",
+    "countsHint": "Records count unique, non-deleted records. Delivered and pending count record changes per destination, including updates and deletions; one record can have multiple deliveries.",
+    "bindingErrors": "Source verification errors",
+    "nextAttempt": "Next delivery / retry",
+    "stopped": "Scheduler stopped",
+    "webhookDestinations": "Webhook destinations",
+    "allSources": "Subscribed to all sources",
+    "noDestinationsTitle": "No webhook destinations registered",
+    "noDestinationsDescription": "Register a receiver through the sync API to deliver new changes. To send existing records to a new destination, run a targeted backfill.",
+    "notScheduled": "Not scheduled",
+    "afterCurrent": "After current iteration",
+    "due": "Due · waiting for worker",
+    "lastDelivery": "Last acknowledgement",
+    "queued": "Queued",
+    "attempts": "{{count}} attempts on current batch",
+    "recentIterations": "Recent iterations",
+    "historyLimit": "Latest 100 across all syncs",
+    "noRunsTitle": "No iterations yet",
+    "noRunsDescription": "Polling attempts and their results will appear here.",
+    "iteration": "Iteration",
+    "started": "Started",
+    "duration": "Duration",
+    "processed": "Processed",
+    "changes": "Changes",
+    "error": "Error",
+    "seconds": "{{count}} s",
+    "pages": "{{count}} pages",
+    "states": {
+      "running": "Running",
+      "paused": "Paused",
+      "disconnected": "Disconnected",
+      "verifying": "Verifying source",
+      "needsAttention": "Needs attention",
+      "retrying": "Retrying",
+      "scheduled": "Scheduled",
+      "waiting": "Waiting",
+      "cancelled": "Cancelled",
+      "failed": "Failed",
+      "lease_expired": "Interrupted",
+      "succeeded": "Succeeded",
+      "enabled": "Enabled"
+    },
+    "connection": {
+      "missing": "The source connection was removed. Reconnect the account to resume polling.",
+      "changed": "The credential changed. Polling will resume after the source is verified again."
+    },
+    "reasons": {
+      "backfill": "Backfill",
+      "manual": "Manual",
+      "reconcile": "Reconcile",
+      "retry": "Retry",
+      "schedule": "Scheduled",
+      "webhook": "Webhook"
     }
   }
 }

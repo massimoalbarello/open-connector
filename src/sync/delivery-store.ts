@@ -15,6 +15,8 @@ export interface SyncReceiverStatus {
   enabled: boolean;
   pendingRecords: number;
   deliveredRecords: number;
+  lastDeliveredAt?: string;
+  attemptCount: number;
   lastError?: string;
   nextAttemptAt?: string;
 }

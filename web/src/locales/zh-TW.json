@@ -31,6 +31,7 @@
     "fr": "Français"
   },
   "nav": {
+    "syncs": "同步",
     "overview": "總覽",
     "providers": "服務提供者",
     "marketplace": "Marketplace",
@@ -54,6 +55,7 @@
       "dark": "深色"
     },
     "headings": {
+      "syncs": { "title": "同步" },
       "overview": {
         "title": "總覽"
       },
@@ -580,6 +582,94 @@
     "openapi": {
       "title": "OpenAPI JSON",
       "description": "在指令碼或工具匯入器中使用產生的規格。"
+    }
+  },
+  "syncs": {
+    "description": "監控資料來源輪詢和向 Webhook 目的地的記錄傳送。",
+    "updated": "更新於",
+    "autoRefresh": "每 10 秒重新整理",
+    "loadFailed": "無法載入同步狀態。",
+    "stale": "目前顯示上次成功重新整理的資料。",
+    "unavailableTitle": "同步監控無法使用",
+    "unavailableDescription": "此伺服器未提供同步 API。請使用支援 SQLite 和同步功能的 Node 部署。",
+    "loading": "正在載入同步狀態…",
+    "schedulerStopped": "此伺服器已停止自動輪詢和傳送。排程器啟動後將恢復已儲存的排程和待傳送佇列。",
+    "syncedRecords": "已同步記錄",
+    "uniqueRecords": "目前不重複記錄數",
+    "delivered": "已傳送",
+    "acknowledged": "已確認接收的記錄傳送數",
+    "pending": "待傳送",
+    "awaitingAck": "等待接收確認的記錄傳送數",
+    "destinations": "傳送目的地",
+    "enabledCount": "{{count}} 個已啟用",
+    "polling": "資料來源同步",
+    "acquisitionIdle": "輪詢閒置",
+    "noSyncsTitle": "尚無同步",
+    "noSyncsDescription": "在「服務提供者」中連接支援的帳號。排程器驗證資料來源後會建立同步。",
+    "sync": "同步",
+    "status": "狀態",
+    "lastIteration": "最近一次迭代",
+    "nextPoll": "下次輪詢",
+    "records": "記錄",
+    "never": "尚未執行",
+    "lastSuccess": "最近成功的迭代",
+    "interval": "輪詢間隔",
+    "everySeconds": "每 {{count}} 秒",
+    "failures": "連續失敗次數",
+    "sourceId": "資料來源 ID",
+    "backfillRequired": "先前的歷史回填已中斷。恢復輪詢前需要明確執行回填。",
+    "countsHint": "記錄數統計未刪除的不重複記錄。已傳送和待傳送統計各目的地的記錄變更，包括更新和刪除；一筆記錄可能有多次傳送。",
+    "bindingErrors": "資料來源驗證錯誤",
+    "nextAttempt": "下次傳送或重試",
+    "stopped": "排程器已停止",
+    "webhookDestinations": "Webhook 傳送目的地",
+    "allSources": "訂閱所有資料來源",
+    "noDestinationsTitle": "尚未註冊 Webhook 目的地",
+    "noDestinationsDescription": "透過同步 API 註冊接收端以傳送新變更。若要將既有記錄傳送到新目的地，請執行指定目的地的歷史回填。",
+    "notScheduled": "未排程",
+    "afterCurrent": "目前迭代結束後",
+    "due": "已到期 · 等待執行器",
+    "lastDelivery": "最近接收確認",
+    "queued": "已排入佇列",
+    "attempts": "目前批次已嘗試 {{count}} 次",
+    "recentIterations": "最近的迭代",
+    "historyLimit": "所有同步中最近的 100 次",
+    "noRunsTitle": "尚無迭代",
+    "noRunsDescription": "輪詢嘗試及其結果將顯示在這裡。",
+    "iteration": "迭代",
+    "started": "開始時間",
+    "duration": "耗時",
+    "processed": "已處理",
+    "changes": "變更",
+    "error": "錯誤",
+    "seconds": "{{count}} 秒",
+    "pages": "{{count}} 頁",
+    "states": {
+      "running": "執行中",
+      "paused": "已暫停",
+      "disconnected": "已中斷連線",
+      "verifying": "正在驗證資料來源",
+      "needsAttention": "需要處理",
+      "retrying": "重試中",
+      "scheduled": "已排程",
+      "waiting": "等待中",
+      "cancelled": "已取消",
+      "failed": "失敗",
+      "lease_expired": "已中斷",
+      "succeeded": "成功",
+      "enabled": "已啟用"
+    },
+    "connection": {
+      "missing": "資料來源連線已移除。重新連接帳號以恢復輪詢。",
+      "changed": "憑證已變更。重新驗證資料來源後將恢復輪詢。"
+    },
+    "reasons": {
+      "backfill": "歷史回填",
+      "manual": "手動",
+      "reconcile": "核對",
+      "retry": "重試",
+      "schedule": "定時",
+      "webhook": "Webhook"
     }
   }
 }

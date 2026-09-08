@@ -6,6 +6,7 @@ import type {
   SyncBindingCandidateError,
   SyncScheduleResult,
   SyncScheduleStatus,
+  SyncInstallationStatus,
 } from "./schedule-store.ts";
 import type { SyncDefinition } from "./sync-definition.ts";
 import type { JsonObject, SyncInstallation, SyncRun } from "./sync-store.ts";
@@ -230,10 +231,28 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
   }
 
   async status(): Promise<SyncScheduleStatus> {
-    const installations = this.database
-      .prepare("select id from sync_installations order by created_at, id")
+    const installations: SyncInstallationStatus[] = this.database
+      .prepare(`select i.id, c.connection_name,
+        case when c.id is null then 'missing' when c.revision is not i.credential_revision then 'changed' else 'connected' end as connection_status,
+        (select id from sync_runs where installation_id = i.id order by started_at desc, id desc limit 1) as latest_run_id,
+        (select count(*) from sync_records where installation_id = i.id and deleted_at is null) as record_count,
+        coalesce(d.delivered, 0) as delivered_count, coalesce(d.pending, 0) as pending_count
+        from sync_installations i left join connections c on c.id = i.connection_id
+        left join (
+          select ch.installation_id, sum(o.state = 'delivered') as delivered, sum(o.state != 'delivered') as pending
+          from sync_changes ch join sync_outbox o on o.change_sequence = ch.sequence
+          join sync_receivers r on r.id = o.sink_id group by ch.installation_id
+        ) d on d.installation_id = i.id order by i.created_at, i.id`)
       .all()
-      .map((row) => this.readers.installation(readString(row, "id"))!);
+      .map((row) => ({
+        ...this.readers.installation(readString(row, "id"))!,
+        connectionName: row.connection_name === null ? undefined : readString(row, "connection_name"),
+        connectionStatus: readString(row, "connection_status") as SyncInstallationStatus["connectionStatus"],
+        latestRun: row.latest_run_id === null ? undefined : this.readers.run(readString(row, "latest_run_id")),
+        recordCount: Number(row.record_count),
+        deliveredCount: Number(row.delivered_count),
+        pendingCount: Number(row.pending_count),
+      }));
     const runs = this.database
       .prepare("select id from sync_runs order by started_at desc, id desc limit 100")
       .all()

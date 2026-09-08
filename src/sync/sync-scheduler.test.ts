@@ -304,8 +304,23 @@ describe("embedded sync scheduler", () => {
     const run = await f.runner.run({ definitionId: definition.id });
     const app = new Hono();
     app.use("/api/*", createLocalAuthMiddleware({ adminToken: "admin" }));
-    registerSyncRoutes(app, f.runner, f.database.syncStore, f.delivery);
+    registerSyncRoutes(app, f.runner, f.database.syncStore, f.delivery, f.scheduler);
     expect((await app.request("/api/sync/status")).status).toBe(401);
+    const status = await app.request("/api/sync/status", { headers: { authorization: "Bearer admin" } });
+    expect(await status.json()).toMatchObject({
+      schedulerRunning: false,
+      installations: [
+        {
+          id: run.installationId,
+          recordCount: 2,
+          deliveredCount: 0,
+          pendingCount: 0,
+          latestRun: { state: "succeeded" },
+        },
+      ],
+    });
+    f.scheduler.start();
+    expect(f.scheduler.running).toBe(true);
     const disabled = await app.request(`/api/sync/installations/${run.installationId}`, {
       method: "PATCH",
       headers: { authorization: "Bearer admin", "content-type": "application/json" },
@@ -313,6 +328,7 @@ describe("embedded sync scheduler", () => {
     });
     expect(disabled.status).toBe(200);
     await f.restart();
+    expect(f.scheduler.running).toBe(false);
     f.scheduler.tick();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(f.state.visits).toBe(1);

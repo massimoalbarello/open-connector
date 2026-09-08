@@ -24,6 +24,10 @@ export class SyncScheduler {
     this.options = options;
   }
 
+  get running(): boolean {
+    return this.timer !== undefined && !this.stopped;
+  }
+
   start(): void {
     if (this.timer || this.stopped) return;
     this.timer = setInterval(() => this.tick(), 1000);

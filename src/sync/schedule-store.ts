@@ -9,9 +9,19 @@ export interface SyncBindingCandidate {
   definitionId: string;
 }
 export interface SyncScheduleStatus {
-  installations: SyncInstallation[];
+  installations: SyncInstallationStatus[];
   runs: SyncRun[];
   bindingErrors: SyncBindingCandidateError[];
+}
+export interface SyncInstallationStatus extends SyncInstallation {
+  connectionName?: string;
+  connectionStatus: "connected" | "missing" | "changed";
+  latestRun?: SyncRun;
+  /** Distinct current records, including those whose acknowledged payload was purged. */
+  recordCount: number;
+  /** Record changes per webhook destination; updates and fan-out count separately. */
+  deliveredCount: number;
+  pendingCount: number;
 }
 export interface SyncBindingCandidateError extends SyncBindingCandidate {
   errorCode: string;
