@@ -35,6 +35,13 @@ export interface SyncScheduleResult {
   errorCode?: string;
   now: string;
 }
+export interface FailedSyncPollInput {
+  /** The scheduled binding and due time observed before attempting acquisition. */
+  installation: SyncInstallation;
+  startedAt: string;
+  completedAt: string;
+  errorCode: string;
+}
 export interface ConfigureSyncScheduleInput {
   installationId: string;
   enabled: boolean;
@@ -51,6 +58,8 @@ export interface ISyncScheduleStore {
   bindingSucceeded(candidate: SyncBindingCandidate): void;
   due(now: string): ScheduledSyncInstallation | undefined;
   complete(input: SyncScheduleResult): void;
+  /** Persist an attempt that failed before startRun, together with its retry backoff. */
+  failBeforeRun(input: FailedSyncPollInput): void;
   recover(now: string): number;
   configure(input: ConfigureSyncScheduleInput): void;
   status(): Promise<SyncScheduleStatus>;

@@ -114,6 +114,31 @@ describe("sync monitoring", () => {
     expect(html).toContain("targeted backfill");
   });
 
+  it("shows failed iterations and their errors alongside successful iterations", () => {
+    const html = render({
+      ...status,
+      runs: [
+        {
+          ...installation.latestRun!,
+          id: "failed-poll",
+          state: "failed",
+          pageCount: 0,
+          upsertCount: 0,
+          changeCount: 0,
+          errorCode: "acquisition_failed",
+          errorMessage: "Polling failed before acquisition started; committed progress is retained.",
+        },
+        installation.latestRun!,
+      ],
+    });
+    expect(html).toContain("failed-poll");
+    expect(html).toContain("Failed");
+    expect(html).toContain("acquisition_failed");
+    expect(html).toContain("Polling failed before acquisition started; committed progress is retained.");
+    expect(html).toContain("run-1");
+    expect(html).toContain("Succeeded");
+  });
+
   it("does not promise scheduled polling or delivery when disabled or stopped", () => {
     const html = render({ ...status, schedulerRunning: false });
     expect(html).toContain("Automatic polling and delivery are stopped");

@@ -101,19 +101,12 @@ export class SyncScheduler {
         reason: "schedule",
       });
     } catch (error) {
-      // Failures before startRun still need durable backoff. Later failures already update the source.
-      const current = await store.getInstallation(installation.id);
-      if (
-        current?.nextDueAt === installation.nextDueAt &&
-        (!(error instanceof SyncStoreError) || error.code !== "run_busy")
-      )
-        store.schedule.complete({
-          installationId: installation.id,
-          bindingRevision: installation.bindingRevision,
-          succeeded: false,
-          complete: false,
+      if (!(error instanceof SyncStoreError) || error.code !== "run_busy")
+        store.schedule.failBeforeRun({
+          installation,
+          startedAt: now,
+          completedAt: new Date().toISOString(),
           errorCode: error instanceof SyncStoreError ? error.code : "acquisition_failed",
-          now: new Date().toISOString(),
         });
     }
   }
