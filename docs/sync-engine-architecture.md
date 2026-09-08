@@ -1,15 +1,19 @@
 # Sync Engine Architecture
 
-Status: proposed design for the first sync-engine implementation.
+Status: target design, updated after the storage-only PR3 implementation. PR3 currently stores full
+latest records and change payloads, JSON-validates inputs, and provides atomic store operations.
+The executable definition SDK, declared-record schema enforcement, scheduler/recovery loops,
+subscriber registration/dispatch, stable-source rebinding, and payload cleanup are future work.
 
 This document defines a small, durable data-sync subsystem for the self-hosted OpenConnector
 runtime. It is deliberately narrower than a general workflow platform: trusted sync definitions
 compiled into the executable acquire provider data, SQLite records progress and changes, and generic
 sinks deliver those changes to consumers.
 
-The design is informed by the public behavior of Nango Syncs, DBOS durable schedules and queues, and
-Activepieces polling triggers. It is an independent OpenConnector design and does not reuse their
-source code.
+The design is informed by Nango Syncs, DBOS durable schedules and queues, and Activepieces polling
+triggers. The [Nango source audit](nango-sync-internals.md) records the inspected internals and
+deliberate differences. This is an independent implementation, not a reuse of their source code.
+Future provider-specific definitions follow [the authoring guidelines](../src/sync-definitions/AGENTS.md).
 
 ## Scope and non-goals
 
@@ -19,16 +23,16 @@ sync concurrency of one. It must support:
 - initial backfills followed by incremental acquisition;
 - persisted schedules, runs, retries, leases, and crash recovery;
 - provider checkpoints that advance with record writes;
-- a latest-record cache with added, updated, and deleted change events;
+- compact record metadata with temporary payloads for added, updated, and deleted delivery events;
 - explicit deletes and safe snapshot-based deletion detection;
 - provider webhooks followed by periodic polling reconciliation;
-- at-least-once push delivery and a cursor-based pull feed;
+- at-least-once push delivery, with a cursor-based pull transport deferred;
 - trusted, provider-specific sync definitions compiled into the executable; and
 - authenticated provider REST, GraphQL, and existing OpenConnector Action calls without exposing
   credentials to a sync function.
 
-The first release will not be a general workflow engine, a multi-node scheduler, or a user-code
-sandbox. It will not load arbitrary JavaScript, depend on a worker service, replace whole tables on
+The first release will not be a permanent content archive, attachment service, general workflow
+engine, multi-node scheduler, or user-code sandbox. It will not load arbitrary JavaScript, depend on a worker service, replace whole tables on
 refresh, or introduce PostgreSQL, Redis, cron, or a sidecar. Two-way writes remain OpenConnector
 Actions rather than part of the sync kernel.
 
@@ -48,7 +52,8 @@ incomplete engine.
 4. **Provider progress and consumer progress are separate.** A provider checkpoint controls the next
    provider request. A consumer cursor controls the next cache change a consumer reads or receives.
 5. **Definitions receive capabilities, not secrets.** They can make authenticated provider calls,
-   but cannot inspect access tokens, refresh tokens, API keys, OAuth client secrets, or sink secrets.
+   but the context does not expose access tokens, refresh tokens, API keys, OAuth client secrets, or
+   sink secrets. Compiled definitions are trusted code; this API boundary is not a security sandbox.
 6. **Polling is the correctness path.** Webhooks reduce latency; periodic reconciliation repairs
    missed, duplicated, and out-of-order webhook events.
 7. **The external data contract is vendor-neutral.** The kernel does not know about Context Use or
@@ -64,7 +69,7 @@ incomplete engine.
 | Sync worker                 | Queue leasing, deadlines, cancellation, retries, and invocation of trusted definitions                                                    |
 | Provider capability adapter | Connection resolution, OAuth refresh, authenticated proxy requests, and Action execution                                                  |
 | SQLite sync store           | Atomic commits, schedule/run state, checkpoints, record cache, change sequence, snapshot marks, webhook receipts, and outbox state        |
-| Delivery engine             | Sink leasing, batching, signing, backoff, and acknowledgement after network delivery                                                      |
+| Delivery engine             | Sink leasing, batching, outbound authentication, backoff, and acknowledgement after network delivery                                      |
 | HTTP/API layer              | Authentication, request validation, and serialization of control, status, webhook, and change-feed routes                                 |
 
 Provider metadata continues to belong to provider definitions and the generated catalog. Sync
@@ -98,8 +103,10 @@ concrete modules. HTTP routes receive the control and query interfaces, not the 
 
 ## Trusted sync-definition API
 
-The API is generic over configuration, checkpoint, and declared output models. This is an
-illustrative contract, not a commitment to the exact TypeScript spelling:
+The API is generic over optional configuration, checkpoint, and declared output kinds (called
+models by the current storage API). All output records share the Markdown-first record contract;
+provider-specific schemas may declare compact attributes. This is an illustrative contract, not an
+implemented API or a commitment to the exact TypeScript spelling:
 
 ```ts
 defineSync({
@@ -108,17 +115,14 @@ defineSync({
   provider: "github",
   defaultSchedule: { everySeconds: 300 },
   requiredScopes: ["repo"],
-  configSchema: s.object({
-    owner: s.string(),
-    repository: s.string(),
-  }),
+  configSchema: s.object({}),
   checkpointSchema: s.object({
     updatedAt: s.string(),
     nodeId: s.string(),
     pageCursor: s.optional(s.string()),
   }),
   models: {
-    PullRequest: pullRequestSchema,
+    PullRequest: sharedRecordSchema,
   },
 
   async run(ctx) {
@@ -143,10 +147,11 @@ compiled registry. An installation selects exactly one definition version. Activ
 with an incompatible config, checkpoint, or model schema requires an explicit migration or a
 checkpoint reset; it must never reinterpret stored JSON optimistically.
 
-The model namespace is `(installation, model, record ID)`, not `(definition version, ...)`, so a
-compatible definition upgrade preserves change detection. A breaking model change either uses a
-new model name or declares a cache reset during upgrade. Resetting a checkpoint alone keeps the
-cache and therefore preserves added-versus-updated detection.
+The target record namespace is `(stable source namespace, kind, external record ID)`, not a
+credential handle or definition version. A separate synthetic internal record ID is optional. The framework
+preserves it across same-source reauthorization and compatible definition upgrades. A breaking
+identity/kind change requires an explicit migration. Resetting a checkpoint alone keeps record
+metadata and therefore preserves revisions and added-versus-updated detection.
 
 `SyncContext` exposes only:
 
@@ -188,9 +193,12 @@ ordering uses integer sequences or explicit tie-breakers rather than timestamp u
 - schedule interval, next due time, and last successful time; and
 - created and updated timestamps.
 
-The connection ID, rather than a mutable connection alias, binds an installation to credentials.
-Deleting or replacing that connection disables the installation and records a reason. Reconnecting
-does not silently attach old sync state to a different provider account.
+The installation is an internal source/definition binding, automatically created without a required
+configuration UI. The current store binds it to a connection ID. A future control service must
+separate stable source identity from that replaceable credential reference: verified same-account
+reauthorization preserves record identity and compatible progress; a different account receives a
+different namespace and checkpoint. Ambiguous rebinding requires explicit resolution. An alias or
+email match alone is not identity verification. Filters are optional future configuration.
 
 The initial schedule grammar is a positive fixed interval plus an optional deterministic jitter.
 It is adequate for one process and easy to persist. Cron expressions can be added later without
@@ -234,7 +242,8 @@ separate explicit feature.
 One in-process worker claims the oldest due job in a transaction, setting a random process owner, an
 incremented lease generation, and a short expiry. It heartbeats between provider pages. Every page
 commit compares the job ID, owner, generation, and unexpired lease, preventing a stale worker from
-committing after recovery has reassigned the job.
+committing after recovery has reassigned the job. The store reads the host clock after entering the
+transaction; a timestamp supplied by a caller is not authority for lease validity.
 
 On startup, expired leases become queued retry attempts. Non-expired leases are left alone until
 expiry, which handles overlap during a slow restart. Graceful shutdown stops new claims, aborts the
@@ -263,36 +272,50 @@ in OpenConnector's ordered change log and remain valid when provider checkpoint 
 
 ### Record identity, hashing, and revisions
 
-`sync_records` is the canonical latest-record cache. Its primary key is:
+PR3's `sync_records` table currently caches complete latest records with this primary key:
 
 ```text
 (installation_id, model, record_id)
 ```
 
-Each row stores the latest full JSON payload, a SHA-256 payload hash, a monotonically increasing
+Each current row stores the latest full JSON payload, a SHA-256 payload hash, a monotonically increasing
 record revision, first-seen and last-changed timestamps, deletion state, deletion timestamp, and the
 last completed snapshot that saw it.
 
-The definition must produce a non-empty stable provider identity for every record. Record IDs are
+The target lifecycle retains compact identity/hash/revision/tombstone metadata and only temporarily
+stores record content for delivery. It does not require a permanent latest-body cache. Mapping from
+the stable source namespace to the current installation-based key is future control/migration work,
+not an existing reconnection guarantee.
+
+The definition must produce a non-empty stable provider-native identity for every record. Record IDs are
 opaque strings; the kernel never infers identity from array order or hashes the whole payload as an
 ID. Models are definition-declared strings.
 
-Before hashing, the kernel validates the payload against its model schema and serializes JSON in a
-canonical form with recursively sorted object keys. Arrays retain order. Non-JSON values and
-`undefined` are rejected. Definitions should remove volatile fetch metadata that does not represent
-a meaningful provider change.
+Records have an `id` and a non-empty Markdown `body`, plus optional source URL/timestamps,
+participants with shared identities/roles, and schema-declared attributes. Provider, kind, and
+source namespace come from framework context. All meaningful textual facts belong in the body,
+even if also available as structured fields. Attachments are deferred, with no placeholder field.
+The authoring guidelines own the detailed content and timestamp rules.
+
+The target commit service validates/normalizes the shared record schema, then hashes canonical JSON
+of the meaningful content fields, including participants and attributes, not only the body. Routing,
+identity, and operational fields are separate. Object keys are recursively sorted; arrays retain
+order. Non-JSON values and `undefined` are rejected. PR3 performs JSON validation and canonical
+hashing today but does not enforce this future record schema.
 
 An upsert creates an `added` event when no row exists or the row is tombstoned. It creates an
 `updated` event only when the canonical payload hash differs. An identical active upsert merely
 updates snapshot-seen bookkeeping. A delete against an active row increments the revision, marks a
-tombstone, preserves the last-known payload, and emits `deleted`. Repeating the same delete is a
+tombstone and emits `deleted`. PR3 also preserves the last-known payload; future deletion delivery
+must work from identity/revision metadata alone after content purge. Repeating the same delete is a
 no-op. Resurrection is represented by a new `added` event with the next revision.
 
-`sync_changes` is append-only and has both a monotonically increasing SQLite integer sequence and a
-globally unique event ID. It stores the operation, complete payload (including the last-known
-payload for a tombstone), record revision, source identifiers, run ID, and occurrence timestamp.
-Keeping the payload in the change row makes replay deterministic even after the latest cache entry
-changes again.
+`sync_changes` currently stores immutable changes with an increasing SQLite integer sequence,
+globally unique event ID, complete payload, record revision, source identifiers, run ID, and time.
+Future delivery must retain each required revision's exact content until every intended subscriber
+acknowledges it. After that, payloads can be purged while compact metadata remains. Cleanup must
+never let an old acknowledgement release a newer pending payload. Historical replay after purge
+is not promised, and disabling/failing a subscriber does not acknowledge its pending deliveries.
 
 ## The atomic page-commit invariant
 
@@ -326,7 +349,8 @@ For providers that require a complete enumeration, the definition uses snapshot 
 
 1. `snapshot.start()` persists a unique snapshot ID, the model set, and a baseline change sequence.
 2. Each page commit marks every returned record with that snapshot ID. It does not delete unseen
-   records.
+   records. While a snapshot is active, page commits must explicitly include its ID, including
+   unchanged records whose seen markers need updating.
 3. The definition calls `snapshot.finish({ checkpoint })` only after every requested provider page
    succeeds.
 4. One final transaction tombstones active baseline records in the snapshot's models that were not
@@ -365,7 +389,8 @@ after the current page; forced cancellation falls back to lease expiry and check
 ## Generic delivery and change feed
 
 Provider acquisition and delivery are independent loops. A successful page commit is not delayed by
-a consumer outage.
+an individual HTTP delivery. Backlog limits and automatic pausing during prolonged outages are
+deferred; until then the pending content is retained rather than silently dropped.
 
 The kernel-facing sink contract is intentionally small:
 
@@ -376,34 +401,57 @@ interface SyncSink {
 }
 ```
 
-The first implementation is an HTTP sink. Sink configuration and HMAC secrets are stored through
-OpenConnector's secret codec. The delivery worker leases due `sync_outbox` rows in a short
-transaction, performs the HTTP request outside SQLite, then acknowledges or reschedules them in a
-second transaction. A stable batch ID is derived from the sink and ordered event IDs. Retries resend
-the same full events and batch ID.
+The first implementation is an HTTP sink. An authenticated receiver registers its destination and
+an API key for OpenConnector to use on outbound requests. The registration caller's OpenConnector
+credential and this receiver-issued key are separate. Store receiver keys through the configured
+secret codec, include them in secret rotation, and redact them from logs and read APIs. Initial
+delivery uses HTTPS with `Authorization: Bearer <receiver key>`; reject redirects so credentials
+cannot be forwarded to another destination. All destination validation uses shared guarded egress.
+
+No network operation runs in a SQLite transaction. The intended sequence is:
+
+1. Fetch provider data and assemble/normalize complete records outside SQLite.
+2. Transaction A: validate the run lease, persist records/events/outbox, and advance the checkpoint.
+3. Transaction B: claim due delivery work with a lease, then commit immediately.
+4. POST the retained records to the receiver outside SQLite.
+5. Transaction C: fence the delivery lease and record acknowledgement or the next retry. Release a
+   payload only when all intended subscribers have acknowledged that exact revision. A later cleanup
+   pass is also safe if it rechecks that invariant transactionally.
+
+A stable batch ID is derived from the sink and ordered event IDs. Persist batch membership for
+retries; new events must not change an in-flight batch. Retries resend the same full events and ID.
 
 The logical event contract contains:
 
 - protocol version and stable event ID;
 - opaque ordered cursor;
 - operation: `added`, `updated`, or `deleted`;
-- source provider, opaque connection ID, sync definition ID, and model;
-- record ID, revision, full payload, and deletion timestamp; and
+- source provider, stable source namespace, sync definition ID, and kind;
+- provider-native record ID, revision, complete record for an upsert, and deletion metadata; and
 - provider-observed time when available, plus engine commit time.
 
 The HTTP representation will be finalized with consumers separately. It must not use
-OpenConnector-, Nango-, or Context Use-specific metadata names. Requests include a timestamp, body
-digest, signature key ID, and HMAC signature. Consumers acknowledge only after durably applying the
-batch and deduplicate by event ID or batch ID. Non-2xx responses, timeouts, and 429s retain outbox
-rows for durable retry. Delivery is at least once; exactly-once effects are the consumer's
-idempotency responsibility.
+OpenConnector-, Nango-, or Context Use-specific metadata names. API-key authentication over HTTPS is
+the initial requirement; additional HMAC signatures are deferred unless a consumer requires them.
+Consumers acknowledge only after durably accepting
+the batch into an inbox or applying it, deduplicate event IDs, and reject stale record revisions.
+Time-consuming indexing can happen after acknowledgement if the input is durable. Retryable
+failures, timeouts, and 429s retain outbox rows for durable retry with backoff and Retry-After;
+permanent failures remain visible and do not imply acknowledgement. Delivery is at least once;
+exactly-once effects are the consumer's idempotency responsibility.
 
-The pull change feed reads `sync_changes` strictly after an opaque cursor and returns a bounded page
-plus the next cursor. A consumer stores its own cursor outside provider checkpoint state. Push sinks
-also track an acknowledged change sequence, so push can later fall back to pull replay without
-altering the cache. Retention may compact acknowledged change and outbox rows only after every
-configured durable consumer has advanced beyond them; the latest-record cache and tombstones have
-their own explicit retention policy.
+Push is the preferred first transport so a receiver need not implement a cursor-draining loop.
+Future pull consumers may read retained events after an opaque cursor, but must explicitly
+acknowledge durable consumption before content can be purged; returning a GET response is not an
+acknowledgement. A notification-only webhook cannot establish that records were consumed either.
+
+After all intended subscribers acknowledge a revision, purge its content rather than keeping a
+latest-body archive. Keep identity, hashes, revisions, and tombstones for future change detection.
+New subscriptions begin with future changes unless an explicit source backfill is requested.
+Bootstrap must enqueue fetched records for the new subscriber even when hashes match existing
+metadata; it must not reset record revisions or redeliver to unrelated subscribers. It reconstructs
+current source state, not exact historical payloads that were purged. A subscriber with pending
+deliveries must be acknowledged or explicitly cancelled before its retention obligation is removed.
 
 ## Provider webhooks
 
@@ -466,35 +514,29 @@ control routes while the vendor-neutral change-feed protocol is finalized.
 
 ## First vertical slice: GitHub pull requests
 
-The first complete definition is `github.pull-requests` and uses GitHub's provider-native GraphQL
-endpoint through `ctx.provider.request`. Configuration selects an owner and repository. The model
-contains a pull request plus normalized comments, reviews, and commits needed by generic consumers.
+The first complete definition is `github.pull-requests` and uses GitHub's provider-native APIs
+through `ctx.provider.request`. It discovers accessible repositories; optional filters can come
+later. Each record combines a pull request and relevant comments, reviews, and commits into a
+standalone Markdown body with compact shared metadata.
 
-The backfill walks pull requests in a deterministic order. Incremental runs use a compound
-`(updatedAt, node ID)` boundary with a small overlap and hydrate nested collections whose pagination
-is independent. Each page commits only after all nested data for its records is complete. Closed and
+The definition must verify the actual API's ordering, filters, and parent/child update behavior
+before choosing its incremental strategy. A compound timestamp/ID boundary and overlap can be used
+where supported; a parent timestamp is not automatically proof of complete child-change discovery.
+Hydrate nested collections with independent pagination. Each page commits only after all required
+nested data for its records is complete. Closed and
 merged pull requests remain normal upserts; deletion is emitted only from authoritative GitHub
 evidence or a successful reconciliation snapshot.
 
 The slice must demonstrate OAuth refresh, required-scope validation, GraphQL pagination, crash
 resume, rate-limit reset handling, update detection, comments/reviews/commits refresh, explicit or
-snapshot-safe deletion behavior, cursor replay, signed HTTP delivery, and reconciliation after a
+snapshot-safe deletion behavior, retained-event retry, API-key-authenticated delivery, and reconciliation after a
 webhook.
 
 ## Implementation sequence
 
-Each step should be reviewable and leave the existing connector runtime working:
-
-1. Add the SQLite sync store, migrations, model validation, canonical hashing, atomic page commits,
-   latest-record queries, and change-feed queries.
-2. Add durable installations, fixed-interval scheduling, queue leases, recovery, deadlines, retries,
-   and operational run queries with global concurrency one.
-3. Add the trusted definition contract, lazy compiled registry, and credential-free provider/Action
-   adapter.
-4. Add the sink abstraction, HTTP signing, durable outbox dispatcher, and cursor-based replay API.
-5. Add the GitHub pull-request vertical slice and end-to-end restart/rate-limit tests.
-6. Add verified provider webhook receipts and GitHub webhook hydration while retaining polling.
-7. Add further definitions one provider at a time.
+PR3 stays focused on SQLite record state, atomic page commits, lease checks, and regression coverage.
+The [follow-up PR roadmap](sync-engine-roadmap.md) owns sequencing, scope, and acceptance checks for
+the remaining work. Future record-schema validation is distinct from PR3's JSON validation.
 
 ## Required verification
 
@@ -520,7 +562,10 @@ run `npm run generate:catalog`.
 
 The following are intentionally deferred without weakening the kernel invariants:
 
-- the final HTTP delivery and pull-feed wire spelling;
+- the final HTTP delivery wire spelling and any later pull-feed transport;
+- attachment handling;
+- backlog caps and automatic acquisition-pause policy;
+- additional outbound HMAC signatures and public pull transport;
 - operator-configurable change, tombstone, webhook, and run-log retention periods;
 - cron schedules and multi-process concurrency;
 - consumer-managed dead-letter workflows;
