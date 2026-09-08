@@ -18,6 +18,7 @@ import { OAuthFlowService } from "../oauth/oauth-flow-service.ts";
 import { SyncDeliveryWorker } from "../sync/delivery-worker.ts";
 import { syncRegistrations } from "../sync/sync-registry.ts";
 import { SyncRunner } from "../sync/sync-runner.ts";
+import { SyncScheduler } from "../sync/sync-scheduler.ts";
 import { ActionRunner } from "./actions/action-runner.ts";
 import { ConnectServer } from "./connect-server.ts";
 import { RuntimeTokenService } from "./storage/runtime-token-service.ts";
@@ -47,6 +48,7 @@ export interface ConnectApp {
   runtimeAuthConfigured: boolean;
   syncRunner?: SyncRunner;
   syncDelivery?: SyncDeliveryWorker;
+  syncScheduler?: SyncScheduler;
 }
 
 export async function createConnectApp(options: ConnectAppOptions): Promise<ConnectApp> {
@@ -96,7 +98,17 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
       })
     : undefined;
   const syncDelivery = options.syncStore ? new SyncDeliveryWorker({ store: options.syncStore.delivery }) : undefined;
+  const syncScheduler =
+    options.syncStore && syncRunner && syncDelivery
+      ? new SyncScheduler({
+          store: options.syncStore,
+          runner: syncRunner,
+          delivery: syncDelivery,
+          onError: (code) => options.logger?.warn({ code }, "sync dispatcher failed"),
+        })
+      : undefined;
   return {
+    syncScheduler,
     syncDelivery,
     syncRunner,
     app: new ConnectServer({

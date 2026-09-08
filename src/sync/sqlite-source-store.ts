@@ -135,6 +135,11 @@ export class SqliteSyncSourceStore implements ISyncSourceStore {
       if (binding) {
         this.database
           .prepare(
+            "update sync_installations set requires_backfill = 1, state = 'needs_attention', last_error = 'snapshot_interrupted' where id = ? and exists(select 1 from sync_snapshots where installation_id = ? and state = 'active')",
+          )
+          .run(id, id);
+        this.database
+          .prepare(
             "update sync_installations set source_id = ?, connection_id = ?, credential_revision = ?, binding_revision = ?, state = case when source_id is null and state = 'needs_attention' then 'enabled' else state end, updated_at = ? where id = ?",
           )
           .run(sourceId, connection.id, connection.revision, revision, createdAt, id);

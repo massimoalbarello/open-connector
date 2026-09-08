@@ -14,12 +14,14 @@ export class SyncDeliveryWorker {
   private options: SyncDeliveryWorkerOptions;
   private pending?: Promise<boolean>;
   private controller?: AbortController;
+  private stopped = false;
 
   constructor(options: SyncDeliveryWorkerOptions) {
     this.options = options;
   }
 
   tick(): Promise<boolean> {
+    if (this.stopped) return Promise.resolve(false);
     if (this.pending) return this.pending;
     this.controller = new AbortController();
     const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(30_000)]);
@@ -31,6 +33,7 @@ export class SyncDeliveryWorker {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     this.controller?.abort();
     await this.pending?.catch(() => undefined);
   }

@@ -22,6 +22,7 @@ const hydrateQuery = `query SyncPullRequest($id: ID!) { node(id: $id) { ... on P
 
 async function hydrate(context: SyncContext, id: string): Promise<SyncRecordInput> {
   const pull = pullResponse.parse((await context.provider.graphql(hydrateQuery, { id })).node);
+  if (pull.id !== id) throw providerResponseError("GitHub returned a different pull request identity.");
   const comments = await collectNodes(context, id, "PullRequest", "comments", commentsSelection, pull.comments);
   const reviews = await collectNodes(context, id, "PullRequest", "reviews", reviewsSelection, pull.reviews);
   const commits = await collectNodes(context, id, "PullRequest", "commits", commitsSelection, pull.commits);
@@ -98,10 +99,22 @@ async function* discover(context: SyncContext): AsyncGenerator<SyncPage> {
         "GitHub repositories",
       );
       if (!Array.isArray(repositories.edges)) throw providerResponseError("Missing repository discovery page.");
+      const page = requiredResponseRecord(repositories.pageInfo, "GitHub repository pagination");
+      if (typeof page.hasNextPage !== "boolean" || (page.hasNextPage && !repositories.edges.length))
+        throw providerResponseError("Incomplete GitHub repository pagination.");
       if (!repositories.edges.length) break;
       const edge = requiredResponseRecord(repositories.edges[0], "GitHub repository edge");
-      checkpoint.repositoryId = String(requiredResponseRecord(edge.node, "GitHub repository").id);
-      checkpoint.repositoryCursor = String(edge.cursor);
+      const repository = requiredResponseRecord(edge.node, "GitHub repository");
+      if (
+        typeof repository.id !== "string" ||
+        !repository.id ||
+        typeof edge.cursor !== "string" ||
+        !edge.cursor ||
+        edge.cursor === checkpoint.repositoryCursor
+      )
+        throw providerResponseError("Invalid or repeated GitHub repository cursor.");
+      checkpoint.repositoryId = repository.id;
+      checkpoint.repositoryCursor = edge.cursor;
     }
     const collection = `pullRequests(first: 10, after: $after, orderBy: ${order}) { edges { cursor node { id updatedAt } } pageInfo { hasNextPage } }`;
     const query = accessible

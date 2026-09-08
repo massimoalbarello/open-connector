@@ -39,6 +39,7 @@ import { maximumRecordBytes } from "./delivery-store.ts";
 import { normalizeSyncRecord } from "./record-contract.ts";
 import { canonicalizeJsonValue } from "./record-hash.ts";
 import { SqliteSyncDeliveryStore } from "./sqlite-delivery-store.ts";
+import { SqliteSyncScheduleStore } from "./sqlite-schedule-store.ts";
 import { SqliteSyncSourceStore } from "./sqlite-source-store.ts";
 import { runSyncTransaction } from "./sqlite-sync-transaction.ts";
 import { SyncStoreError } from "./sync-store.ts";
@@ -108,6 +109,7 @@ export class SqliteSyncStore implements ISyncStore {
 
   readonly sources: SqliteSyncSourceStore;
   readonly delivery: SqliteSyncDeliveryStore;
+  readonly schedule: SqliteSyncScheduleStore;
   private readonly definitions: readonly SyncDefinitionContract[];
 
   constructor(
@@ -117,6 +119,10 @@ export class SqliteSyncStore implements ISyncStore {
   ) {
     this.delivery = new SqliteSyncDeliveryStore(database, codec);
     this.database = database;
+    this.schedule = new SqliteSyncScheduleStore(database, {
+      installation: (id) => this.readInstallation(id),
+      run: (id) => this.readRun(id),
+    });
     this.definitions = structuredClone(definitions);
     const ids = new Set<string>();
     for (const definition of this.definitions) {
@@ -168,15 +174,44 @@ export class SqliteSyncStore implements ISyncStore {
     if (leaseExpiresAt <= startedAt) {
       throw invalidInput("leaseExpiresAt must be later than startedAt.");
     }
+    if (Date.parse(leaseExpiresAt) <= Date.now()) throw invalidInput("leaseExpiresAt must be in the future.");
 
     runSyncTransaction(this.database, () => {
+      if (this.database.prepare("select 1 from sync_runs where state = 'running'").get())
+        throw new SyncStoreError("run_busy", "Another acquisition is already running.");
       const installation = this.requireInstallation(installationId);
+      if (installation.requiresBackfill && input.resetCheckpoint === undefined)
+        throw invalidInput("Interrupted snapshot requires an explicit backfill run.");
+      const targetReceiverId = input.targetReceiverId ?? installation.bootstrapReceiverId;
+      if (
+        targetReceiverId &&
+        !this.database
+          .prepare(
+            "select r.id from sync_receivers r join sync_sinks s on s.id = r.id where r.id = ? and s.enabled = 1",
+          )
+          .get(targetReceiverId)
+      )
+        throw invalidInput("Bootstrap receiver is not enabled.");
+      if (
+        input.targetReceiverId &&
+        installation.bootstrapReceiverId &&
+        installation.bootstrapReceiverId !== input.targetReceiverId
+      )
+        throw invalidInput("Complete the current receiver backfill first.");
+      if (installation.requiresBackfill && input.resetCheckpoint !== undefined) {
+        this.database
+          .prepare(
+            "update sync_installations set requires_backfill = 0, state = 'enabled', last_error = null where id = ?",
+          )
+          .run(installationId);
+        installation.state = "enabled";
+      }
+      this.database
+        .prepare("update sync_installations set bootstrap_receiver_id = ? where id = ?")
+        .run(targetReceiverId ?? null, installationId);
       this.assertSourceBinding(installation);
       if (installation.state !== "enabled") {
         throw invalidInput("A run cannot start for an installation that is not enabled.");
-      }
-      if (Date.parse(leaseExpiresAt) <= Date.now()) {
-        throw invalidInput("leaseExpiresAt must be in the future.");
       }
       if (installation.definitionVersion !== definitionVersion) {
         throw invalidInput(
@@ -204,6 +239,20 @@ export class SqliteSyncStore implements ISyncStore {
           startedAt,
           installation.bindingRevision,
         );
+      if (input.resetCheckpoint !== undefined) {
+        const reset = canonicalizeJsonValue(input.resetCheckpoint);
+        const resetResult = this.writeCheckpoint({
+          installation,
+          run: this.requireRun(id),
+          expectedRevision: checkpointRevision,
+          value: reset.value,
+          valueJson: reset.value === null ? null : reset.json,
+          committedAt: startedAt,
+        });
+        this.database
+          .prepare("update sync_runs set checkpoint_revision = ? where id = ?")
+          .run(resetResult.revision, id);
+      }
     });
     return this.requireRun(id);
   }
@@ -255,6 +304,11 @@ export class SqliteSyncStore implements ISyncStore {
         throw invalidInput("A run cannot succeed while it has an active snapshot.");
       }
       if (activeSnapshot) {
+        this.database
+          .prepare(
+            "update sync_installations set requires_backfill = 1, state = 'needs_attention', last_error = 'snapshot_interrupted' where id = ?",
+          )
+          .run(run.installationId);
         this.database
           .prepare(
             "update sync_snapshots set state = 'abandoned', completed_at = ? where run_id = ? and state = 'active'",
@@ -920,7 +974,7 @@ export class SqliteSyncStore implements ISyncStore {
       .prepare(
         `
         select source_id, credential_revision, binding_revision, id, definition_id, definition_version, provider, connection_id, config_value,
-          state, schedule_seconds, next_due_at, last_success_at, created_at, updated_at
+          state, schedule_seconds, next_due_at, last_success_at, created_at, updated_at, consecutive_failures, last_error, requires_backfill, bootstrap_receiver_id
         from sync_installations where id = ?
       `,
       )
@@ -1044,6 +1098,10 @@ function readInstallationRow(row: RuntimeRow): SyncInstallation {
     connectionId: readString(row, "connection_id"),
     config: parseJson<JsonObject>(readString(row, "config_value")),
     state,
+    consecutiveFailures: readNumber(row, "consecutive_failures"),
+    lastError: readOptionalString(row, "last_error"),
+    requiresBackfill: row.requires_backfill === 1,
+    bootstrapReceiverId: readOptionalString(row, "bootstrap_receiver_id"),
     scheduleSeconds: readOptionalNumber(row, "schedule_seconds"),
     nextDueAt: readOptionalString(row, "next_due_at"),
     lastSuccessAt: readOptionalString(row, "last_success_at"),

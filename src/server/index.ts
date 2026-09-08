@@ -112,7 +112,7 @@ async function runServer(assets: Awaited<ReturnType<typeof prepareServerAssets>>
     await transitFiles.cleanupExpired();
     await cleanupStagedTransitFiles(transitFileTempDir, transitFileTtlSeconds * 1000);
 
-    const { app, runtimeAuthConfigured, syncRunner } = await createConnectApp({
+    const { app, runtimeAuthConfigured, syncRunner, syncDelivery, syncScheduler } = await createConnectApp({
       catalog,
       providerLoader: new ProviderLoader(executorModules),
       runtimeDatabase,
@@ -159,32 +159,38 @@ async function runServer(assets: Awaited<ReturnType<typeof prepareServerAssets>>
       },
     );
 
-    await waitForShutdown(server);
-    await syncRunner?.stop();
+    if (process.env.OOMOL_CONNECT_SYNC_ENABLED !== "0") syncScheduler?.start();
+    await waitForShutdown(server, async () => {
+      if (syncScheduler) await syncScheduler.stop();
+      else await Promise.all([syncRunner?.stop(), syncDelivery?.stop()]);
+    });
   } finally {
     await runtimeDatabase.close();
   }
 }
 
-function waitForShutdown(server: ServerType): Promise<void> {
+function waitForShutdown(server: ServerType, stopWork: () => Promise<void>): Promise<void> {
   return new Promise((resolve, reject) => {
     let closing = false;
     const shutdown = (): void => {
-      if (closing) {
-        return;
-      }
+      if (closing) return;
       closing = true;
-      server.close((error) => {
-        process.removeListener("SIGINT", shutdown);
-        process.removeListener("SIGTERM", shutdown);
-        if (error) {
-          reject(error);
-        } else {
-          resolve();
-        }
-      });
+      const forced = setTimeout(() => {
+        if ("closeAllConnections" in server) server.closeAllConnections();
+        logger.error("sync server shutdown exceeded ten seconds; unfinished leases will recover on restart");
+        process.exit(1);
+      }, 10_000);
+      void Promise.all([
+        stopWork(),
+        new Promise<void>((done, fail) => server.close((error) => (error ? fail(error) : done()))),
+      ])
+        .then(() => resolve(), reject)
+        .finally(() => {
+          clearTimeout(forced);
+          process.removeListener("SIGINT", shutdown);
+          process.removeListener("SIGTERM", shutdown);
+        });
     };
-
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
   });

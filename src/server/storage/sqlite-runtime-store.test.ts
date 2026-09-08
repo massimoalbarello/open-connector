@@ -54,6 +54,7 @@ describe("SqliteRuntimeDatabase", () => {
       "0013_sync_state.sql",
       "0014_sync_sources.sql",
       "0015_sync_delivery.sql",
+      "0016_sync_scheduling.sql",
     ];
     expect(entries.filter((entry) => entry.message === "sqlite migration started")).toEqual(
       migrations.map((migration) => ({ fields: { migration }, message: "sqlite migration started" })),
