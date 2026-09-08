@@ -89,8 +89,6 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
         connections,
         connectionStore: options.runtimeDatabase.connectionStore,
         registrations: syncRegistrations,
-        catalog: options.catalog,
-        loader: options.providerLoader,
       })
     : undefined;
   return {

@@ -16,8 +16,7 @@ The framework must not need provider-specific knowledge to store or deliver it.
 - Use the shared contract in `src/sync/record-contract.ts`. Do not create a different universal
   schema for each provider. Use repository JSON-schema helpers for declared schemas.
 - The framework supplies provider/kind/source context, validated input, connection-bound provider
-  requests, existing read-only Actions, the checkpoint, cancellation/deadlines, logging, and an
-  atomic commit operation. Provider metadata remains owned by the provider catalog.
+  requests, the checkpoint, and cancellation/deadlines. It atomically commits each yielded page. Provider metadata remains owned by the provider catalog.
 - Scheduling, run leases, checkpoint persistence, hashes/revisions, subscriber registration,
   delivery authentication, retries, acknowledgements, and payload cleanup belong exclusively to the framework.
   Definitions never call receivers, write sync SQL, maintain delivery state, or hash records.
@@ -147,5 +146,4 @@ preserve record IDs and deterministic content; subscriber targeting belongs to t
   content.
 - Deletion evidence and failed/incomplete snapshot safety where applicable.
 
-Use the shared SDK/test harness; do not invent a provider-local substitute.
 Follow the root verification instructions. Never advance a production checkpoint in a dry run.

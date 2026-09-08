@@ -54,8 +54,6 @@ async function setup(runtime: SyncDefinitionRuntime, validators?: CredentialVali
     store: database.syncStore,
     connectionStore: database.connectionStore,
     connections,
-    catalog,
-    loader,
     registrations,
   });
   return { database, runner, load };
