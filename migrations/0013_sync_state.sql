@@ -19,6 +19,10 @@ create table if not exists sync_installations (
   credential_revision text not null,
   binding_revision integer not null,
   config_value text not null,
+  consecutive_failures integer not null default 0,
+  last_error text,
+  requires_backfill integer not null default 0,
+  bootstrap_receiver_id text,
   state text not null check (state in ('enabled', 'disabled', 'needs_attention')),
   schedule_seconds integer check (schedule_seconds is null or schedule_seconds > 0),
   next_due_at text,
@@ -53,9 +57,7 @@ create table if not exists sync_runs (
   completed_at text
 );
 
-create unique index if not exists sync_runs_one_active_installation_idx
-  on sync_runs (installation_id)
-  where state = 'running';
+create unique index sync_runs_one_active_global_idx on sync_runs((1)) where state = 'running';
 create index if not exists sync_runs_installation_started_idx
   on sync_runs (installation_id, started_at desc, id desc);
 create index if not exists sync_runs_lease_idx
@@ -199,3 +201,13 @@ create table sync_delivery_attempts (
 create index sync_outbox_change_idx on sync_outbox(change_sequence, state);
 create index sync_changes_retained_idx on sync_changes(sequence) where payload != 'null';
 create index sync_records_retained_idx on sync_records(last_change_sequence) where payload != 'null';
+
+create table sync_binding_checks (
+  connection_id text not null,
+  definition_id text not null,
+  credential_revision text not null,
+  attempt_count integer not null default 0,
+  next_attempt_at text not null,
+  last_error text,
+  primary key(connection_id, definition_id)
+);

@@ -67,7 +67,7 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
         .prepare(`select c.id, c.connection_name, c.revision, (select config_value from sync_installations i where i.connection_id = c.id and i.definition_id = ? order by i.updated_at desc limit 1) as config from connections c
         left join sync_binding_checks b on b.connection_id = c.id and b.definition_id = ?
         where c.service = ? and not exists(select 1 from sync_installations i where i.connection_id = c.id and i.definition_id = ? and i.state = 'disabled') and (b.connection_id is null or b.credential_revision != c.revision or b.next_attempt_at <= ?)
-        and not exists(select 1 from sync_installations i where i.definition_id = ? and i.connection_id = c.id and i.credential_revision = c.revision and i.source_id is not null)
+        and not exists(select 1 from sync_installations i where i.definition_id = ? and i.connection_id = c.id and i.credential_revision = c.revision)
         order by coalesce(b.next_attempt_at, ''), c.connection_name limit 1`)
         .get(definition.id, definition.id, definition.provider, definition.id, now, definition.id);
       if (row)
@@ -86,7 +86,7 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
     if (
       this.database
         .prepare(
-          "select 1 from sync_installations where connection_id = ? and definition_id = ? and credential_revision = ? and source_id is not null",
+          "select 1 from sync_installations where connection_id = ? and definition_id = ? and credential_revision = ?",
         )
         .get(candidate.connectionId, candidate.definitionId, candidate.credentialRevision)
     ) {
