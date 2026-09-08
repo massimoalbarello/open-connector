@@ -268,6 +268,34 @@ describe("embedded sync scheduler", () => {
     expect(JSON.stringify(status)).not.toContain("private-acquisition-error");
   });
 
+  it("rolls back a sync removal if its tombstone cannot be saved", async () => {
+    const f = await fixture();
+    const first = await f.runner.run({ definitionId: definition.id });
+    const store = f.database.syncStore;
+    const installation = (await store.getInstallation(first.installationId!))!;
+    await store.startRun({
+      id: "removing",
+      installationId: installation.id,
+      definitionVersion: "1",
+      reason: "manual",
+      leaseOwner: "worker",
+      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      startedAt: now(),
+    });
+    const before = await store.getRun("removing");
+    const raw = new DatabaseSync(f.path);
+    try {
+      raw.exec(
+        "create trigger reject_removal before update of removed_at on sync_installations when new.removed_at is not null begin select raise(abort, 'removal write failed'); end;",
+      );
+      expect(() => store.schedule.remove(installation.id)).toThrow("removal write failed");
+      expect(await store.getInstallation(installation.id)).toEqual(installation);
+      expect(await store.getRun("removing")).toEqual(before);
+    } finally {
+      raw.close();
+    }
+  });
+
   it("does not record a late verification failure after the sync was stopped", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const f = await fixture();

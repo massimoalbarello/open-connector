@@ -1,6 +1,7 @@
 import type { ISecretCodec } from "../server/secrets/secret-codec-core.ts";
 import type { RuntimeRow } from "../server/storage/runtime-sql.ts";
 import type { SyncDefinitionContract } from "./record-contract.ts";
+import type { SyncRunStatus } from "./schedule-store.ts";
 import type {
   CommitSyncPageInput,
   FinishSyncRunInput,
@@ -121,7 +122,7 @@ export class SqliteSyncStore implements ISyncStore {
     this.database = database;
     this.schedule = new SqliteSyncScheduleStore(database, {
       installation: (id) => this.readInstallation(id),
-      run: (id) => this.readRun(id),
+      run: (id) => this.readRunStatus(id),
     });
     this.definitions = structuredClone(definitions);
     const ids = new Set<string>();
@@ -258,8 +259,8 @@ export class SqliteSyncStore implements ISyncStore {
     return this.requireRun(id);
   }
 
-  async getRun(id: string): Promise<SyncRun | undefined> {
-    return this.readRun(requiredIdentifier(id, "run id"));
+  async getRun(id: string): Promise<SyncRunStatus | undefined> {
+    return this.readRunStatus(requiredIdentifier(id, "run id"));
   }
 
   async renewRunLease(input: RenewSyncRunLeaseInput): Promise<SyncRun> {
@@ -989,6 +990,11 @@ export class SqliteSyncStore implements ISyncStore {
     return run;
   }
 
+  private readRunStatus(id: string): SyncRunStatus | undefined {
+    const run = this.readRun(id);
+    return run ? { ...run, delivery: this.delivery.runStatus(id) } : undefined;
+  }
+
   private readRun(id: string): SyncRun | undefined {
     const row = this.database
       .prepare(
@@ -1001,7 +1007,7 @@ export class SqliteSyncStore implements ISyncStore {
       `,
       )
       .get(id);
-    return row ? { ...readRunRow(row), delivery: this.delivery.runStatus(id) } : undefined;
+    return row ? readRunRow(row) : undefined;
   }
 
   private readCheckpoint(installationId: string): SyncCheckpoint | undefined {
@@ -1110,7 +1116,7 @@ function readInstallationRow(row: RuntimeRow): SyncInstallation {
   };
 }
 
-function readRunRow(row: RuntimeRow): Omit<SyncRun, "delivery"> {
+function readRunRow(row: RuntimeRow): SyncRun {
   const reason = readString(row, "reason");
   const state = readString(row, "state");
   assertRunReason(reason);

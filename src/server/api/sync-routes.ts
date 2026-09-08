@@ -42,7 +42,7 @@ export function registerSyncRoutes(
     const status = await store.schedule.status(context.req.param("id"));
     if (!status.installations.length)
       return jsonError(context, 404, "installation_not_found", "Sync installation not found.");
-    return context.json({
+    return context.json<SyncStatus>({
       ...status,
       acquisitionRunning: runner.busy,
       schedulerRunning: scheduler?.running ?? false,
@@ -169,14 +169,7 @@ export function registerSyncRoutes(
         }),
       );
     } catch (error) {
-      if (error instanceof SyncStoreError || error instanceof ConnectionError)
-        return context.json(
-          { error: { code: error.code, message: error.message } },
-          error.code === "run_busy" || error.code === "credential_changed" || error.code === "binding_conflict"
-            ? 409
-            : 400,
-        );
-      throw error;
+      return syncError(context, error);
     }
   });
 }

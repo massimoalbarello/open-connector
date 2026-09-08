@@ -120,7 +120,7 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
         .run(now, id);
       this.database
         .prepare(
-          "update sync_outbox set state = 'dead', last_error = 'receiver_removed', lease_expires_at = null where sink_id = ? and state != 'delivered' and cancelled_at is null",
+          "update sync_outbox set state = 'dead', last_error = 'receiver_removed', lease_expires_at = null where sink_id = ? and state != 'delivered'",
         )
         .run(id);
       this.database

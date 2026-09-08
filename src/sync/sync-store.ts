@@ -1,5 +1,5 @@
-import type { ISyncDeliveryStore, SyncRunDelivery } from "./delivery-store.ts";
-import type { ISyncScheduleStore } from "./schedule-store.ts";
+import type { ISyncDeliveryStore } from "./delivery-store.ts";
+import type { ISyncScheduleStore, SyncRunStatus } from "./schedule-store.ts";
 import type { ISyncSourceStore } from "./source-binding.ts";
 
 export type JsonPrimitive = boolean | null | number | string;
@@ -58,7 +58,6 @@ export interface StartSyncRunInput {
 }
 
 export interface SyncRun {
-  delivery: SyncRunDelivery;
   id: string;
   installationId: string;
   definitionVersion: string;
@@ -237,7 +236,7 @@ export interface ISyncStore {
   getInstallation(id: string): Promise<SyncInstallation | undefined>;
   registerSink(input: RegisterSyncSinkInput): Promise<void>;
   startRun(input: StartSyncRunInput): Promise<SyncRun>;
-  getRun(id: string): Promise<SyncRun | undefined>;
+  getRun(id: string): Promise<SyncRunStatus | undefined>;
   renewRunLease(input: RenewSyncRunLeaseInput): Promise<SyncRun>;
   finishRun(input: FinishSyncRunInput): Promise<SyncRun>;
   getCheckpoint(installationId: string): Promise<SyncCheckpoint | undefined>;

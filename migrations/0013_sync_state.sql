@@ -23,6 +23,7 @@ create table if not exists sync_installations (
   last_error text,
   requires_backfill integer not null default 0,
   bootstrap_receiver_id text,
+  removed_at text,
   state text not null check (state in ('enabled', 'disabled', 'needs_attention')),
   schedule_seconds integer check (schedule_seconds is null or schedule_seconds > 0),
   next_due_at text,
@@ -145,6 +146,7 @@ create table if not exists sync_outbox (
   sink_id text not null,
   change_sequence integer not null,
   batch_id text references sync_delivery_batches(id),
+  run_id text not null references sync_runs(id),
   state text not null check (state in ('pending', 'leased', 'delivered', 'dead')),
   attempt_count integer not null default 0 check (attempt_count >= 0),
   next_attempt_at text not null,
@@ -170,7 +172,8 @@ create table sync_source_kinds (
 create table sync_receivers (
   id text primary key references sync_sinks(id),
   url text not null,
-  bearer_secret text not null
+  bearer_secret text not null,
+  removed_at text
 );
 create table sync_delivery_batches (
   id text primary key,
@@ -183,9 +186,10 @@ create table sync_delivery_batches (
   lease_expires_at text,
   created_at text not null,
   delivered_at text,
+  cancelled_at text,
   last_error text
 );
-create unique index sync_delivery_one_pending_batch on sync_delivery_batches(sink_id) where state != 'delivered';
+create unique index sync_delivery_one_pending_batch on sync_delivery_batches(sink_id) where state != 'delivered' and cancelled_at is null;
 create index sync_outbox_batch_idx on sync_outbox(batch_id, change_sequence);
 create table sync_delivery_attempts (
   batch_id text not null references sync_delivery_batches(id),
@@ -211,3 +215,5 @@ create table sync_binding_checks (
   last_error text,
   primary key(connection_id, definition_id)
 );
+
+create index sync_outbox_run_idx on sync_outbox(run_id, state);

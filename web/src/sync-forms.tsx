@@ -1,6 +1,6 @@
-import type { SyncPageProps } from "./sync-data";
-import type { SyncDefinition } from "../../src/sync/sync-definition.ts";
 import type { SyncInstallationStatus as SyncInstallation } from "../../src/sync/schedule-store.ts";
+import type { SyncDefinition } from "../../src/sync/sync-definition.ts";
+import type { SyncPageProps } from "./sync-data";
 import type { ReactNode, SubmitEvent } from "react";
 
 import { useTranslate } from "@embra/i18n/react";
