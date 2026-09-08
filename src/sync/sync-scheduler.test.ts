@@ -539,9 +539,10 @@ it("manages syncs through authenticated routes without losing committed progress
   await vi.waitFor(() => expect(f.runner.busy).toBe(false));
   const stopped = await (await request(`installations/${sync.id}/status`)).json();
   expect(stopped).toMatchObject({
-    installations: [{ state: "disabled", recordCount: 1 }],
+    installations: [{ state: "disabled", recordCount: 1, consecutiveFailures: 0 }],
     runs: [{ state: "cancelled" }],
   });
+  expect(stopped.installations[0].lastError).toBeUndefined();
   expect((await request(`installations/${sync.id}/run`, "POST")).status).toBe(202);
   await vi.waitFor(async () =>
     expect((await f.database.syncStore.schedule.status(sync.id)).runs.some((run) => run.state === "succeeded")).toBe(

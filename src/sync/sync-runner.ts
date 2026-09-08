@@ -326,8 +326,8 @@ export class SyncRunner {
     } catch (error) {
       if (heartbeat) clearInterval(heartbeat);
       await heartbeatWork;
-      if (installation)
-        await store
+      if (installation) {
+        const failedRun = await store
           .finishRun({
             runId,
             ...lease,
@@ -339,15 +339,17 @@ export class SyncRunner {
               : "Acquisition failed; committed progress is retained.",
           })
           .catch(() => undefined);
-      if (installation)
-        store.schedule.complete({
-          installationId: installation.id,
-          bindingRevision: installation.bindingRevision,
-          succeeded: false,
-          complete: false,
-          errorCode: error instanceof SyncStoreError ? error.code : "acquisition_failed",
-          now: new Date().toISOString(),
-        });
+        // Stop/rebind already fenced this run. Its old worker must not change the new schedule.
+        if (failedRun)
+          store.schedule.complete({
+            installationId: installation.id,
+            bindingRevision: installation.bindingRevision,
+            succeeded: false,
+            complete: false,
+            errorCode: error instanceof SyncStoreError ? error.code : "acquisition_failed",
+            now: new Date().toISOString(),
+          });
+      }
       throw error;
     } finally {
       if (heartbeat) clearInterval(heartbeat);
