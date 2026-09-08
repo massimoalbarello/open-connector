@@ -4,14 +4,6 @@ These instructions apply to trusted, compiled sync definitions under
 `src/sync-definitions/<provider>/`. Shared execution and delivery machinery belongs in `src/sync/`.
 The root repository guidelines also apply. Do not add barrel files.
 
-## Scope and implementation status
-
-This is the target authoring contract, not a claim that the SDK exists already. PR3 implements the
-SQLite storage foundation. Definition registration, the provider capability adapter, automatic
-scheduling/recovery, record-schema enforcement, subscriber delivery, and acknowledgement-based
-payload cleanup are future work. Do not implement these separately inside a definition or expand
-a storage-only change to include them.
-
 Call the output a **record**: for example, a GitHub pull request, Gmail thread, or Granola meeting
 transcript. One record may combine many endpoints and independently paginated related collections.
 The framework must not need provider-specific knowledge to store or deliver it.
@@ -21,13 +13,13 @@ The framework must not need provider-specific knowledge to store or deliver it.
 - A definition owns its stable ID, version, provider association, output kinds, required scopes,
   default cadence, optional configuration, checkpoint schema, discovery queries, hydration, and
   Markdown rendering. Each source/kind has one authoritative definition.
-- Use the shared record contract and schema owner when implemented. Do not create a different
+- Use the shared record contract and schema owner. Do not create a different
   universal schema for each provider. Use repository JSON-schema helpers for declared schemas.
 - The framework supplies provider/kind/source context, validated input, connection-bound provider
   requests, existing read-only Actions, the checkpoint, cancellation/deadlines, logging, and an
   atomic commit operation. Provider metadata remains owned by the provider catalog.
 - Scheduling, run leases, checkpoint persistence, hashes/revisions, subscriber registration,
-  signing, retries, acknowledgements, and payload cleanup belong exclusively to the framework.
+  delivery authentication, retries, acknowledgements, and payload cleanup belong exclusively to the framework.
   Definitions never call receivers, write sync SQL, maintain delivery state, or hash records.
 - Use the shared authenticated, SSRF-guarded provider capability. Never use global fetch, handle
   raw credentials, or create provider-local retry/timeout wrappers. Syncs acquire data; they do not
@@ -42,15 +34,13 @@ The framework must not need provider-specific knowledge to store or deliver it.
 - Never derive identity from the Markdown, a title, timestamp, array position, credential ID,
   connection alias, installation ID, or definition version. Preserve large numeric provider IDs
   without conversion through an imprecise JavaScript number.
-- Use `(stable source namespace, kind, external record ID)` as the logical key. The framework may
-  map it to a separate internal ID if storage needs one; do not require a second ID unnecessarily.
-  A source namespace represents the logical account/workspace and authorization boundary, not the
-  current credential handle.
-- Reauthorization or replacement credentials for the same verified source must preserve record
-  IDs, revisions, delivery history, and compatible checkpoints. Never silently link a different
-  account by matching display name/email. Ambiguous source linking requires explicit resolution.
-- Different accounts keep separate progress. The internal source/definition binding can be created
-  automatically; a separate installation setup UI and filters are not required.
+- Record IDs are scoped by `(source namespace, kind)`. Use the framework-supplied source context;
+  do not derive a namespace or resolve account bindings inside a definition.
+- Keep record IDs and compatible checkpoints stable across reauthorization of the same source.
+  Do not embed credential handles in either. Account verification and credential rebinding belong
+  to the framework; matching display names or email addresses is not proof of account identity.
+- Use only the checkpoint supplied for this source and definition. Never share progress between
+  accounts or keep it in module-level state.
 - Changing an ID scheme, kind, or source namespace requires an explicit migration. A checkpoint
   reset alone must not reset identity or revisions.
 
@@ -75,16 +65,15 @@ revisions, operations, and delivery envelopes. Do not duplicate those framework 
   values and normalize to UTC with deterministic precision through the shared record normalizer.
   Reject ambiguous local times and invalid dates. Do not substitute fetch time for a missing
   source modification time. An event date is not automatically a modification timestamp.
-- Attachments are deferred. Do not add attachment schemas, ingestion, downloads, blob storage,
+- Do not add attachment schemas, ingestion, downloads, blob storage,
   signed URLs, or a placeholder attachments field. Ordinary source links may appear in Markdown;
   they do not promise mirrored or durably retrievable assets.
 
 ## Deterministic changes
 
-The framework compares a SHA-256 hash of the canonical, normalized content fields: body, source
-URL/timestamps when present, participants, and attributes. Identity/routing and operational fields
-are separate. Hashing only Markdown would miss a meaningful structured-field correction. No extra
-body-only hash is required for the initial contract.
+Leave normalization, hashing, and revision assignment to the framework. Content includes the body,
+source URL/timestamps, participants, and attributes; a structured-field change matters even when
+the Markdown is unchanged. Do not add content hashes or operational metadata to a record.
 
 Render deterministically. Order set-like lists consistently, preserve meaningful chronological
 order with stable tie-breakers, and avoid generated fetch-time prose. Do not aggressively normalize
@@ -110,8 +99,8 @@ from all required endpoints/pages, render and validate it, then atomically commi
 and the next checkpoint. The framework persists opaque progress; the definition interprets it.
 
 - Advance progress only when all records covered by it have been durably committed. Merely fetching
-  an ID or receiving a page is not completion. If a future design queues hydration separately, that
-  pending work must itself be durable before advancing discovery progress.
+  an ID or receiving a page is not completion. Commit through the framework's atomic operation;
+  do not persist checkpoints separately from the records they cover.
 - Resume interrupted backfills from committed progress. Repeated acquisition must be safe; do not
   promise exactly one provider fetch across a crash before commit.
 - With timestamp filters, use provider-supported ordering, explicit boundary/tie handling, and a
@@ -130,45 +119,30 @@ and the next checkpoint. The framework persists opaque progress; the definition 
 - Incompatible checkpoint changes require migration or an explicit reset/backfill policy. Never
   reinterpret stored state under a new schema without validation.
 
-## Delivery and retention assumptions
+## Acquisition and delivery boundary
 
-Definitions are receiver-agnostic. Push delivery is the preferred initial transport; any later pull
-transport must share the same durable subscriber/acknowledgement model.
+Acquire provider data before committing records. Never open a database transaction inside a sync
+or hold one across network requests. Let the framework own persistence and delivery transactions.
 
-Provider acquisition and receiver HTTP requests run outside database transactions. The framework
-uses short, separate transactions to commit acquired records/progress, claim delivery work, and
-record acknowledgements or retries. Receipt acknowledgement and safe payload release are atomic,
-or a later cleanup transaction must recheck the same acknowledgement invariant. Never hold a
-transaction open while waiting for an external service.
+Keep definitions receiver-agnostic: no receiver URLs, API keys, webhook calls, acknowledgement
+handling, or delivery retries in sync code. Emit the same record regardless of its recipients.
 
-A receiver can supply its API key when registering its webhook. The framework owns protected key
-storage, outbound authentication, secret redaction, and destination validation; sync authors never
-see the key. Registration authentication and the receiver's outbound API key are separate concerns.
-
-The framework retains immutable record content while an intended subscriber has not acknowledged
-that revision. After all required acknowledgements, content can be purged; compact identity, hash,
-revision, tombstone, and delivery metadata remain. An acknowledgement of an old revision cannot
-release a newer pending payload. A disabled or failed subscriber is not an acknowledgement.
-
-Do not depend on a permanent latest-body cache or historical payload replay. New subscribers that
-need existing records require an explicit source backfill with subscriber-targeted enqueue even
-when hashes are unchanged. This must not reset existing revisions or redeliver to other subscribers.
-An exact historical body cannot be recovered after purge merely by refetching today's source state.
+Do not depend on a permanent latest-body cache or historical payload replay. Rebuild complete
+records from the provider, not by merging into a previously stored body. A repeat backfill must
+preserve record IDs and deterministic content; subscriber targeting belongs to the framework.
 
 ## Required tests
 
-- Shared record-schema validation, non-empty Markdown, valid/invalid timestamp cases, and compact
+- Output validation against the shared record schema, non-empty Markdown, valid/invalid timestamp cases, and compact
   participants/attributes; fixture-only raw/debug fields do not leak into the saved record.
 - Multi-endpoint aggregation, all required nested pagination, deterministic ordering, meaningful
   Markdown content, provider caps, and failure midway through hydration.
 - Initial backfill, incremental queries derived from the checkpoint, edits to old records,
   timestamp ties/overlap, cursor expiry, and restart after a committed page.
-- Stable native/composite IDs across repeat runs and compatible definition upgrades; framework
-  contract tests own same-account reauthorization and different-account isolation.
+- Stable native/composite IDs across repeat runs and compatible definition upgrades.
 - Identical inputs produce identical normalized output; a structured-only correction still changes
-  content. Generic store tests own hash comparison and monotonic revisions.
-- Deletion evidence and failed/incomplete snapshot safety where applicable. Generic framework
-  tests own lease fencing, atomic rollback, acknowledgement races, and delivery retries.
+  content.
+- Deletion evidence and failed/incomplete snapshot safety where applicable.
 
-Use the real shared SDK/test harness once it exists; do not invent a provider-local substitute.
+Use the shared SDK/test harness; do not invent a provider-local substitute.
 Follow the root verification instructions. Never advance a production checkpoint in a dry run.
