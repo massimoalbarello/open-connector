@@ -15,6 +15,7 @@ import {
 } from "../core/request.ts";
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { executorModules } from "../providers/registry.generated.ts";
+import { syncRegistrations } from "../sync/sync-registry.ts";
 import { createRuntimeJwtVerifier } from "./api/runtime-jwt.ts";
 import { registerStaticRoutes } from "./api/static-routes.ts";
 import { createConnectApp } from "./connect-app.ts";
@@ -97,6 +98,7 @@ async function runServer(assets: Awaited<ReturnType<typeof prepareServerAssets>>
       })
     : await createNodeRuntimeDatabase({
         backend: "sqlite",
+        syncDefinitions: syncRegistrations.map((item) => item.definition),
         path: join(dataDir, "connect.sqlite"),
         migrationDirectory: assets.migrationDirectory,
         logger,
@@ -110,10 +112,11 @@ async function runServer(assets: Awaited<ReturnType<typeof prepareServerAssets>>
     await transitFiles.cleanupExpired();
     await cleanupStagedTransitFiles(transitFileTempDir, transitFileTtlSeconds * 1000);
 
-    const { app, runtimeAuthConfigured } = await createConnectApp({
+    const { app, runtimeAuthConfigured, syncRunner } = await createConnectApp({
       catalog,
       providerLoader: new ProviderLoader(executorModules),
       runtimeDatabase,
+      syncStore: runtimeDatabase.syncStore,
       transitFiles,
       uploadTransitFile: createNodeTransitFileUpload({ transitFiles, tempDir: transitFileTempDir }),
       publicOrigin,
@@ -157,6 +160,7 @@ async function runServer(assets: Awaited<ReturnType<typeof prepareServerAssets>>
     );
 
     await waitForShutdown(server);
+    await syncRunner?.stop();
   } finally {
     await runtimeDatabase.close();
   }
