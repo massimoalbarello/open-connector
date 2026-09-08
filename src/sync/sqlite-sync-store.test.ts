@@ -1,3 +1,5 @@
+import type { SyncDefinitionContract } from "./record-contract.ts";
+import type { BindSyncSourceInput } from "./source-binding.ts";
 import type { FinishSyncRunInput, SyncLeaseInput } from "./sync-store.ts";
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -5,7 +7,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { s } from "../core/json-schema.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite-runtime-store.ts";
+
+const definitions: SyncDefinitionContract[] = [
+  {
+    id: "github.pull-requests",
+    version: "1.0.0",
+    provider: "github",
+    kinds: [
+      {
+        kind: "PullRequest",
+        attributesSchema: s.object({ title: s.string(), number: s.number(), restored: s.boolean() }),
+      },
+    ],
+  },
+];
 
 const t0 = "2026-09-02T10:00:00.000Z";
 const t1 = "2026-09-02T10:01:00.000Z";
@@ -45,7 +62,12 @@ describe("SQLite sync state", () => {
     const added = await store.commitPage({
       ...commitIdentity(fixture, 0, t1),
       nextCheckpoint: { cursor: "page-1" },
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { title: "First", number: 1 } }],
+      upserts: [
+        {
+          kind: "PullRequest",
+          record: { id: "PR_1", body: "# Pull request", attributes: { title: "First", number: 1 } },
+        },
+      ],
     });
     expect(added).toMatchObject({
       checkpoint: { revision: 1, value: { cursor: "page-1" } },
@@ -55,7 +77,12 @@ describe("SQLite sync state", () => {
     const unchanged = await store.commitPage({
       ...commitIdentity(fixture, 1, t2),
       nextCheckpoint: { cursor: "page-2" },
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1, title: "First" } }],
+      upserts: [
+        {
+          kind: "PullRequest",
+          record: { id: "PR_1", body: "# Pull request", attributes: { number: 1, title: "First" } },
+        },
+      ],
     });
     expect(unchanged.changes).toEqual([]);
     expect(unchanged.checkpoint.revision).toBe(2);
@@ -63,20 +90,25 @@ describe("SQLite sync state", () => {
     const updated = await store.commitPage({
       ...commitIdentity(fixture, 2, t3),
       nextCheckpoint: { cursor: "page-3" },
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1, title: "Updated" } }],
+      upserts: [
+        {
+          kind: "PullRequest",
+          record: { id: "PR_1", body: "# Pull request", attributes: { number: 1, title: "Updated" } },
+        },
+      ],
     });
     expect(updated.changes).toMatchObject([{ operation: "updated", recordRevision: 2 }]);
 
     const deleted = await store.commitPage({
       ...commitIdentity(fixture, 3, t4),
       nextCheckpoint: { cursor: "page-4" },
-      deletes: [{ model: "PullRequest", id: "PR_1" }],
+      deletes: [{ kind: "PullRequest", id: "PR_1" }],
     });
     expect(deleted.changes).toMatchObject([
       {
         operation: "deleted",
         recordRevision: 3,
-        payload: { number: 1, title: "Updated" },
+        content: { body: "# Pull request", attributes: { number: 1, title: "Updated" } },
         deletedAt: t4,
       },
     ]);
@@ -84,7 +116,7 @@ describe("SQLite sync state", () => {
     await expect(store.getRecord("github-prs", "PullRequest", "PR_1")).resolves.toMatchObject({
       revision: 3,
       deletedAt: t4,
-      payload: { number: 1, title: "Updated" },
+      content: { body: "# Pull request", attributes: { number: 1, title: "Updated" } },
     });
     await expect(store.listChanges()).resolves.toMatchObject({
       items: [
@@ -121,7 +153,7 @@ describe("SQLite sync state", () => {
     const commit = {
       ...commitIdentity(fixture, 0, t1),
       nextCheckpoint: { cursor: "page-1" },
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1 } }],
+      upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "# Pull request", attributes: { number: 1 } } }],
     };
     await expect(store.commitPage(commit)).rejects.toThrow("checkpoint failed");
     await expect(store.getCheckpoint("github-prs")).resolves.toBeUndefined();
@@ -145,30 +177,35 @@ describe("SQLite sync state", () => {
     await store.commitPage({
       ...commitIdentity(fixture, 0, t1),
       nextCheckpoint: { cursor: "seed" },
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1 } }],
+      upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "# Pull request", attributes: { number: 1 } } }],
     });
     await store.commitPage({
       ...commitIdentity(fixture, 1, t2),
       nextCheckpoint: { cursor: "deleted" },
-      deletes: [{ model: "PullRequest", id: "PR_1" }],
+      deletes: [{ kind: "PullRequest", id: "PR_1" }],
     });
     const repeatedDelete = await store.commitPage({
       ...commitIdentity(fixture, 2, t3),
       nextCheckpoint: { cursor: "still-deleted" },
-      deletes: [{ model: "PullRequest", id: "PR_1" }],
+      deletes: [{ kind: "PullRequest", id: "PR_1" }],
     });
     expect(repeatedDelete.changes).toEqual([]);
 
     const resurrected = await store.commitPage({
       ...commitIdentity(fixture, 3, t4),
       nextCheckpoint: { cursor: "resurrected" },
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1, restored: true } }],
+      upserts: [
+        {
+          kind: "PullRequest",
+          record: { id: "PR_1", body: "# Pull request", attributes: { number: 1, restored: true } },
+        },
+      ],
     });
     expect(resurrected.changes).toMatchObject([{ operation: "added", recordRevision: 3 }]);
     await expect(store.getRecord("github-prs", "PullRequest", "PR_1")).resolves.toMatchObject({
       revision: 3,
       deletedAt: undefined,
-      payload: { number: 1, restored: true },
+      content: { body: "# Pull request", attributes: { number: 1, restored: true } },
     });
   });
 
@@ -180,8 +217,8 @@ describe("SQLite sync state", () => {
         ...commitIdentity(fixture, 0, t1),
         nextCheckpoint: { cursor: "invalid" },
         upserts: [
-          { model: "PullRequest", id: "PR_1", payload: { number: 1 } },
-          { model: "PullRequest", id: "PR_1", payload: { number: 2 } },
+          { kind: "PullRequest", record: { id: "PR_1", body: "# Pull request", attributes: { number: 1 } } },
+          { kind: "PullRequest", record: { id: "PR_1", body: "# Pull request", attributes: { number: 2 } } },
         ],
       }),
     ).rejects.toMatchObject({ code: "invalid_input" });
@@ -189,11 +226,41 @@ describe("SQLite sync state", () => {
       store.commitPage({
         ...commitIdentity(fixture, 0, t1),
         nextCheckpoint: { cursor: "invalid" },
-        upserts: [{ model: "PullRequest", id: "PR_2", payload: { number: Number.NaN } }],
+        upserts: [
+          { kind: "PullRequest", record: { id: "PR_2", body: "# Pull request", attributes: { number: Number.NaN } } },
+        ],
       }),
     ).rejects.toMatchObject({ code: "invalid_input" });
     await expect(store.getCheckpoint("github-prs")).resolves.toBeUndefined();
     await expect(store.listChanges()).resolves.toEqual({ items: [], nextSequence: undefined });
+  });
+
+  it("rejects undeclared kinds in records, deletes and snapshots without advancing progress", async () => {
+    const fixture = await createFixture();
+    const store = fixture.database.syncStore;
+    const commit = { ...commitIdentity(fixture, 0, t1), nextCheckpoint: { cursor: "invalid" } };
+    await expect(
+      store.commitPage({ ...commit, upserts: [{ kind: "unknown", record: { id: "1", body: "text" } }] }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(store.commitPage({ ...commit, deletes: [{ kind: "unknown", id: "1" }] })).rejects.toMatchObject({
+      code: "invalid_input",
+    });
+    await expect(store.commitPage({ ...commit, deletes: [{ kind: "PullRequest", id: " " }] })).rejects.toMatchObject({
+      code: "invalid_input",
+    });
+    await expect(
+      store.startSnapshot({
+        id: "unknown-snapshot",
+        installationId: "github-prs",
+        runId: "run-1",
+        kinds: ["unknown"],
+        lease: fixture.lease,
+        expectedCheckpointRevision: 0,
+        startedAt: t1,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_input" });
+    expect(await store.getCheckpoint("github-prs")).toBeUndefined();
+    expect((await store.listChanges()).items).toEqual([]);
   });
 
   it("fences stale checkpoints, expired leases, and previous lease generations", async () => {
@@ -202,14 +269,14 @@ describe("SQLite sync state", () => {
     await store.commitPage({
       ...commitIdentity(fixture, 0, t1),
       nextCheckpoint: { cursor: "page-1" },
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1 } }],
+      upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "# Pull request", attributes: { number: 1 } } }],
     });
 
     await expect(
       store.commitPage({
         ...commitIdentity(fixture, 0, t2),
         nextCheckpoint: { cursor: "stale" },
-        upserts: [{ model: "PullRequest", id: "PR_2", payload: { number: 2 } }],
+        upserts: [{ kind: "PullRequest", record: { id: "PR_2", body: "# Pull request", attributes: { number: 2 } } }],
       }),
     ).rejects.toMatchObject({ code: "checkpoint_conflict" });
     const renewed = await store.renewRunLease({
@@ -249,7 +316,7 @@ describe("SQLite sync state", () => {
       id: "snapshot-1",
       installationId: "github-prs",
       runId: "run-1",
-      models: ["PullRequest"],
+      kinds: ["PullRequest"],
       lease: fixture.lease,
       expectedCheckpointRevision: 0,
       startedAt: t1,
@@ -261,7 +328,7 @@ describe("SQLite sync state", () => {
         ...commitIdentity(fixture, 0, t1),
         snapshotId: "snapshot-1",
         nextCheckpoint: { cursor: "late" },
-        upserts: [{ model: "PullRequest", id: "PR_1", payload: { body: "Late" } }],
+        upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "Late" } }],
       }),
     ).rejects.toMatchObject({ code: "lease_lost" });
     await expect(
@@ -287,7 +354,7 @@ describe("SQLite sync state", () => {
         id: "snapshot-2",
         installationId: "github-prs",
         runId: "run-1",
-        models: ["PullRequest"],
+        kinds: ["PullRequest"],
         lease: fixture.lease,
         expectedCheckpointRevision: 0,
         startedAt: t1,
@@ -360,7 +427,7 @@ describe("SQLite sync state", () => {
       await store.commitPage({
         ...commitIdentity(fixture, 0, t1),
         nextCheckpoint: { cursor: "seed" },
-        upserts: [{ model: "PullRequest", id: "PR_1", payload: { body: "Original" } }],
+        upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "Original" } }],
       });
       const before = await store.listChanges();
       const injector = new DatabaseSync(fixture.databasePath);
@@ -375,17 +442,17 @@ describe("SQLite sync state", () => {
           ...commitIdentity(fixture, 1, t2),
           nextCheckpoint: { cursor: "updated" },
           upserts: [
-            { model: "PullRequest", id: "PR_1", payload: { body: "Updated" } },
-            { model: "PullRequest", id: "PR_2", payload: { body: "Second" } },
+            { kind: "PullRequest", record: { id: "PR_1", body: "Updated" } },
+            { kind: "PullRequest", record: { id: "PR_2", body: "Second" } },
           ],
         }),
       ).rejects.toThrow("injected failure");
       fixture.database.close();
-      fixture.database = new SqliteRuntimeDatabase(fixture.databasePath);
+      fixture.database = new SqliteRuntimeDatabase(fixture.databasePath, { syncDefinitions: definitions });
       const reopened = fixture.database.syncStore;
       await expect(reopened.getRecord("github-prs", "PullRequest", "PR_1")).resolves.toMatchObject({
         revision: 1,
-        payload: { body: "Original" },
+        content: { body: "Original" },
       });
       await expect(reopened.getRecord("github-prs", "PullRequest", "PR_2")).resolves.toBeUndefined();
       await expect(reopened.getCheckpoint("github-prs")).resolves.toMatchObject({
@@ -408,13 +475,13 @@ describe("SQLite sync state", () => {
     await store.commitPage({
       ...commitIdentity(fixture, 0, t1),
       nextCheckpoint: null,
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { body: "Still present" } }],
+      upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "Still present" } }],
     });
     await store.startSnapshot({
       id: "snapshot-1",
       installationId: "github-prs",
       runId: "run-1",
-      models: ["PullRequest"],
+      kinds: ["PullRequest"],
       lease: fixture.lease,
       expectedCheckpointRevision: 1,
       startedAt: t2,
@@ -437,7 +504,7 @@ describe("SQLite sync state", () => {
     };
     await expect(store.finishSnapshot(completion)).rejects.toThrow("checkpoint failed");
     fixture.database.close();
-    fixture.database = new SqliteRuntimeDatabase(fixture.databasePath);
+    fixture.database = new SqliteRuntimeDatabase(fixture.databasePath, { syncDefinitions: definitions });
     const reopened = fixture.database.syncStore;
     await expect(reopened.getRecord("github-prs", "PullRequest", "PR_1")).resolves.toMatchObject({
       revision: 1,
@@ -467,12 +534,12 @@ describe("SQLite sync state", () => {
     const first = await store.commitPage({
       ...commitIdentity(fixture, 0, t1),
       nextCheckpoint: null,
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { body: "First revision" } }],
+      upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "First revision" } }],
     });
     await store.commitPage({
       ...commitIdentity(fixture, 1, t2),
       nextCheckpoint: null,
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { body: "Second revision" } }],
+      upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "Second revision" } }],
     });
     expect((await store.listChanges()).items[0]).toEqual(first.changes[0]);
     await expect(store.listOutbox("second")).resolves.toHaveLength(2);
@@ -482,7 +549,7 @@ describe("SQLite sync state", () => {
   it("keeps the current binding and record revision across in-place credential replacement", async () => {
     const fixture = await createFixture();
     const store = fixture.database.syncStore;
-    const upserts = [{ model: "PullRequest", id: "PR_1", payload: { body: "Same record" } }];
+    const upserts = [{ kind: "PullRequest", record: { id: "PR_1", body: "Same record" } }];
     await store.commitPage({ ...commitIdentity(fixture, 0, t1), nextCheckpoint: null, upserts });
     const connection = await fixture.database.connectionStore.get("github", "default");
     if (connection?.credential.authType !== "api_key") {
@@ -496,6 +563,26 @@ describe("SQLite sync state", () => {
     expect(updated.id).toBe(fixture.connectionId);
     await expect(
       store.commitPage({ ...commitIdentity(fixture, 1, t2), nextCheckpoint: null, upserts }),
+    ).rejects.toMatchObject({ code: "credential_changed" });
+    await bindFixture(fixture, {
+      id: "github-prs",
+      definitionId: "github.pull-requests",
+      definitionVersion: "1.0.0",
+      provider: "github",
+      config: { owner: "openai", repository: "openai-node" },
+      createdAt: t2,
+    });
+    await store.startRun({
+      id: "run-rebound",
+      installationId: "github-prs",
+      definitionVersion: "1.0.0",
+      reason: "manual",
+      leaseOwner: "worker-1",
+      leaseExpiresAt: leaseExpiry,
+      startedAt: t2,
+    });
+    await expect(
+      store.commitPage({ ...commitIdentity(fixture, 1, t2), runId: "run-rebound", nextCheckpoint: null, upserts }),
     ).resolves.toMatchObject({ changes: [] });
     await expect(store.getRecord("github-prs", "PullRequest", "PR_1")).resolves.toMatchObject({ revision: 1 });
   });
@@ -505,12 +592,11 @@ describe("SQLite sync state", () => {
     async (createdAt) => {
       const fixture = await createFixture({ createInstallation: false });
       await expect(
-        fixture.database.syncStore.createInstallation({
+        bindFixture(fixture, {
           id: "invalid-time",
           definitionId: "github.pull-requests",
           definitionVersion: "1.0.0",
           provider: "github",
-          connectionId: fixture.connectionId,
           config: {},
           createdAt,
         }),
@@ -522,12 +608,11 @@ describe("SQLite sync state", () => {
   it("normalizes timezone offsets for durable timestamps", async () => {
     const fixture = await createFixture({ createInstallation: false });
     await expect(
-      fixture.database.syncStore.createInstallation({
+      bindFixture(fixture, {
         id: "offset-time",
         definitionId: "github.pull-requests",
         definitionVersion: "1.0.0",
         provider: "github",
-        connectionId: fixture.connectionId,
         config: {},
         createdAt: "2026-09-02T11:00:00+01:00",
       }),
@@ -545,13 +630,13 @@ describe("SQLite sync state", () => {
   it("requires explicit snapshot participation so an unchanged record cannot be marked unseen", async () => {
     const fixture = await createFixture();
     const store = fixture.database.syncStore;
-    const upserts = [{ model: "PullRequest", id: "PR_1", payload: { body: "Unchanged" } }];
+    const upserts = [{ kind: "PullRequest", record: { id: "PR_1", body: "Unchanged" } }];
     await store.commitPage({ ...commitIdentity(fixture, 0, t1), nextCheckpoint: null, upserts });
     await store.startSnapshot({
       id: "snapshot-1",
       installationId: "github-prs",
       runId: "run-1",
-      models: ["PullRequest"],
+      kinds: ["PullRequest"],
       lease: fixture.lease,
       expectedCheckpointRevision: 1,
       startedAt: t2,
@@ -586,15 +671,15 @@ describe("SQLite sync state", () => {
       ...commitIdentity(fixture, 0, t1),
       nextCheckpoint: { cursor: "seed" },
       upserts: [
-        { model: "PullRequest", id: "PR_1", payload: { number: 1 } },
-        { model: "PullRequest", id: "PR_2", payload: { number: 2 } },
+        { kind: "PullRequest", record: { id: "PR_1", body: "# Pull request", attributes: { number: 1 } } },
+        { kind: "PullRequest", record: { id: "PR_2", body: "# Pull request", attributes: { number: 2 } } },
       ],
     });
     await store.startSnapshot({
       id: "snapshot-1",
       installationId: "github-prs",
       runId: "run-1",
-      models: ["PullRequest"],
+      kinds: ["PullRequest"],
       lease: fixture.lease,
       expectedCheckpointRevision: 1,
       startedAt: t2,
@@ -603,7 +688,7 @@ describe("SQLite sync state", () => {
       ...commitIdentity(fixture, 1, t3),
       snapshotId: "snapshot-1",
       nextCheckpoint: { cursor: "scan-page-1" },
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1 } }],
+      upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "# Pull request", attributes: { number: 1 } } }],
     });
 
     const result = await store.finishSnapshot({
@@ -632,13 +717,13 @@ describe("SQLite sync state", () => {
     await store.commitPage({
       ...commitIdentity(fixture, 0, t1),
       nextCheckpoint: { cursor: "seed" },
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1 } }],
+      upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "# Pull request", attributes: { number: 1 } } }],
     });
     await store.startSnapshot({
       id: "snapshot-1",
       installationId: "github-prs",
       runId: "run-1",
-      models: ["PullRequest"],
+      kinds: ["PullRequest"],
       lease: fixture.lease,
       expectedCheckpointRevision: 1,
       startedAt: t2,
@@ -672,18 +757,18 @@ describe("SQLite sync state", () => {
     await fixture.database.syncStore.commitPage({
       ...commitIdentity(fixture, 0, t1),
       nextCheckpoint: { cursor: "durable" },
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1 } }],
+      upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "# Pull request", attributes: { number: 1 } } }],
     });
     fixture.database.close();
 
-    fixture.database = new SqliteRuntimeDatabase(fixture.databasePath);
+    fixture.database = new SqliteRuntimeDatabase(fixture.databasePath, { syncDefinitions: definitions });
     await expect(fixture.database.syncStore.getCheckpoint("github-prs")).resolves.toMatchObject({
       revision: 1,
       value: { cursor: "durable" },
     });
     await expect(fixture.database.syncStore.getRecord("github-prs", "PullRequest", "PR_1")).resolves.toMatchObject({
       revision: 1,
-      payload: { number: 1 },
+      content: { body: "# Pull request", attributes: { number: 1 } },
     });
     await expect(fixture.database.syncStore.listChanges({ afterSequence: 0 })).resolves.toMatchObject({
       items: [{ eventId: expect.any(String), operation: "added" }],
@@ -693,12 +778,11 @@ describe("SQLite sync state", () => {
   it("rejects installations that do not bind to the selected provider connection", async () => {
     const fixture = await createFixture({ createInstallation: false });
     await expect(
-      fixture.database.syncStore.createInstallation({
+      bindFixture(fixture, {
         id: "bad-installation",
         definitionId: "github.pull-requests",
         definitionVersion: "1.0.0",
         provider: "gmail",
-        connectionId: fixture.connectionId,
         config: {},
         createdAt: t0,
       }),
@@ -709,7 +793,7 @@ describe("SQLite sync state", () => {
 async function createFixture(options: { createInstallation?: boolean } = {}): Promise<Fixture> {
   const directory = await mkdtemp(join(tmpdir(), "open-connector-sync-"));
   const databasePath = join(directory, "connect.sqlite");
-  const database = new SqliteRuntimeDatabase(databasePath);
+  const database = new SqliteRuntimeDatabase(databasePath, { syncDefinitions: definitions });
   const connection = await database.connectionStore.set("github", "default", {
     authType: "api_key",
     apiKey: "test-token",
@@ -726,14 +810,12 @@ async function createFixture(options: { createInstallation?: boolean } = {}): Pr
   };
   fixtures.push(fixture);
   if (options.createInstallation !== false) {
-    await database.syncStore.createInstallation({
+    await bindFixture(fixture, {
       id: "github-prs",
       definitionId: "github.pull-requests",
       definitionVersion: "1.0.0",
       provider: "github",
-      connectionId: connection.id,
       config: { owner: "openai", repository: "openai-node" },
-      scheduleSeconds: 300,
       createdAt: t0,
     });
     await database.syncStore.registerSink({
@@ -763,4 +845,22 @@ function commitIdentity(fixture: Fixture, revision: number, committedAt: string)
     expectedCheckpointRevision: revision,
     committedAt,
   };
+}
+
+async function bindFixture(
+  fixture: Fixture,
+  input: Omit<BindSyncSourceInput, "verifiedConnection" | "expectedBindingRevision">,
+) {
+  const connection = (await fixture.database.connectionStore.get("github", "default"))!;
+  const id = await fixture.database.syncStore.sources.bind({
+    ...input,
+    expectedBindingRevision: fixture.database.syncStore.sources.getBindingRevision(),
+    verifiedConnection: {
+      id: connection.id,
+      revision: connection.revision,
+      service: connection.service,
+      identity: { accountId: "native-1", authorizationBoundary: "account" },
+    },
+  });
+  return (await fixture.database.syncStore.getInstallation(id))!;
 }

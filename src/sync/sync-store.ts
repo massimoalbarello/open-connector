@@ -1,3 +1,5 @@
+import type { ISyncSourceStore } from "./source-binding.ts";
+
 export type JsonPrimitive = boolean | null | number | string;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 
@@ -10,20 +12,10 @@ export type SyncRunReason = "backfill" | "manual" | "reconcile" | "retry" | "sch
 export type SyncRunState = "cancelled" | "failed" | "lease_expired" | "running" | "succeeded";
 export type SyncChangeOperation = "added" | "deleted" | "updated";
 
-export interface CreateSyncInstallationInput {
-  id: string;
-  definitionId: string;
-  definitionVersion: string;
-  provider: string;
-  connectionId: string;
-  config: unknown;
-  state?: SyncInstallationState;
-  scheduleSeconds?: number;
-  nextDueAt?: string;
-  createdAt: string;
-}
-
 export interface SyncInstallation {
+  sourceId?: string;
+  credentialRevision?: string;
+  bindingRevision: number;
   id: string;
   definitionId: string;
   definitionVersion: string;
@@ -103,13 +95,12 @@ export interface SyncCheckpoint {
 }
 
 export interface SyncRecordUpsertInput {
-  model: string;
-  id: string;
-  payload: unknown;
+  kind: string;
+  record: unknown;
 }
 
 export interface SyncRecordDeleteInput {
-  model: string;
+  kind: string;
   id: string;
 }
 
@@ -139,7 +130,7 @@ export interface StartSyncSnapshotInput {
   id: string;
   installationId: string;
   runId: string;
-  models: readonly string[];
+  kinds: readonly string[];
   lease: SyncLeaseInput;
   expectedCheckpointRevision: number;
   startedAt: string;
@@ -149,7 +140,7 @@ export interface SyncSnapshot {
   id: string;
   installationId: string;
   runId: string;
-  models: string[];
+  kinds: string[];
   baselineSequence: number;
   state: "abandoned" | "active" | "completed";
   startedAt: string;
@@ -157,11 +148,13 @@ export interface SyncSnapshot {
 }
 
 export interface SyncRecord {
+  sourceId?: string;
+  provider: string;
   installationId: string;
-  model: string;
+  kind: string;
   id: string;
-  payload: JsonObject;
-  payloadHash: string;
+  content: JsonObject;
+  contentHash: string;
   revision: number;
   createdSequence: number;
   lastChangeSequence: number;
@@ -172,6 +165,7 @@ export interface SyncRecord {
 }
 
 export interface SyncChange {
+  sourceId?: string;
   sequence: number;
   eventId: string;
   installationId: string;
@@ -179,12 +173,12 @@ export interface SyncChange {
   connectionId: string;
   definitionId: string;
   definitionVersion: string;
-  model: string;
+  kind: string;
   recordId: string;
   operation: SyncChangeOperation;
   recordRevision: number;
-  payload: JsonObject;
-  payloadHash: string;
+  content: JsonObject;
+  contentHash: string;
   deletedAt?: string;
   runId: string;
   committedAt: string;
@@ -222,7 +216,7 @@ export interface SyncOutboxRecord {
 }
 
 export interface ISyncStore {
-  createInstallation(input: CreateSyncInstallationInput): Promise<SyncInstallation>;
+  readonly sources: ISyncSourceStore;
   getInstallation(id: string): Promise<SyncInstallation | undefined>;
   registerSink(input: RegisterSyncSinkInput): Promise<void>;
   startRun(input: StartSyncRunInput): Promise<SyncRun>;
@@ -234,12 +228,14 @@ export interface ISyncStore {
   commitPage(input: CommitSyncPageInput): Promise<SyncCommitResult>;
   startSnapshot(input: StartSyncSnapshotInput): Promise<SyncSnapshot>;
   finishSnapshot(input: FinishSyncSnapshotInput): Promise<SyncCommitResult>;
-  getRecord(installationId: string, model: string, recordId: string): Promise<SyncRecord | undefined>;
+  getRecord(installationId: string, kind: string, recordId: string): Promise<SyncRecord | undefined>;
   listChanges(input?: ListSyncChangesInput): Promise<SyncChangePage>;
   listOutbox(sinkId: string): Promise<SyncOutboxRecord[]>;
 }
 
 export type SyncStoreErrorCode =
+  | "binding_conflict"
+  | "credential_changed"
   | "checkpoint_conflict"
   | "installation_not_found"
   | "invalid_input"
