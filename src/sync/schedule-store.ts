@@ -1,5 +1,14 @@
+import type { SyncReceiverStatus } from "./delivery-store.ts";
 import type { SyncDefinition } from "./sync-definition.ts";
 import type { JsonObject, SyncInstallation, SyncRun } from "./sync-store.ts";
+
+/** Administration status shared by the server and dashboard. */
+export interface SyncStatus extends SyncScheduleStatus {
+  definitions: readonly SyncDefinition[];
+  acquisitionRunning: boolean;
+  schedulerRunning: boolean;
+  receivers: SyncReceiverStatus[];
+}
 
 export interface SyncBindingCandidate {
   config?: JsonObject;

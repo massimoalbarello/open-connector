@@ -1,5 +1,5 @@
 import type { SyncResource } from "./sync-data";
-import type { SyncRun } from "./sync-model";
+import type { SyncRun } from "../../src/sync/sync-store.ts";
 import type { ReactNode } from "react";
 
 import { useTranslate } from "@embra/i18n/react";

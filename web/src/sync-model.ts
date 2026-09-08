@@ -1,93 +1,7 @@
-/** Wire shapes returned by the sync administration API. */
-export interface SyncStatus {
-  acquisitionRunning: boolean;
-  schedulerRunning: boolean;
-  installations: SyncInstallation[];
-  runs: SyncRun[];
-  receivers: SyncReceiver[];
-  bindingErrors: SyncBindingError[];
-  definitions: SyncDefinition[];
-}
-
-export interface SyncDefinition {
-  id: string;
-  version: string;
-  provider: string;
-  scheduleSeconds: number;
-  defaultConfig: Record<string, unknown>;
-  requiredScopes: string[];
-}
-
-export interface SyncInstallation {
-  id: string;
-  definitionId: string;
-  provider: string;
-  sourceId?: string;
-  connectionId: string;
-  connectionName?: string;
-  connectionStatus: "connected" | "missing" | "changed";
-  state: "disabled" | "enabled" | "needs_attention";
-  scheduleSeconds?: number;
-  nextDueAt?: string;
-  lastSuccessAt?: string;
-  consecutiveFailures: number;
-  lastError?: string;
-  requiresBackfill: boolean;
-  latestRun?: SyncRun;
-  recordCount: number;
-  deliveredCount: number;
-  pendingCount: number;
-  config: Record<string, unknown>;
-}
-
-export interface SyncRun {
-  delivery: SyncRunDelivery;
-  id: string;
-  installationId: string;
-  reason: "backfill" | "manual" | "reconcile" | "retry" | "schedule" | "webhook";
-  state: "cancelled" | "failed" | "lease_expired" | "running" | "succeeded";
-  startedAt: string;
-  completedAt?: string;
-  pageCount: number;
-  upsertCount: number;
-  changeCount: number;
-  errorCode?: string;
-  errorMessage?: string;
-}
-
-export interface SyncRunDelivery {
-  state: "none" | "pending" | "delivering" | "retrying" | "delivered" | "cancelled";
-  totalRecords: number;
-  deliveredRecords: number;
-  pendingRecords: number;
-  cancelledRecords: number;
-  lastError?: string;
-  nextAttemptAt?: string;
-  lastDeliveredAt?: string;
-}
-
-export interface SyncReceiver {
-  id: string;
-  url: string;
-  enabled: boolean;
-  pendingRecords: number;
-  deliveredRecords: number;
-  lastDeliveredAt?: string;
-  attemptCount: number;
-  lastError?: string;
-  nextAttemptAt?: string;
-}
-
-export interface SyncBindingError {
-  connectionId: string;
-  connectionName: string;
-  definitionId: string;
-  errorCode: string;
-  nextAttemptAt: string;
-}
+import type { SyncInstallationStatus } from "../../src/sync/schedule-store.ts";
 
 /** Paused or disconnected syncs must not appear healthy just because the last run succeeded. */
-export function syncHealth(sync: SyncInstallation): string {
+export function syncHealth(sync: SyncInstallationStatus): string {
   if (sync.latestRun?.state === "running") return "running";
   if (sync.state === "disabled") return "paused";
   if (sync.connectionStatus === "missing") return "disconnected";
@@ -97,6 +11,6 @@ export function syncHealth(sync: SyncInstallation): string {
   return sync.latestRun ? "scheduled" : "waiting";
 }
 
-export function syncCanPoll(sync: SyncInstallation): boolean {
+export function syncCanPoll(sync: SyncInstallationStatus): boolean {
   return sync.state === "enabled" && sync.connectionStatus === "connected" && !sync.requiresBackfill;
 }

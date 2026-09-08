@@ -1,5 +1,6 @@
 import type { SyncPageProps } from "./sync-data";
-import type { SyncDefinition, SyncInstallation } from "./sync-model";
+import type { SyncDefinition } from "../../src/sync/sync-definition.ts";
+import type { SyncInstallationStatus as SyncInstallation } from "../../src/sync/schedule-store.ts";
 import type { ReactNode, SubmitEvent } from "react";
 
 import { useTranslate } from "@embra/i18n/react";
@@ -16,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 
 interface SyncFormProps extends SyncPageProps {
-  definitions: SyncDefinition[];
+  definitions: readonly SyncDefinition[];
   installation?: SyncInstallation;
   definitionId?: string;
   onClose(): void;

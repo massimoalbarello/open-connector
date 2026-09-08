@@ -52,9 +52,6 @@ describe("SqliteRuntimeDatabase", () => {
       "0011_runtime_token_connection_scope.sql",
       "0012_marketplace.sql",
       "0013_sync_state.sql",
-      "0014_sync_sources.sql",
-      "0015_sync_delivery.sql",
-      "0016_sync_scheduling.sql",
       "0017_sync_management.sql",
     ];
     expect(entries.filter((entry) => entry.message === "sqlite migration started")).toEqual(

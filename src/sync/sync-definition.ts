@@ -9,14 +9,10 @@ export interface SyncDefinition extends SyncDefinitionContract {
   checkpointSchema: JsonSchema;
   initialCheckpoint: JsonValue;
   scheduleSeconds: number;
-  /** Explicit read-only Action allowlist reviewed with the compiled definition. */
-  readActions?: readonly string[];
 }
 
 export interface SyncProvider {
-  get(path: string, query?: Record<string, string>): Promise<unknown>;
   graphql(query: string, variables?: JsonObject): Promise<JsonObject>;
-  action(name: string, input: unknown): Promise<unknown>;
 }
 
 export interface SyncContext {

@@ -1,5 +1,6 @@
 import type { SyncPageProps } from "./sync-data";
-import type { SyncReceiver, SyncStatus } from "./sync-model";
+import type { SyncReceiverStatus as SyncReceiver } from "../../src/sync/delivery-store.ts";
+import type { SyncStatus } from "../../src/sync/schedule-store.ts";
 import type { ReactNode } from "react";
 
 import { useTranslate } from "@embra/i18n/react";

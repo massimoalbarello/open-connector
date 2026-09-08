@@ -85,6 +85,11 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
       // Reconfiguration fences an old worker's ACK while preserving stable batch membership.
       this.database
         .prepare(
+          "update sync_delivery_attempts set completed_at = ?, error_code = 'receiver_reconfigured' where completed_at is null and batch_id in (select id from sync_delivery_batches where sink_id = ?)",
+        )
+        .run(now, input.id);
+      this.database
+        .prepare(
           "update sync_delivery_batches set state = 'pending', lease_generation = lease_generation + 1, next_attempt_at = ?, lease_expires_at = null where sink_id = ? and state != 'delivered' and cancelled_at is null",
         )
         .run(now, input.id);
@@ -110,12 +115,12 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
         .run(now, id);
       this.database
         .prepare(
-          "update sync_delivery_batches set cancelled_at = ?, lease_generation = lease_generation + 1, lease_expires_at = null, last_error = 'receiver_removed' where sink_id = ? and state != 'delivered'",
+          "update sync_delivery_batches set cancelled_at = ?, lease_generation = lease_generation + 1, lease_expires_at = null, last_error = 'receiver_removed' where sink_id = ? and state != 'delivered' and cancelled_at is null",
         )
         .run(now, id);
       this.database
         .prepare(
-          "update sync_outbox set state = 'dead', last_error = 'receiver_removed', lease_expires_at = null where sink_id = ? and state != 'delivered'",
+          "update sync_outbox set state = 'dead', last_error = 'receiver_removed', lease_expires_at = null where sink_id = ? and state != 'delivered' and cancelled_at is null",
         )
         .run(id);
       this.database

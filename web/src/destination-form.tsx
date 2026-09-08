@@ -1,4 +1,4 @@
-import type { SyncReceiver } from "./sync-model";
+import type { SyncReceiverStatus as SyncReceiver } from "../../src/sync/delivery-store.ts";
 import type { ReactNode, SubmitEvent } from "react";
 
 import { useTranslate } from "@embra/i18n/react";

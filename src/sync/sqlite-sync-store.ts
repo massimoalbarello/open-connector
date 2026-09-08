@@ -865,8 +865,6 @@ export class SqliteSyncStore implements ISyncStore {
 
   private assertSourceBinding(installation: SyncInstallation): void {
     const definition = this.requireDefinition(installation);
-    if (!installation.sourceId || !installation.credentialRevision)
-      throw new SyncStoreError("binding_conflict", "Source identity requires explicit verification.");
     for (const kind of definition.kinds) {
       const owner = this.database
         .prepare("select installation_id from sync_source_kinds where source_id = ? and kind = ?")
@@ -1090,8 +1088,8 @@ function readInstallationRow(row: RuntimeRow): SyncInstallation {
   assertInstallationState(state);
   return {
     removedAt: readOptionalString(row, "removed_at"),
-    sourceId: readOptionalString(row, "source_id"),
-    credentialRevision: readOptionalString(row, "credential_revision"),
+    sourceId: readString(row, "source_id"),
+    credentialRevision: readString(row, "credential_revision"),
     bindingRevision: readNumber(row, "binding_revision"),
     id: readString(row, "id"),
     definitionId: readString(row, "definition_id"),
@@ -1152,7 +1150,7 @@ function readCheckpointRow(row: RuntimeRow): SyncCheckpoint {
 
 function readRecordRow(row: RuntimeRow): SyncRecord {
   return {
-    sourceId: readOptionalString(row, "source_id"),
+    sourceId: readString(row, "source_id"),
     provider: readString(row, "provider"),
     installationId: readString(row, "installation_id"),
     kind: readString(row, "model"),
@@ -1173,7 +1171,7 @@ function readChangeRow(row: RuntimeRow): SyncChange {
   const operation = readString(row, "operation");
   assertChangeOperation(operation);
   return {
-    sourceId: readOptionalString(row, "source_id"),
+    sourceId: readString(row, "source_id"),
     sequence: readNumber(row, "sequence"),
     eventId: readString(row, "event_id"),
     installationId: readString(row, "installation_id"),
