@@ -200,8 +200,8 @@ describe("durable sync delivery", () => {
     try {
       raw.prepare("update sync_runs set state = 'succeeded', completed_at = started_at where id = 'run'").run();
       const insert =
-        raw.prepare(`insert into sync_runs(id, installation_id, definition_version, reason, state, lease_owner, lease_generation, lease_expires_at, checkpoint_revision, started_at, completed_at)
-        values (?, 'busy-other-sync', '1', 'schedule', 'succeeded', 'owner', 1, ?, 0, ?, ?)`);
+        raw.prepare(`insert into sync_runs(id, installation_id, definition_version, reason, state, lease_owner, lease_generation, lease_expires_at, checkpoint_revision, binding_revision, started_at, completed_at)
+        values (?, 'busy-other-sync', '1', 'schedule', 'succeeded', 'owner', 1, ?, 0, 1, ?, ?)`);
       for (let index = 0; index < 101; index++) {
         const timestamp = new Date(Date.now() + 1000 + index).toISOString();
         insert.run(`other-${index}`, timestamp, timestamp, timestamp);

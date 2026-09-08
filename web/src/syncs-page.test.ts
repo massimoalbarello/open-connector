@@ -1,4 +1,4 @@
-import type { SyncInstallation, SyncStatus } from "./sync-model";
+import type { SyncInstallationStatus as SyncInstallation, SyncStatus } from "../../src/sync/schedule-store.ts";
 
 import { I18nProvider } from "@embra/i18n/react";
 import { createElement } from "react";
@@ -10,6 +10,12 @@ import { SyncsOverview } from "./syncs-page";
 
 const installation: SyncInstallation = {
   id: "sync-1",
+  definitionVersion: "1",
+  credentialRevision: "credential-1",
+  bindingRevision: 1,
+  config: {},
+  createdAt: "2026-09-08T11:00:00.000Z",
+  updatedAt: "2026-09-08T12:00:00.000Z",
   definitionId: "github.pull-requests",
   provider: "github",
   sourceId: "source-1",
@@ -27,6 +33,12 @@ const installation: SyncInstallation = {
   pendingCount: 4,
   latestRun: {
     id: "run-1",
+    definitionVersion: "1",
+    leaseOwner: "worker",
+    leaseGeneration: 1,
+    leaseExpiresAt: "2026-09-08T12:00:00.000Z",
+    checkpointRevision: 1,
+    deleteCount: 0,
     installationId: "sync-1",
     reason: "schedule",
     state: "succeeded",
@@ -100,6 +112,7 @@ describe("sync monitoring", () => {
       bindingErrors: [
         {
           connectionId: "pending",
+          credentialRevision: "credential-1",
           connectionName: "work",
           definitionId: "github.pull-requests",
           errorCode: "source_verification_failed",

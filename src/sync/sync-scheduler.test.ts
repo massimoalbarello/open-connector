@@ -268,6 +268,24 @@ describe("embedded sync scheduler", () => {
     expect(JSON.stringify(status)).not.toContain("private-acquisition-error");
   });
 
+  it("does not record a late verification failure after the sync was stopped", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const f = await fixture();
+    const first = await f.runner.run({ definitionId: definition.id });
+    const installation = (await f.database.syncStore.getInstallation(first.installationId!))!;
+    vi.setSystemTime(installation.nextDueAt!);
+    f.database.syncStore.schedule.configure({ installationId: installation.id, enabled: false });
+    const stopped = await f.database.syncStore.getInstallation(installation.id);
+    f.database.syncStore.schedule.failBeforeRun({
+      installation,
+      startedAt: now(),
+      completedAt: now(),
+      errorCode: "acquisition_failed",
+    });
+    expect(await f.database.syncStore.getInstallation(installation.id)).toEqual(stopped);
+    expect((await f.database.syncStore.schedule.status()).runs).toHaveLength(1);
+  });
+
   it("commits a failed poll and its backoff atomically and ignores a repeated completion", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const f = await fixture();

@@ -1,5 +1,7 @@
+import type { SyncReceiverStatus as SyncReceiver } from "../../src/sync/delivery-store.ts";
+import type { SyncInstallationStatus as SyncInstallation, SyncStatus } from "../../src/sync/schedule-store.ts";
+import type { SyncRun } from "../../src/sync/sync-store.ts";
 import type { ConnectionRecord, ProviderDefinition } from "./model";
-import type { SyncInstallation, SyncReceiver, SyncRun, SyncStatus } from "./sync-model";
 import type { ReactNode } from "react";
 
 import { useTranslate } from "@embra/i18n/react";

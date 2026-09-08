@@ -165,6 +165,7 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
       const installation = this.readers.installation(input.installation.id);
       if (
         !installation ||
+        installation.state !== "enabled" ||
         installation.bindingRevision !== input.installation.bindingRevision ||
         installation.nextDueAt !== input.installation.nextDueAt ||
         this.database
