@@ -1,9 +1,23 @@
+create table sync_sources (
+  id text primary key,
+  provider text not null,
+  account_id text not null,
+  authorization_boundary text not null,
+  created_at text not null,
+  unique (provider, account_id, authorization_boundary)
+);
+create table sync_binding_state (id integer primary key check (id = 1), revision integer not null);
+insert into sync_binding_state values (1, 0);
+
 create table if not exists sync_installations (
   id text primary key,
   definition_id text not null,
   definition_version text not null,
   provider text not null,
   connection_id text not null,
+  source_id text not null references sync_sources(id),
+  credential_revision text not null,
+  binding_revision integer not null,
   config_value text not null,
   state text not null check (state in ('enabled', 'disabled', 'needs_attention')),
   schedule_seconds integer check (schedule_seconds is null or schedule_seconds > 0),
@@ -28,6 +42,7 @@ create table if not exists sync_runs (
   lease_generation integer not null check (lease_generation > 0),
   lease_expires_at text not null,
   checkpoint_revision integer not null check (checkpoint_revision >= 0),
+  binding_revision integer not null,
   page_count integer not null default 0 check (page_count >= 0),
   upsert_count integer not null default 0 check (upsert_count >= 0),
   delete_count integer not null default 0 check (delete_count >= 0),
@@ -140,3 +155,11 @@ create table if not exists sync_outbox (
 
 create index if not exists sync_outbox_due_idx
   on sync_outbox (state, next_attempt_at, sink_id, change_sequence);
+
+create unique index sync_installations_source_definition_idx on sync_installations(source_id, definition_id);
+create table sync_source_kinds (
+  source_id text not null references sync_sources(id),
+  kind text not null,
+  installation_id text not null references sync_installations(id),
+  primary key (source_id, kind)
+);
