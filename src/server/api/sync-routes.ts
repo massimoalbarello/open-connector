@@ -1,3 +1,4 @@
+import type { SyncDeliveryWorker } from "../../sync/delivery-worker.ts";
 import type { SyncRunner } from "../../sync/sync-runner.ts";
 import type { ISyncStore, JsonObject } from "../../sync/sync-store.ts";
 import type { Hono } from "hono";
@@ -8,6 +9,7 @@ import { SyncStoreError } from "../../sync/sync-store.ts";
 import { readJsonBody, jsonError } from "./http-utils.ts";
 
 const runSchema = z.strictObject({
+  targetReceiverId: z.string().min(1).max(128).optional(),
   connectionName: z.string().optional(),
   config: z.record(z.string(), z.json()).optional(),
   dryRun: z.boolean().optional(),
@@ -16,7 +18,31 @@ const runSchema = z.strictObject({
 });
 
 /** Registered behind the existing /api admin authentication middleware. */
-export function registerSyncRoutes(app: Hono, runner: SyncRunner, store: ISyncStore): void {
+export function registerSyncRoutes(
+  app: Hono,
+  runner: SyncRunner,
+  store: ISyncStore,
+  delivery?: SyncDeliveryWorker,
+): void {
+  if (delivery)
+    app.post("/api/sync/delivery/run", async (context) => context.json({ attempted: await delivery.tick() }));
+  app.get("/api/sync/receivers", async (context) => context.json(await store.delivery.list()));
+  app.put("/api/sync/receivers/:id", async (context) => {
+    const schema = z.strictObject({
+      url: z.string().max(8192),
+      bearerToken: z.string().max(8192),
+      enabled: z.boolean().default(true),
+    });
+    const parsed = schema.safeParse(await readJsonBody(context, 64 * 1024));
+    if (!parsed.success) return jsonError(context, 400, "invalid_input", "Invalid receiver registration.");
+    try {
+      await store.delivery.register({ id: context.req.param("id"), ...parsed.data });
+      return context.json({ id: context.req.param("id") });
+    } catch (error) {
+      if (error instanceof SyncStoreError) return jsonError(context, 400, error.code, error.message);
+      throw error;
+    }
+  });
   app.get("/api/sync/definitions", (context) => context.json(runner.definitions()));
   app.get("/api/sync/runs/:id", async (context) => {
     const run = await store.getRun(context.req.param("id"));

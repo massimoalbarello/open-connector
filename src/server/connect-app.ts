@@ -15,6 +15,7 @@ import { MarketplaceService } from "../marketplace/marketplace-service.ts";
 import { OAuthClientConfigService } from "../oauth/oauth-client-config-service.ts";
 import { OAuthCredentialRefreshService } from "../oauth/oauth-credential-refresh-service.ts";
 import { OAuthFlowService } from "../oauth/oauth-flow-service.ts";
+import { SyncDeliveryWorker } from "../sync/delivery-worker.ts";
 import { syncRegistrations } from "../sync/sync-registry.ts";
 import { SyncRunner } from "../sync/sync-runner.ts";
 import { ActionRunner } from "./actions/action-runner.ts";
@@ -45,6 +46,7 @@ export interface ConnectApp {
   app: Hono;
   runtimeAuthConfigured: boolean;
   syncRunner?: SyncRunner;
+  syncDelivery?: SyncDeliveryWorker;
 }
 
 export async function createConnectApp(options: ConnectAppOptions): Promise<ConnectApp> {
@@ -93,9 +95,12 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
         loader: options.providerLoader,
       })
     : undefined;
+  const syncDelivery = options.syncStore ? new SyncDeliveryWorker({ store: options.syncStore.delivery }) : undefined;
   return {
+    syncDelivery,
     syncRunner,
     app: new ConnectServer({
+      syncDelivery,
       syncRunner,
       syncStore: options.syncStore,
       catalog: options.catalog,

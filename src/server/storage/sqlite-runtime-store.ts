@@ -110,7 +110,7 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
     this.runLogStore = new SqliteRunLogStore(this.database, options.runLimit ?? DEFAULT_RUN_LIMIT);
     this.idempotencyStore = new SqliteIdempotencyStore(this.database, this.secretCodec);
     this.marketplaceStore = new SqliteMarketplaceStore(this.database);
-    this.syncStore = new SqliteSyncStore(this.database, options.syncDefinitions);
+    this.syncStore = new SqliteSyncStore(this.database, options.syncDefinitions, this.secretCodec);
   }
 
   close(): void {
@@ -127,6 +127,15 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
     );
     const oauthStates = await readRotatedStateSecrets(this.database, this.secretCodec, nextSecretCodec);
     const idempotencyResponses = await readRotatedIdempotencySecrets(this.database, this.secretCodec, nextSecretCodec);
+    const receiverSecrets = await Promise.all(
+      this.database
+        .prepare("select id, bearer_secret from sync_receivers")
+        .all()
+        .map(async (row) => ({
+          id: readString(row, "id"),
+          value: await nextSecretCodec.encode(await this.secretCodec.decode(readString(row, "bearer_secret"))),
+        })),
+    );
     const marketplaceConfig = await this.marketplaceStore.getConfig();
     const rotatedMarketplaceConfig = marketplaceConfig
       ? {
@@ -137,6 +146,10 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
         }
       : undefined;
     runInTransaction(this.database, () => {
+      for (const receiver of receiverSecrets)
+        this.database
+          .prepare("update sync_receivers set bearer_secret = ? where id = ?")
+          .run(receiver.value, receiver.id);
       writeRotatedConnectionSecrets(this.database, connections);
       writeRotatedServiceSecrets(this.database, "oauth_client_configs", oauthConfigs);
       writeRotatedStateSecrets(this.database, oauthStates);
@@ -152,6 +165,9 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
   resetRuntimeData(): void {
     this.database.exec(`
       delete from sync_outbox;
+      delete from sync_delivery_attempts;
+      delete from sync_delivery_batches;
+      delete from sync_receivers;
       delete from sync_sinks;
       delete from sync_snapshots;
       delete from sync_records;

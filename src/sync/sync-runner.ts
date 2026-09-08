@@ -6,6 +6,7 @@ import type { ISyncStore, JsonObject, JsonValue, SyncRun } from "./sync-store.ts
 
 import { normalizeConnectionName } from "../connection-service.ts";
 import { randomUUIDv7 } from "../core/uuid-v7.ts";
+import { maximumRecordBytes } from "./delivery-store.ts";
 import { createSyncProvider } from "./provider-adapter.ts";
 import { normalizeSyncRecord } from "./record-contract.ts";
 import { SyncSourceBindingService } from "./source-binding.ts";
@@ -22,6 +23,7 @@ export interface SyncRunnerOptions {
 }
 
 export interface RunSyncInput {
+  targetReceiverId?: string;
   definitionId: string;
   connectionName?: string;
   config?: JsonObject;
@@ -206,12 +208,16 @@ export class SyncRunner {
         const normalized = records.map((item) => {
           const kind = definition.kinds.find((kind) => kind.kind === item.kind);
           if (!kind) throw new SyncStoreError("invalid_input", "Sync emitted an undeclared kind.");
-          return { kind: item.kind, value: normalizeSyncRecord(item.record, kind) };
+          const value = normalizeSyncRecord(item.record, kind);
+          if (Buffer.byteLength(value.content.json) > maximumRecordBytes)
+            throw new SyncStoreError("invalid_input", "Record exceeds the 8 MiB delivery limit.");
+          return { kind: item.kind, value };
         });
         if (installation) {
           await heartbeatWork;
           signal.throwIfAborted();
           const committed = await store.commitPage({
+            targetReceiverId: input.targetReceiverId,
             installationId: installation.id,
             runId,
             lease,

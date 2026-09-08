@@ -111,7 +111,9 @@ describe("verified source binding", () => {
     expect(rebound.sourceId).toBe(first.sourceId);
     expect(rebound.connectionId).toBe(replacement.id);
     expect(await database.syncStore.getCheckpoint(first.id)).toEqual(saved.checkpoint);
-    expect((await database.syncStore.listChanges()).items).toEqual(saved.changes);
+    expect((await database.syncStore.listChanges()).items).toEqual(
+      saved.changes.map((change) => ({ ...change, content: undefined })),
+    );
     await expect(
       database.syncStore.commitPage({
         installationId: first.id,

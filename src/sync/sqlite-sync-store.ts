@@ -1,3 +1,4 @@
+import type { ISecretCodec } from "../server/secrets/secret-codec-core.ts";
 import type { RuntimeRow } from "../server/storage/runtime-sql.ts";
 import type { SyncDefinitionContract } from "./record-contract.ts";
 import type {
@@ -32,9 +33,12 @@ import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { optionalRawString } from "../core/cast.ts";
 import { randomUUIDv7 } from "../core/uuid-v7.ts";
+import { PlainTextSecretCodec } from "../server/secrets/secret-codec-core.ts";
 import { parseJson, readString } from "../server/storage/runtime-sql.ts";
+import { maximumRecordBytes } from "./delivery-store.ts";
 import { normalizeSyncRecord } from "./record-contract.ts";
 import { canonicalizeJsonValue } from "./record-hash.ts";
+import { SqliteSyncDeliveryStore } from "./sqlite-delivery-store.ts";
 import { SqliteSyncSourceStore } from "./sqlite-source-store.ts";
 import { runSyncTransaction } from "./sqlite-sync-transaction.ts";
 import { SyncStoreError } from "./sync-store.ts";
@@ -59,6 +63,7 @@ interface PreparedDelete {
 }
 
 interface PreparedCommit {
+  targetReceiverId?: string;
   installationId: string;
   runId: string;
   lease: SyncLeaseInput;
@@ -82,7 +87,7 @@ interface InsertChangeInput extends ChangeSource {
   recordId: string;
   operation: SyncChangeOperation;
   recordRevision: number;
-  payload: JsonObject;
+  payload?: JsonObject;
   payloadJson: string;
   payloadHash: string;
   deletedAt?: string;
@@ -102,9 +107,15 @@ export class SqliteSyncStore implements ISyncStore {
   private readonly database: DatabaseSync;
 
   readonly sources: SqliteSyncSourceStore;
+  readonly delivery: SqliteSyncDeliveryStore;
   private readonly definitions: readonly SyncDefinitionContract[];
 
-  constructor(database: DatabaseSync, definitions: readonly SyncDefinitionContract[] = []) {
+  constructor(
+    database: DatabaseSync,
+    definitions: readonly SyncDefinitionContract[] = [],
+    codec: ISecretCodec = new PlainTextSecretCodec(),
+  ) {
+    this.delivery = new SqliteSyncDeliveryStore(database, codec);
     this.database = database;
     this.definitions = structuredClone(definitions);
     const ids = new Set<string>();
@@ -276,7 +287,20 @@ export class SqliteSyncStore implements ISyncStore {
   async commitPage(input: CommitSyncPageInput): Promise<SyncCommitResult> {
     const installation = this.requireInstallation(input.installationId);
     const prepared = prepareCommit(input, this.requireDefinition(installation));
-    return runSyncTransaction(this.database, () => this.commitPreparedPage(prepared));
+    return runSyncTransaction(this.database, () => {
+      if (
+        input.targetReceiverId &&
+        !this.database
+          .prepare(
+            "select r.id from sync_receivers r join sync_sinks s on s.id = r.id where r.id = ? and s.enabled = 1",
+          )
+          .get(input.targetReceiverId)
+      )
+        throw invalidInput("Bootstrap receiver is not enabled.");
+      const result = this.commitPreparedPage(prepared);
+      this.delivery.purge();
+      return result;
+    });
   }
 
   async startSnapshot(input: StartSyncSnapshotInput): Promise<SyncSnapshot> {
@@ -336,7 +360,7 @@ export class SqliteSyncStore implements ISyncStore {
           operation: "deleted",
           recordRevision: record.revision + 1,
           payload: record.content,
-          payloadJson: JSON.stringify(record.content),
+          payloadJson: JSON.stringify(record.content ?? null),
           payloadHash: record.contentHash,
           deletedAt: committedAt,
         });
@@ -372,6 +396,7 @@ export class SqliteSyncStore implements ISyncStore {
         committedAt,
       });
       this.updateRunProgress(runId, nextCheckpoint.revision, 1, 0, candidates.length, changes.length);
+      this.delivery.purge();
       return {
         checkpoint: nextCheckpoint,
         changes,
@@ -561,6 +586,21 @@ export class SqliteSyncStore implements ISyncStore {
       }
     }
 
+    if (input.targetReceiverId) {
+      for (const upsert of input.upserts) {
+        const current = this.readRecord(input.installationId, upsert.model, upsert.id)!;
+        const inserted = this.database
+          .prepare(
+            "insert or ignore into sync_outbox(sink_id, change_sequence, state, next_attempt_at) values (?, ?, 'pending', ?)",
+          )
+          .run(input.targetReceiverId, current.lastChangeSequence, input.committedAt);
+        if (inserted.changes)
+          this.database
+            .prepare("update sync_changes set payload = ? where sequence = ? and payload = 'null'")
+            .run(upsert.payloadJson, current.lastChangeSequence);
+      }
+    }
+
     for (const deletion of input.deletes) {
       const current = this.readRecord(input.installationId, deletion.model, deletion.id);
       if (!current || current.deletedAt) {
@@ -573,7 +613,7 @@ export class SqliteSyncStore implements ISyncStore {
         operation: "deleted",
         recordRevision: current.revision + 1,
         payload: current.content,
-        payloadJson: JSON.stringify(current.content),
+        payloadJson: JSON.stringify(current.content ?? null),
         payloadHash: current.contentHash,
         deletedAt: input.committedAt,
       });
@@ -958,6 +998,8 @@ function prepareCommit(input: CommitSyncPageInput, definition: SyncDefinitionCon
     const id = normalized.id;
     assertUniqueRecord(keys, model, id);
     const payload = normalized.content;
+    if (Buffer.byteLength(payload.json) > maximumRecordBytes)
+      throw invalidInput("Record exceeds the 8 MiB delivery limit.");
     return {
       model,
       id,
@@ -980,6 +1022,7 @@ function prepareCommit(input: CommitSyncPageInput, definition: SyncDefinitionCon
     expectedCheckpointRevision,
     checkpoint: checkpoint.value,
     checkpointJson: checkpoint.value === null ? null : checkpoint.json,
+    targetReceiverId: input.targetReceiverId,
     upserts,
     deletes,
     snapshotId,
@@ -1054,7 +1097,7 @@ function readRecordRow(row: RuntimeRow): SyncRecord {
     installationId: readString(row, "installation_id"),
     kind: readString(row, "model"),
     id: readString(row, "record_id"),
-    content: parseJson<JsonObject>(readString(row, "payload")),
+    content: parseJson<JsonObject | null>(readString(row, "payload")) ?? undefined,
     contentHash: readString(row, "payload_hash"),
     revision: readNumber(row, "revision"),
     createdSequence: readNumber(row, "created_sequence"),
@@ -1082,7 +1125,7 @@ function readChangeRow(row: RuntimeRow): SyncChange {
     recordId: readString(row, "record_id"),
     operation,
     recordRevision: readNumber(row, "record_revision"),
-    content: parseJson<JsonObject>(readString(row, "payload")),
+    content: parseJson<JsonObject | null>(readString(row, "payload")) ?? undefined,
     contentHash: readString(row, "payload_hash"),
     deletedAt: readOptionalString(row, "deleted_at"),
     runId: readString(row, "run_id"),

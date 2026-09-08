@@ -1,3 +1,4 @@
+import type { ISyncDeliveryStore } from "./delivery-store.ts";
 import type { ISyncSourceStore } from "./source-binding.ts";
 
 export type JsonPrimitive = boolean | null | number | string;
@@ -105,6 +106,8 @@ export interface SyncRecordDeleteInput {
 }
 
 export interface CommitSyncPageInput {
+  /** Enqueue freshly hydrated unchanged revisions for this receiver only. */
+  targetReceiverId?: string;
   installationId: string;
   runId: string;
   lease: SyncLeaseInput;
@@ -153,7 +156,8 @@ export interface SyncRecord {
   installationId: string;
   kind: string;
   id: string;
-  content: JsonObject;
+  /** Omitted after all intended receivers acknowledge the payload. */
+  content?: JsonObject;
   contentHash: string;
   revision: number;
   createdSequence: number;
@@ -177,7 +181,8 @@ export interface SyncChange {
   recordId: string;
   operation: SyncChangeOperation;
   recordRevision: number;
-  content: JsonObject;
+  /** Omitted after all intended receivers acknowledge the payload. */
+  content?: JsonObject;
   contentHash: string;
   deletedAt?: string;
   runId: string;
@@ -216,6 +221,7 @@ export interface SyncOutboxRecord {
 }
 
 export interface ISyncStore {
+  readonly delivery: ISyncDeliveryStore;
   readonly sources: ISyncSourceStore;
   getInstallation(id: string): Promise<SyncInstallation | undefined>;
   registerSink(input: RegisterSyncSinkInput): Promise<void>;
