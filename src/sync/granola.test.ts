@@ -87,8 +87,7 @@ describe("Granola MCP protocol and durable acquisition", () => {
     const state = protocol();
     const database = new SqliteRuntimeDatabase(":memory:", { syncDefinitions: [granolaMeetings] });
     databases.push(database);
-    await database.syncStore.delivery.register({
-      id: "receiver",
+    await database.syncStore.delivery.configure({
       url: "https://receiver.example.com/records",
       bearerToken: "receiver-token",
       enabled: true,

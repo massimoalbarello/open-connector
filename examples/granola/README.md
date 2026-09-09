@@ -13,7 +13,7 @@ GRANOLA_REDIRECT_URI=https://connector.example.com/oauth/callback \
 
 Save the returned Client ID in OAuth Apps and leave Client Secret empty. Connect **Granola MCP** in Providers. Use a Granola plan with transcript access and select the intended workspace in Granola. Workspace access also depends on its MCP settings. The connector requests OpenID scopes to verify the provider's stable account subject through UserInfo; email addresses and credential hashes are never source identities.
 
-The registered sync appears in **Syncs** and starts through the existing scheduler. Its configuration is `{}`, and its default polling interval is one hour. Start, stop, resume, run now, and change the interval using the same controls as other syncs. Configure the receiving webhook in **Destinations**; the definition uses the framework's existing delivery and retry behavior.
+Configure the receiving webhook in **Destination**. The registered sync appears in **Syncs** and starts through the existing scheduler once the destination is enabled. Its configuration is `{}`, and its default polling interval is one hour. Start, stop, resume, run now, and change the interval using the same controls as other syncs. Removing or disabling the destination pauses acquisition and delivery; pending records remain saved and are delivered when a destination is enabled again.
 
 ## Coverage and recovery
 
@@ -26,6 +26,6 @@ The registered sync appears in **Syncs** and starts through the existing schedul
 
 For a preview without changing stored progress, send `{"dryRun":true,"maxPages":1}` to `POST /api/sync/definitions/granola.meetings/run` with your normal admin authentication.
 
-A normal or targeted backfill uses the same endpoint with `"backfill":true` and, optionally, `"targetReceiverId":"your-destination"`. Here, backfill means restarting the supported 30-day scan. New destinations receive future changes; a targeted backfill also delivers unchanged records from that scan to the selected destination.
+Use the same endpoint with `"backfill":true` to restart the supported 30-day scan. Destination replacement continues the existing delivery queue without a backfill. Records already acknowledged are not replayed.
 
 Official references: [Granola MCP](https://docs.granola.ai/help-center/sharing/integrations/mcp), [OAuth discovery](https://mcp.granola.ai/.well-known/oauth-authorization-server), [OpenID discovery](https://mcp-auth.granola.ai/.well-known/openid-configuration).
