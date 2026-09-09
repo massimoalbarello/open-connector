@@ -76,16 +76,20 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
     const row = this.database
       .prepare(`select
       coalesce(sum(state != 'delivered'), 0) as pending,
-      coalesce(sum(state = 'delivered'), 0) as delivered from sync_outbox`)
+      coalesce(sum(state = 'delivered'), 0) as delivered, max(delivered_at) as last_delivered_at from sync_outbox`)
       .get()!;
     const batch = this.database
-      .prepare("select last_error, next_attempt_at from sync_delivery_batches where state != 'delivered'")
+      .prepare(
+        "select last_error, next_attempt_at, attempt_count from sync_delivery_batches where state != 'delivered'",
+      )
       .get();
     const destination = this.getDestination();
     return {
       destination,
       pendingRecords: Number(row.pending),
       deliveredRecords: Number(row.delivered),
+      lastDeliveredAt: row.last_delivered_at === null ? undefined : readString(row, "last_delivered_at"),
+      attemptCount: Number(batch?.attempt_count ?? 0),
       lastError: batch?.last_error == null ? undefined : readString(batch, "last_error"),
       nextAttemptAt: destination?.enabled && batch ? readString(batch, "next_attempt_at") : undefined,
     };

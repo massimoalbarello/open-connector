@@ -42,6 +42,7 @@ import { ProvidersPage } from "./providers-page";
 import { ResourcesPage } from "./resources-page";
 import { RunsPage } from "./runs-page";
 import { InlineError, StatusDot } from "./shared-ui";
+import { SyncsPage } from "./syncs-page";
 import { useThemeMode } from "./theme";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -55,6 +56,7 @@ const navItems = [
   { path: "/oauth-apps", labelKey: "nav.oauthApps", icon: Fingerprint },
   { path: "/actions", labelKey: "nav.actions", icon: TerminalSquare },
   { path: "/runs", labelKey: "nav.runs", icon: Activity },
+  { path: "/syncs", labelKey: "nav.syncs", icon: RefreshCw },
   { path: "/access", labelKey: "nav.access", icon: KeyRound },
   { path: "/resources", labelKey: "nav.docs", icon: BookOpen },
 ] as const;
@@ -442,6 +444,16 @@ function AppShell(props: {
               }
             />
             <Route path="/resources" element={<ResourcesPage />} />
+            <Route
+              path="/syncs"
+              element={
+                <SyncsPage
+                  providers={props.data.providers}
+                  connections={props.data.connections}
+                  onAuthExpired={props.onRefresh}
+                />
+              }
+            />
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>
         </main>
@@ -593,6 +605,9 @@ function headingForPath(pathname: string): string {
   }
   if (section === "runs") {
     return "runs";
+  }
+  if (section === "syncs") {
+    return "syncs";
   }
   if (section === "access") {
     return "access";

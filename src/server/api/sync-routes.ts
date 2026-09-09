@@ -1,5 +1,7 @@
 import type { SyncDeliveryWorker } from "../../sync/delivery-worker.ts";
+import type { SyncStatus } from "../../sync/status-store.ts";
 import type { SyncRunner } from "../../sync/sync-runner.ts";
+import type { SyncScheduler } from "../../sync/sync-scheduler.ts";
 import type { ISyncStore, JsonObject } from "../../sync/sync-store.ts";
 import type { Hono } from "hono";
 
@@ -22,12 +24,14 @@ export function registerSyncRoutes(
   runner: SyncRunner,
   store: ISyncStore,
   delivery?: SyncDeliveryWorker,
+  scheduler?: SyncScheduler,
 ): void {
   if (delivery)
     app.post("/api/sync/delivery/run", async (context) => context.json({ attempted: await delivery.tick() }));
   app.get("/api/sync/status", async (context) =>
-    context.json({
+    context.json<SyncStatus>({
       acquisitionRunning: runner.busy,
+      schedulerRunning: scheduler?.running ?? false,
       ...(await store.status.read()),
       delivery: store.delivery.status(),
     }),

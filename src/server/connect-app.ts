@@ -110,6 +110,7 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
     syncDelivery,
     syncRunner,
     app: new ConnectServer({
+      syncScheduler,
       syncDelivery,
       syncRunner,
       syncStore: options.syncStore,

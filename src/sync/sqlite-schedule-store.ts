@@ -1,5 +1,6 @@
 import type {
   ConfigureSyncScheduleInput,
+  FailedSyncPollInput,
   ScheduledSyncInstallation,
   ISyncScheduleStore,
   SyncBindingCandidate,
@@ -9,6 +10,7 @@ import type { SyncDefinition } from "./sync-definition.ts";
 import type { JsonObject, SyncInstallation } from "./sync-store.ts";
 import type { DatabaseSync } from "node:sqlite";
 
+import { randomUUIDv7 } from "../core/uuid-v7.ts";
 import { parseJson, readString } from "../server/storage/runtime-sql.ts";
 import { runSyncTransaction } from "./sqlite-sync-transaction.ts";
 import { SyncStoreError } from "./sync-store.ts";
@@ -153,6 +155,51 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
         `update sync_installations set consecutive_failures = ?, last_error = case when requires_backfill = 1 then 'snapshot_interrupted' else ? end, next_due_at = ? where id = ? and binding_revision = ?`,
       )
       .run(failures, waiting ? null : (input.errorCode ?? null), next, input.installationId, input.bindingRevision);
+  }
+
+  failBeforeRun(input: FailedSyncPollInput): void {
+    runSyncTransaction(this.database, () => {
+      const installation = this.readers.installation(input.installation.id);
+      if (
+        !installation ||
+        installation.state !== "enabled" ||
+        installation.bindingRevision !== input.installation.bindingRevision ||
+        installation.nextDueAt !== input.installation.nextDueAt ||
+        this.database
+          .prepare("select 1 from sync_runs where installation_id = ? and started_at >= ?")
+          .get(installation.id, input.startedAt)
+      )
+        return;
+      const id = randomUUIDv7();
+      this.database
+        .prepare(`insert into sync_runs (
+          id, installation_id, definition_version, reason, state, lease_owner,
+          lease_generation, lease_expires_at, checkpoint_revision, binding_revision,
+          started_at, completed_at, error_code, error_message
+        ) values (?, ?, ?, 'schedule', 'failed', ?, 1, ?,
+          coalesce((select revision from sync_checkpoints where installation_id = ?), 0), ?, ?, ?, ?, ?)`)
+        .run(
+          id,
+          installation.id,
+          installation.definitionVersion,
+          id,
+          input.completedAt,
+          installation.id,
+          installation.bindingRevision,
+          input.startedAt,
+          input.completedAt,
+          input.errorCode,
+          "Polling failed before acquisition started; committed progress is retained.",
+        );
+      this.complete({
+        installationId: installation.id,
+        bindingRevision: installation.bindingRevision,
+        succeeded: false,
+        complete: false,
+        errorCode: input.errorCode,
+        now: input.completedAt,
+      });
+    });
   }
 
   recover(now: string): number {

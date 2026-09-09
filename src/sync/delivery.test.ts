@@ -104,6 +104,118 @@ afterEach(async () => {
 });
 
 describe("durable sync delivery", () => {
+  it("reports distinct live records separately from delivery history, including retries, purging and deletions", async () => {
+    const f = await setup();
+    const store = f.database.syncStore;
+    await f.register("first");
+    await f.commit([
+      { kind: "record", record: { id: "one", body: "First" } },
+      { kind: "record", record: { id: "two", body: "Second" } },
+    ]);
+    const stats = async () => (await store.status.read()).installations.find((item) => item.id === f.id);
+    expect(await stats()).toMatchObject({
+      recordCount: 2,
+      deliveredCount: 0,
+      pendingCount: 2,
+      connectionName: "default",
+      connectionStatus: "connected",
+      latestRun: { id: "run" },
+    });
+    const first = (await store.delivery.claim(now()))!;
+    expect(await stats()).toMatchObject({ pendingCount: 2 });
+    store.delivery.complete({ lease: first, acknowledged: false, errorCode: "http_503", retryAt: now(), now: now() });
+    expect(await stats()).toMatchObject({ recordCount: 2, deliveredCount: 0, pendingCount: 2 });
+    expect(store.delivery.status()).toMatchObject({
+      deliveredRecords: 0,
+      pendingRecords: 2,
+      lastError: "http_503",
+      attemptCount: 1,
+    });
+    const retry = (await store.delivery.claim(now()))!;
+    store.delivery.complete({ lease: retry, acknowledged: true, now: now() });
+    expect((await store.getRecord(f.id, "record", "one"))?.content).toBeUndefined();
+    expect(await stats()).toMatchObject({ recordCount: 2, deliveredCount: 2, pendingCount: 0 });
+    await f.commit([{ kind: "record", record: { id: "one", body: "Updated" } }], [{ kind: "record", id: "two" }]);
+    expect(await stats()).toMatchObject({ recordCount: 1, deliveredCount: 2, pendingCount: 2 });
+    await store.delivery.configure({
+      url: "https://second.example.com/records",
+      bearerToken: "receiver-secret",
+      enabled: false,
+    });
+    expect(await stats()).toMatchObject({ pendingCount: 2 });
+
+    store.delivery.remove();
+    expect(await stats()).toMatchObject({ pendingCount: 2 });
+    expect(store.delivery.status()).toMatchObject({ destination: undefined, pendingRecords: 2, deliveredRecords: 2 });
+
+    const connection = await f.database.connectionStore.set("github", "another", {
+      authType: "api_key",
+      apiKey: "other-secret",
+      profile: { accountId: "other", displayName: "Other", grantedScopes: [] },
+      values: {},
+      metadata: {},
+    });
+    const otherId = await store.sources.bind({
+      definitionId: "test",
+      definitionVersion: "1",
+      provider: "github",
+      config: {},
+      createdAt: now(),
+      verifiedConnection: {
+        id: connection.id,
+        revision: connection.revision,
+        service: "github",
+        identity: { accountId: "other", authorizationBoundary: "scope" },
+      },
+      expectedBindingRevision: store.sources.getBindingRevision(),
+    });
+    expect((await store.status.read()).installations.find((item) => item.id === otherId)).toMatchObject({
+      recordCount: 0,
+      deliveredCount: 0,
+      pendingCount: 0,
+      connectionName: "another",
+      connectionStatus: "connected",
+    });
+    await f.database.connectionStore.set("github", "another", {
+      authType: "api_key",
+      apiKey: "changed",
+      profile: { accountId: "other", displayName: "Other", grantedScopes: [] },
+      values: {},
+      metadata: {},
+    });
+    expect((await store.status.read()).installations.find((item) => item.id === otherId)?.connectionStatus).toBe(
+      "changed",
+    );
+    await f.database.connectionStore.delete("github", "another");
+    expect((await store.status.read()).installations.find((item) => item.id === otherId)?.connectionStatus).toBe(
+      "missing",
+    );
+    expect(JSON.stringify({ ...(await store.status.read()), delivery: store.delivery.status() })).not.toContain(
+      "secret",
+    );
+  });
+
+  it("keeps each sync's latest iteration even when it falls outside the recent history window", async () => {
+    const f = await setup();
+    const raw = new DatabaseSync(f.path);
+    try {
+      raw.prepare("update sync_runs set state = 'succeeded', completed_at = started_at where id = 'run'").run();
+      const insert =
+        raw.prepare(`insert into sync_runs(id, installation_id, definition_version, reason, state, lease_owner, lease_generation, lease_expires_at, checkpoint_revision, binding_revision, started_at, completed_at)
+        values (?, 'busy-other-sync', '1', 'schedule', 'succeeded', 'owner', 1, ?, 0, 1, ?, ?)`);
+      for (let index = 0; index < 101; index++) {
+        const timestamp = new Date(Date.now() + 1000 + index).toISOString();
+        insert.run(`other-${index}`, timestamp, timestamp, timestamp);
+      }
+      const status = await f.database.syncStore.status.read();
+      expect(status.runs).toHaveLength(100);
+      expect(status.runs.some((run) => run.id === "run")).toBe(false);
+      expect(status.installations[0]?.latestRun).toMatchObject({ id: "run", state: "succeeded" });
+    } finally {
+      raw.close();
+    }
+  });
+
   it("rolls back destination removal when delivery fencing fails", async () => {
     const f = await setup();
     await f.commit();

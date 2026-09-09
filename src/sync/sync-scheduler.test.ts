@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startLoggingReceiver } from "../../examples/sync/receiver-server.ts";
 import { createCatalogStore } from "../catalog-store.ts";
@@ -256,6 +257,126 @@ describe("embedded sync scheduler", () => {
     expect((await f.database.syncStore.status.read()).bindingErrors).toHaveLength(0);
   });
 
+  it("keeps failed polling verification in recent iterations across restart and a successful retry", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const f = await fixture();
+    f.scheduler.tick();
+    await vi.waitFor(() => expect(f.runner.busy).toBe(false));
+    const first = (await f.database.syncStore.status.read()).installations[0]!;
+    const checkpoint = await f.database.syncStore.getCheckpoint(first.id);
+    f.state.verifyFails = true;
+    vi.setSystemTime(first.nextDueAt!);
+    const startedAt = now();
+    f.scheduler.tick();
+    await vi.waitFor(async () => expect((await f.database.syncStore.status.read()).runs).toHaveLength(2));
+    const failed = (await f.database.syncStore.status.read()).runs[0]!;
+    expect(failed).toMatchObject({
+      installationId: first.id,
+      reason: "schedule",
+      state: "failed",
+      startedAt,
+      completedAt: expect.any(String),
+      errorCode: "acquisition_failed",
+      errorMessage: "Polling failed before acquisition started; committed progress is retained.",
+      pageCount: 0,
+      upsertCount: 0,
+      changeCount: 0,
+      checkpointRevision: checkpoint!.revision,
+    });
+    expect(Date.parse(failed.completedAt!)).toBeGreaterThanOrEqual(Date.parse(startedAt));
+    expect(await f.database.syncStore.getCheckpoint(first.id)).toEqual(checkpoint);
+    await f.restart();
+    const app = new Hono();
+    registerSyncRoutes(app, f.runner, f.database.syncStore, f.delivery, f.scheduler);
+    const response = await app.request("/api/sync/status");
+    expect(response.status).toBe(200);
+    const status = await response.json();
+    expect(status.installations[0]).toMatchObject({
+      latestRun: failed,
+      consecutiveFailures: 1,
+      lastSuccessAt: first.lastSuccessAt,
+      recordCount: 2,
+    });
+    expect(status.runs.map((run: { state: string }) => run.state)).toEqual(["failed", "succeeded"]);
+    expect(JSON.stringify(status)).not.toContain("private-secret");
+    f.scheduler.tick();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(f.state.verifications).toBe(2);
+    f.state.verifyFails = false;
+    vi.setSystemTime(status.installations[0].nextDueAt);
+    f.scheduler.tick();
+    await vi.waitFor(async () => expect((await f.database.syncStore.status.read()).runs[0]?.state).toBe("succeeded"));
+    const retried = await f.database.syncStore.status.read();
+    expect(retried.runs.map((run) => run.state)).toEqual(["succeeded", "failed", "succeeded"]);
+    expect(retried.installations[0]?.consecutiveFailures).toBe(0);
+  });
+
+  it("records a polling failure only once when acquisition already created the run", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    let fail = false;
+    const f = await fixture({
+      async *run() {
+        if (fail) throw new Error("private-acquisition-error");
+        yield { checkpoint: { cursor: 0 }, complete: true };
+      },
+    });
+    const first = await f.runner.run({ definitionId: definition.id });
+    const installation = (await f.database.syncStore.getInstallation(first.installationId!))!;
+    fail = true;
+    vi.setSystemTime(installation.nextDueAt!);
+    f.scheduler.tick();
+    await vi.waitFor(() => expect(f.runner.busy).toBe(false));
+    const status = await f.database.syncStore.status.read();
+    expect(status.runs.map((run) => run.state)).toEqual(["failed", "succeeded"]);
+    expect(status.installations[0]?.consecutiveFailures).toBe(1);
+    expect(JSON.stringify(status)).not.toContain("private-acquisition-error");
+  });
+
+  it("does not record a late verification failure after the sync was stopped", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const f = await fixture();
+    const first = await f.runner.run({ definitionId: definition.id });
+    const installation = (await f.database.syncStore.getInstallation(first.installationId!))!;
+    vi.setSystemTime(installation.nextDueAt!);
+    f.database.syncStore.schedule.configure({ installationId: installation.id, enabled: false });
+    const stopped = await f.database.syncStore.getInstallation(installation.id);
+    f.database.syncStore.schedule.failBeforeRun({
+      installation,
+      startedAt: now(),
+      completedAt: now(),
+      errorCode: "acquisition_failed",
+    });
+    expect(await f.database.syncStore.getInstallation(installation.id)).toEqual(stopped);
+    expect((await f.database.syncStore.status.read()).runs).toHaveLength(1);
+  });
+
+  it("commits a failed poll and its backoff atomically and ignores a repeated completion", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const f = await fixture();
+    const first = await f.runner.run({ definitionId: definition.id });
+    const installation = (await f.database.syncStore.getInstallation(first.installationId!))!;
+    vi.setSystemTime(installation.nextDueAt!);
+    const failure = { installation, startedAt: now(), completedAt: now(), errorCode: "acquisition_failed" };
+    const raw = new DatabaseSync(f.path);
+    try {
+      raw.exec(`create trigger reject_backoff before update of consecutive_failures on sync_installations
+        begin select raise(abort, 'backoff write failed'); end;`);
+      expect(() => f.database.syncStore.schedule.failBeforeRun(failure)).toThrow("backoff write failed");
+      const unchanged = await f.database.syncStore.status.read();
+      expect(unchanged.runs).toHaveLength(1);
+      expect(unchanged.installations[0]?.nextDueAt).toBe(installation.nextDueAt);
+      expect(unchanged.installations[0]?.consecutiveFailures).toBe(0);
+      raw.exec("drop trigger reject_backoff");
+      f.database.syncStore.schedule.failBeforeRun(failure);
+      f.database.syncStore.schedule.failBeforeRun(failure);
+      const completed = await f.database.syncStore.status.read();
+      expect(completed.runs.map((run) => run.state)).toEqual(["failed", "succeeded"]);
+      expect(completed.installations[0]?.consecutiveFailures).toBe(1);
+    } finally {
+      raw.close();
+    }
+  });
+
   it("enforces the global acquisition slot across database instances and cancels cleanly on shutdown", async () => {
     let entered = false;
     const f = await fixture({
@@ -335,8 +456,23 @@ describe("embedded sync scheduler", () => {
     const run = await f.runner.run({ definitionId: definition.id });
     const app = new Hono();
     app.use("/api/*", createLocalAuthMiddleware({ adminToken: "admin" }));
-    registerSyncRoutes(app, f.runner, f.database.syncStore, f.delivery);
+    registerSyncRoutes(app, f.runner, f.database.syncStore, f.delivery, f.scheduler);
     expect((await app.request("/api/sync/status")).status).toBe(401);
+    const status = await app.request("/api/sync/status", { headers: { authorization: "Bearer admin" } });
+    expect(await status.json()).toMatchObject({
+      schedulerRunning: false,
+      installations: [
+        {
+          id: run.installationId,
+          recordCount: 2,
+          deliveredCount: 0,
+          pendingCount: 2,
+          latestRun: { state: "succeeded" },
+        },
+      ],
+    });
+    f.scheduler.start();
+    expect(f.scheduler.running).toBe(true);
     const disabled = await app.request(`/api/sync/installations/${run.installationId}`, {
       method: "PATCH",
       headers: { authorization: "Bearer admin", "content-type": "application/json" },
@@ -344,6 +480,7 @@ describe("embedded sync scheduler", () => {
     });
     expect(disabled.status).toBe(200);
     await f.restart();
+    expect(f.scheduler.running).toBe(false);
     f.scheduler.tick();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(f.state.visits).toBe(1);

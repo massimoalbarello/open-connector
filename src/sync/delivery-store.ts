@@ -16,6 +16,8 @@ export interface SyncDeliveryStatus {
   destination?: SyncDestination;
   pendingRecords: number;
   deliveredRecords: number;
+  lastDeliveredAt?: string;
+  attemptCount: number;
   lastError?: string;
   nextAttemptAt?: string;
 }
