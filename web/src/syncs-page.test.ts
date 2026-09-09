@@ -5,6 +5,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it } from "vitest";
+import { DestinationOverview } from "./destinations-page";
 import { createAppI18n } from "./i18n";
 import { syncCanPoll, syncHealth } from "./sync-model";
 import { RecentIterations } from "./sync-ui";
@@ -54,7 +55,6 @@ const installation: SyncInstallation = {
       totalRecords: 3,
       deliveredRecords: 1,
       pendingRecords: 2,
-      cancelledRecords: 0,
       lastError: "http_503",
     },
   },
@@ -79,19 +79,15 @@ const status: SyncStatus = {
       requiredScopes: [],
     },
   ],
-  receivers: [
-    {
-      id: "context-use",
-      url: "https://context.example.com/records",
-      enabled: true,
-      pendingRecords: 4,
-      deliveredRecords: 20,
-      attemptCount: 2,
-      lastError: "http_503",
-      nextAttemptAt: "2026-09-08T12:16:00.000Z",
-      lastDeliveredAt: "2026-09-08T12:00:05.000Z",
-    },
-  ],
+  delivery: {
+    destination: { url: "https://context.example.com/records", enabled: true },
+    pendingRecords: 4,
+    deliveredRecords: 20,
+    attemptCount: 2,
+    lastError: "http_503",
+    nextAttemptAt: "2026-09-08T12:16:00.000Z",
+    lastDeliveredAt: "2026-09-08T12:00:05.000Z",
+  },
 };
 
 function render(value: SyncStatus): string {
@@ -105,6 +101,27 @@ function render(value: SyncStatus): string {
 }
 
 describe("sync monitoring", () => {
+  it("shows a waiting sync and retained delivery counts while no destination is configured", () => {
+    const delivery = { ...status.delivery, destination: undefined };
+    const html = render({ ...status, delivery });
+    expect(html).toContain("Waiting for destination");
+    expect(html).not.toContain('dateTime="2026-09-08T12:15:00.000Z"');
+    expect(syncHealth({ ...installation, state: "disabled" }, false)).toBe("paused");
+    expect(syncCanPoll(installation, false)).toBe(false);
+    const destination = renderToStaticMarkup(
+      createElement(
+        I18nProvider,
+        { i18n: createAppI18n("en") },
+        createElement(DestinationOverview, { delivery, schedulerRunning: true, onEdit() {}, onRemove() {} }),
+      ),
+    );
+    expect(destination).toContain("No webhook destination configured");
+    expect(destination).toContain("Pending records are retained");
+    expect(destination).toContain("<dd>4</dd>");
+    expect(destination).toContain("<dd>20</dd>");
+    expect(destination).not.toContain('dateTime="2026-09-08T12:16:00.000Z"');
+  });
+
   it("shows a compact table linking sync details and destinations", () => {
     const html = render(status);
     for (const text of ["github.pull-requests", "personal", "Latest iteration delivery", "1 of 3 delivered"])
@@ -121,7 +138,7 @@ describe("sync monitoring", () => {
       ...status,
       installations: [],
       runs: [],
-      receivers: [],
+      delivery: { pendingRecords: 0, deliveredRecords: 0, attemptCount: 0 },
       bindingErrors: [
         {
           connectionId: "pending",
@@ -164,7 +181,11 @@ describe("sync monitoring", () => {
                 lastError: undefined,
               },
             },
-            { ...original, id: "no-destination", delivery: { ...original.delivery, totalRecords: 0 } },
+            {
+              ...original,
+              id: "no-destination",
+              delivery: { ...original.delivery, state: "waiting", nextAttemptAt: undefined },
+            },
             { ...original, id: "no-changes", changeCount: 0, delivery: { ...original.delivery, totalRecords: 0 } },
           ],
         }),
@@ -179,7 +200,7 @@ describe("sync monitoring", () => {
       "http_503",
       "3 of 3 delivered",
       "Succeeded",
-      "No destination when acquired",
+      "Waiting for destination",
       "Nothing to deliver",
     ])
       expect(html).toContain(text);
@@ -202,9 +223,9 @@ describe("sync monitoring", () => {
       [{ requiresBackfill: true }, "needsAttention"],
       [{ state: "needs_attention" }, "needsAttention"],
     ] as [Partial<SyncInstallation>, string][]) {
-      expect(syncHealth({ ...installation, ...patch })).toBe(health);
-      expect(syncCanPoll({ ...installation, ...patch })).toBe(false);
+      expect(syncHealth({ ...installation, ...patch }, true)).toBe(health);
+      expect(syncCanPoll({ ...installation, ...patch }, true)).toBe(false);
     }
-    expect(syncHealth({ ...installation, lastError: "http_429", consecutiveFailures: 1 })).toBe("retrying");
+    expect(syncHealth({ ...installation, lastError: "http_429", consecutiveFailures: 1 }, true)).toBe("retrying");
   });
 });

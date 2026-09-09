@@ -90,7 +90,7 @@ export function SyncBadge({ state }: { state: string }): ReactNode {
   const t = useTranslate();
   const tone = ["failed", "lease_expired", "needsAttention", "disconnected"].includes(state)
     ? "error"
-    : ["retrying", "verifying", "cancelled"].includes(state)
+    : ["retrying", "verifying", "cancelled", "waitingDestination"].includes(state)
       ? "warning"
       : ["running", "succeeded", "scheduled", "enabled", "delivered"].includes(state)
         ? "success"
@@ -112,20 +112,14 @@ export function DeliveryStatus({ run, compact = false }: { run?: SyncRun; compac
   const t = useTranslate();
   if (!run) return "—";
   const delivery = run.delivery;
-  if (!delivery) return <span className="syncs-secondary">{t("syncs.manage.deliveryUnavailable")}</span>;
-  if (!delivery.totalRecords)
-    return (
-      <span className="syncs-secondary">
-        {t(run.changeCount ? "syncs.manage.noDeliveryDestination" : "syncs.manage.nothingToDeliver")}
-      </span>
-    );
+  if (!delivery.totalRecords) return <span className="syncs-secondary">{t("syncs.manage.nothingToDeliver")}</span>;
   return (
     <div className="syncs-delivery-status">
       <Badge
         tone={
           delivery.state === "delivered"
             ? "success"
-            : ["retrying", "cancelled"].includes(delivery.state)
+            : ["retrying", "waiting"].includes(delivery.state)
               ? "warning"
               : undefined
         }
@@ -138,11 +132,6 @@ export function DeliveryStatus({ run, compact = false }: { run?: SyncRun; compac
       {!compact && delivery.pendingRecords ? (
         <small className="syncs-secondary syncs-block">
           {t("syncs.manage.pendingCount", { count: delivery.pendingRecords })}
-        </small>
-      ) : null}
-      {!compact && delivery.cancelledRecords ? (
-        <small className="syncs-secondary syncs-block">
-          {t("syncs.manage.cancelledCount", { count: delivery.cancelledRecords })}
         </small>
       ) : null}
       {!compact && delivery.lastError ? <small className="syncs-error syncs-block">{delivery.lastError}</small> : null}

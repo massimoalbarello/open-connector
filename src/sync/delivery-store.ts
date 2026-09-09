@@ -3,32 +3,31 @@ import type { JsonObject, SyncChangeOperation } from "./sync-store.ts";
 export const maximumDeliveryBytes: number = 16 * 1024 * 1024;
 export const maximumRecordBytes: number = 8 * 1024 * 1024;
 
-export interface SyncReceiverInput {
-  id: string;
+export interface SyncDestinationInput {
   url: string;
   bearerToken: string;
   enabled: boolean;
 }
-export interface UpdateSyncReceiverInput {
-  id: string;
+export interface UpdateSyncDestinationInput {
   url?: string;
   bearerToken?: string;
   enabled?: boolean;
 }
 export interface SyncRunDelivery {
-  state: "none" | "pending" | "delivering" | "retrying" | "delivered" | "cancelled";
+  state: "none" | "waiting" | "pending" | "delivering" | "retrying" | "delivered";
   totalRecords: number;
   deliveredRecords: number;
   pendingRecords: number;
-  cancelledRecords: number;
   lastError?: string;
   nextAttemptAt?: string;
   lastDeliveredAt?: string;
 }
-export interface SyncReceiverStatus {
-  id: string;
+export interface SyncDestination {
   url: string;
   enabled: boolean;
+}
+export interface SyncDeliveryStatus {
+  destination?: SyncDestination;
   pendingRecords: number;
   deliveredRecords: number;
   lastDeliveredAt?: string;
@@ -72,11 +71,14 @@ export interface CompleteSyncDeliveryInput {
   now: string;
 }
 export interface ISyncDeliveryStore {
-  register(input: SyncReceiverInput): Promise<void>;
-  update(input: UpdateSyncReceiverInput): Promise<void>;
-  remove(id: string): void;
-  list(): Promise<SyncReceiverStatus[]>;
+  configure(input: SyncDestinationInput): Promise<void>;
+  update(input: UpdateSyncDestinationInput): Promise<void>;
   runStatus(runId: string): SyncRunDelivery;
+  /** Remove configuration and fence in-flight ACKs; queued records remain pending. */
+  remove(): void;
+  getDestination(): SyncDestination | undefined;
+  requireDestination(): void;
+  status(): SyncDeliveryStatus;
   claim(now: string): Promise<SyncDeliveryLease | undefined>;
   complete(input: CompleteSyncDeliveryInput): void;
   purge(): void;

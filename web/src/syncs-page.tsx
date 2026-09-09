@@ -58,6 +58,7 @@ export function SyncsOverview({
 }): ReactNode {
   const t = useTranslate();
   const navigate = useNavigate();
+  const destinationReady = status.delivery.destination?.enabled === true;
   const [search, setSearch] = useState("");
   const [limit, setLimit] = useState(25);
   const query = search.toLowerCase().trim();
@@ -72,6 +73,7 @@ export function SyncsOverview({
   const total = syncs.length + available.length;
   return (
     <>
+      {!destinationReady ? <FormStatus message={t("syncs.waitingDestination")} /> : null}
       {!status.schedulerRunning ? <FormStatus message={t("syncs.schedulerStopped")} /> : null}
       <div className="syncs-table-toolbar">
         <LabelledSearch
@@ -116,7 +118,7 @@ export function SyncsOverview({
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <SyncBadge state={syncHealth(sync)} />
+                      <SyncBadge state={syncHealth(sync, destinationReady)} />
                     </TableCell>
                     <TableCell>
                       <SyncTime value={sync.latestRun?.startedAt} empty={t("syncs.never")} />
@@ -127,7 +129,7 @@ export function SyncsOverview({
                       ) : null}
                     </TableCell>
                     <TableCell>
-                      {!syncCanPoll(sync) ? (
+                      {!syncCanPoll(sync, destinationReady) ? (
                         t("syncs.notScheduled")
                       ) : !status.schedulerRunning ? (
                         t("syncs.stopped")

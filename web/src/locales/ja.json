@@ -592,7 +592,7 @@
     }
   },
   "syncs": {
-    "description": "ソースのポーリングと Webhook 送信先へのレコード配信を確認します。",
+    "description": "ソースの同期と Webhook 送信先へのレコード配信を監視します。",
     "updated": "更新",
     "autoRefresh": "10 秒ごとに更新",
     "loadFailed": "同期状況を読み込めませんでした。",
@@ -625,14 +625,14 @@
     "failures": "連続失敗数",
     "sourceId": "ソース ID",
     "backfillRequired": "前回の履歴取得が中断されました。ポーリングを再開するには、履歴取得を明示的に開始してください。",
-    "countsHint": "レコード数は削除されていない一意なレコードの数です。配信済み・配信待ちは更新や削除を含む送信先ごとの変更数で、1 件のレコードが複数回配信されることがあります。",
+    "countsHint": "レコード数は削除されていない一意のレコード数です。配信済みと保留中は更新や削除を含む変更数で、同じレコードが複数回配信される場合があります。",
     "bindingErrors": "ソースの確認エラー",
     "nextAttempt": "次回の配信・再試行",
     "stopped": "スケジューラー停止中",
     "webhookDestinations": "Webhook 送信先",
     "allSources": "すべてのソースを購読",
-    "noDestinationsTitle": "Webhook 送信先は未登録です",
-    "noDestinationsDescription": "同期 API で受信先を登録すると新しい変更が配信されます。既存のレコードを新しい送信先へ送るには、送信先を指定して履歴取得を実行してください。",
+    "noDestinationsTitle": "Webhook 送信先が設定されていません",
+    "noDestinationsDescription": "送信先を設定すると同期が再開され、保持されているレコードが配信されます。",
     "notScheduled": "予定なし",
     "afterCurrent": "現在の実行後",
     "due": "実行時刻到達・ワーカー待ち",
@@ -665,7 +665,8 @@
       "lease_expired": "中断",
       "succeeded": "成功",
       "enabled": "有効",
-      "notConfigured": "未設定"
+      "notConfigured": "未設定",
+      "waitingDestination": "送信先を待機中"
     },
     "connection": {
       "missing": "ソースの接続が削除されました。ポーリングを再開するにはアカウントを再接続してください。",
@@ -685,16 +686,13 @@
       "delivering": "送信中",
       "retrying": "再試行中",
       "delivered": "送信済み",
-      "cancelled": "キャンセル済み"
+      "waiting": "送信先を待機中"
     },
     "manage": {
       "unavailable": "同期を利用できません",
-      "deliveryUnavailable": "配信状況を取得できません",
-      "noDeliveryDestination": "取得時に送信先がありませんでした",
       "nothingToDeliver": "送信対象なし",
       "deliveryProgress": "{{total}} 件中 {{delivered}} 件を配信済み",
       "pendingCount": "{{count}} 件待機中",
-      "cancelledCount": "{{count}} 件キャンセル済み",
       "historyLimit": "この同期の直近100回の実行",
       "pollingResult": "ポーリング",
       "delivery": "配信",
@@ -728,24 +726,24 @@
       "stopHint": "停止すると現在のポーリングがキャンセルされ、確定済みの進捗は保持されます。キュー内のレコードの配信は続行されます。",
       "removeSync": "同期を削除しますか？",
       "removeSyncDescription": "ポーリングを停止して、この同期を非表示にします。レコード、履歴、進捗は保持され、同じ同期を再追加すると復元されます。キュー内の配信は続行されます。"
-    }
+    },
+    "waitingDestination": "同期は有効な送信先を待機しています。未配信のレコードは保持されます。"
   },
   "destinations": {
     "description": "すべての同期からレコードを受け取る Webhook 送信先を管理します。",
     "add": "送信先を追加",
     "edit": "送信先を編集",
     "formDescription": "公開 HTTPS エンドポイントと、受信側が要求する Bearer トークンを指定してください。",
-    "id": "送信先 ID",
     "url": "Webhook の URL",
     "token": "Bearer トークン",
     "keepToken": "空欄にすると保存済みのトークンを維持します。",
     "tokenHint": "各配信の Authorization ヘッダーで送信されます。",
     "enabled": "有効",
-    "disabledHint": "無効な間は新しい変更を受け取りません。キュー内の配信は再度有効になるまで待機します。",
+    "disabledHint": "送信先を無効にすると同期と配信が一時停止します。未配信のレコードは保持されます。",
     "updateHint": "待機中の配信には更新後の URL とトークンが使われます。",
-    "emptyDescription": "同期のレコード変更を受信する送信先を追加してください。",
-    "newRecordsHint": "新しい送信先は今後の変更を受け取ります。既存レコードの送信には同期 API で送信先を指定したバックフィルが必要です。",
+    "emptyDescription": "送信先を追加すると同期が再開され、保持されたレコードが配信されます。",
     "remove": "送信先を削除しますか？",
-    "removeDescription": "保存済みトークンを削除し、待機中の {{count}} 件をキャンセルします。配信履歴は保持されます。送信中のリクエストは到着する可能性があります。"
+    "removeDescription": "保存された URL とトークンを削除し、同期を一時停止します。保留中の {{count}} 件は次の送信先に配信するため保持されます。送信中のリクエストは到着する場合があります。",
+    "retentionHint": "送信先を削除しても未配信のレコードは保持され、有効な送信先が設定されると配信されます。受領確認済みのレコードは再送されません。"
   }
 }

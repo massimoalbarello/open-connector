@@ -137,23 +137,24 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
   complete(input: SyncScheduleResult): void {
     const installation = this.readers.installation(input.installationId);
     if (!installation || installation.bindingRevision !== input.bindingRevision) return;
-    const failures = input.succeeded ? 0 : installation.consecutiveFailures + 1;
-    const next = input.succeeded
-      ? new Date(
-          Date.parse(input.now) + (input.complete ? (installation.scheduleSeconds ?? 900) * 1000 : 1000),
-        ).toISOString()
-      : retryTime(input.now, failures);
+    const waiting = input.errorCode === "destination_required";
+    const failures = waiting
+      ? installation.consecutiveFailures
+      : input.succeeded
+        ? 0
+        : installation.consecutiveFailures + 1;
+    const next = waiting
+      ? input.now
+      : input.succeeded
+        ? new Date(
+            Date.parse(input.now) + (input.complete ? (installation.scheduleSeconds ?? 900) * 1000 : 1000),
+          ).toISOString()
+        : retryTime(input.now, failures);
     this.database
-      .prepare(`update sync_installations set consecutive_failures = ?, last_error = case when requires_backfill = 1 then 'snapshot_interrupted' else ? end, next_due_at = ?,
-      bootstrap_receiver_id = case when ? then null else bootstrap_receiver_id end where id = ? and binding_revision = ?`)
-      .run(
-        failures,
-        input.errorCode ?? null,
-        next,
-        Number(input.succeeded && input.complete),
-        input.installationId,
-        input.bindingRevision,
-      );
+      .prepare(
+        `update sync_installations set consecutive_failures = ?, last_error = case when requires_backfill = 1 then 'snapshot_interrupted' else ? end, next_due_at = ? where id = ? and binding_revision = ?`,
+      )
+      .run(failures, waiting ? null : (input.errorCode ?? null), next, input.installationId, input.bindingRevision);
   }
 
   failBeforeRun(input: FailedSyncPollInput): void {

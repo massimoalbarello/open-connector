@@ -40,7 +40,7 @@
     "runs": "Runs",
     "access": "API Key",
     "docs": "Docs",
-    "destinations": "Destinations"
+    "destinations": "Destination"
   },
   "shell": {
     "invalidUnlockToken": "Enter a valid admin token to unlock the console.",
@@ -80,7 +80,7 @@
         "title": "Resources"
       },
       "destinations": {
-        "title": "Destinations"
+        "title": "Destination"
       }
     }
   },
@@ -606,7 +606,7 @@
     }
   },
   "syncs": {
-    "description": "Monitor source polling and record delivery to your webhook destinations.",
+    "description": "Monitor source polling and record delivery to your webhook destination.",
     "updated": "Updated",
     "autoRefresh": "Refreshes every 10 seconds",
     "loadFailed": "Could not load sync status.",
@@ -621,7 +621,7 @@
     "acknowledged": "Record deliveries acknowledged",
     "pending": "Pending",
     "awaitingAck": "Record deliveries awaiting acknowledgement",
-    "destinations": "Destinations",
+    "destinations": "Destination",
     "enabledCount": "{{count}} enabled",
     "polling": "Source syncs",
     "acquisitionIdle": "Polling idle",
@@ -639,14 +639,14 @@
     "failures": "Consecutive failures",
     "sourceId": "Source ID",
     "backfillRequired": "A previous backfill was interrupted. An explicit backfill is required before polling can resume.",
-    "countsHint": "Records count unique, non-deleted records. Delivered and pending count record changes per destination, including updates and deletions; one record can have multiple deliveries.",
+    "countsHint": "Records count unique, non-deleted records. Delivered and pending count record changes, including updates and deletions; one record can have multiple deliveries.",
     "bindingErrors": "Source verification errors",
     "nextAttempt": "Next delivery / retry",
     "stopped": "Scheduler stopped",
-    "webhookDestinations": "Webhook destinations",
+    "webhookDestinations": "Webhook destination",
     "allSources": "Subscribed to all sources",
-    "noDestinationsTitle": "No webhook destinations registered",
-    "noDestinationsDescription": "Register a receiver through the sync API to deliver new changes. To send existing records to a new destination, run a targeted backfill.",
+    "noDestinationsTitle": "No webhook destination configured",
+    "noDestinationsDescription": "Configure a destination to resume polling and deliver retained records.",
     "notScheduled": "Not scheduled",
     "afterCurrent": "After current iteration",
     "due": "Due · waiting for worker",
@@ -679,7 +679,8 @@
       "lease_expired": "Interrupted",
       "succeeded": "Succeeded",
       "enabled": "Enabled",
-      "notConfigured": "Not configured"
+      "notConfigured": "Not configured",
+      "waitingDestination": "Waiting for destination"
     },
     "connection": {
       "missing": "The source connection was removed. Reconnect the account to resume polling.",
@@ -699,16 +700,13 @@
       "delivering": "Delivering",
       "retrying": "Retrying",
       "delivered": "Delivered",
-      "cancelled": "Cancelled"
+      "waiting": "Waiting for destination"
     },
     "manage": {
       "unavailable": "Sync unavailable",
-      "deliveryUnavailable": "Delivery status unavailable",
-      "noDeliveryDestination": "No destination when acquired",
       "nothingToDeliver": "Nothing to deliver",
       "deliveryProgress": "{{delivered}} of {{total}} delivered",
       "pendingCount": "{{count}} pending",
-      "cancelledCount": "{{count}} cancelled",
       "historyLimit": "Latest 100 iterations for this sync",
       "pollingResult": "Polling",
       "delivery": "Delivery",
@@ -742,24 +740,24 @@
       "stopHint": "Stop cancels the current poll and retains committed progress. Already queued records continue to be delivered.",
       "removeSync": "Remove sync?",
       "removeSyncDescription": "Polling will stop and this sync will be hidden. Records, history and saved progress are retained; adding the same sync again restores it. Queued deliveries continue."
-    }
+    },
+    "waitingDestination": "Syncs are waiting for an enabled destination. Pending records are retained."
   },
   "destinations": {
-    "description": "Manage the webhook destinations that receive records from all your syncs.",
+    "description": "Manage the webhook destination that receives records from all your syncs.",
     "add": "Add destination",
     "edit": "Edit destination",
     "formDescription": "Use a public HTTPS endpoint and the Bearer token expected by its receiver.",
-    "id": "Destination ID",
     "url": "Webhook URL",
     "token": "Bearer token",
     "keepToken": "Leave blank to keep the saved token.",
     "tokenHint": "Sent in the Authorization header of each delivery.",
     "enabled": "Enabled",
-    "disabledHint": "While disabled, this destination receives no new changes. Deliveries already queued wait until it is enabled again.",
+    "disabledHint": "Disabling the destination pauses polling and delivery. Pending records are retained.",
     "updateHint": "Pending deliveries will use the updated URL and token.",
-    "emptyDescription": "Add a destination to receive record changes from your syncs.",
-    "newRecordsHint": "New destinations receive future changes. Sending existing records to a new destination requires an explicit targeted backfill through the sync API.",
+    "emptyDescription": "Add a destination to resume syncs and deliver retained records.",
     "remove": "Remove destination?",
-    "removeDescription": "This removes its saved token and cancels {{count}} pending deliveries. Delivery history is retained. A request already in flight may still arrive."
+    "removeDescription": "This removes the saved URL and token and pauses polling. {{count}} pending deliveries are retained for the next destination. A request already in flight may still arrive.",
+    "retentionHint": "Pending records survive destination removal and are delivered when a destination is enabled. Records already acknowledged are not replayed."
   }
 }

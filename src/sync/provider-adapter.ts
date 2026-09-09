@@ -15,6 +15,7 @@ export interface SyncProviderContext {
 
 export interface SyncProviderOptions extends SyncProviderContext {
   connections: IConnectionStore;
+  assertActive?(): void;
   createProvider(context: SyncProviderContext): SyncProvider;
 }
 
@@ -27,6 +28,7 @@ export function createSyncProvider(options: SyncProviderOptions): SyncProvider {
     const current = await options.connections.get(connection.service, connection.connectionName);
     if (current?.id !== connection.id || current.revision !== connection.revision)
       throw new SyncStoreError("credential_changed", "Sync credential changed during acquisition.");
+    options.assertActive?.();
   };
   return {
     async request(operation, input) {

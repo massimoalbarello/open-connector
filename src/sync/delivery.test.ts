@@ -44,6 +44,11 @@ async function setup() {
     expectedBindingRevision: database.syncStore.sources.getBindingRevision(),
     createdAt: now(),
   });
+  await database.syncStore.delivery.configure({
+    url: "https://first.example.com/records",
+    bearerToken: "receiver-secret",
+    enabled: true,
+  });
   await database.syncStore.startRun({
     id: "run",
     installationId: id,
@@ -55,15 +60,13 @@ async function setup() {
   });
   let revision = 0;
   const register = (name: string) =>
-    database.syncStore.delivery.register({
-      id: name,
+    database.syncStore.delivery.configure({
       url: `https://${name}.example.com/records`,
       bearerToken: "receiver-secret",
       enabled: true,
     });
   const commit = async (
     records = [{ kind: "record", record: { id: "one", body: "# Complete record" } }],
-    targetReceiverId?: string,
     deletes?: { kind: string; id: string }[],
   ) => {
     const result = await database.syncStore.commitPage({
@@ -75,7 +78,6 @@ async function setup() {
       upserts: records,
       deletes,
       committedAt: now(),
-      targetReceiverId,
     });
     revision = result.checkpoint.revision;
     return result;
@@ -106,7 +108,6 @@ describe("durable sync delivery", () => {
     const f = await setup();
     const store = f.database.syncStore;
     await f.register("first");
-    await f.register("second");
     await f.commit([
       { kind: "record", record: { id: "one", body: "First" } },
       { kind: "record", record: { id: "two", body: "Second" } },
@@ -115,37 +116,37 @@ describe("durable sync delivery", () => {
     expect(await stats()).toMatchObject({
       recordCount: 2,
       deliveredCount: 0,
-      pendingCount: 4,
+      pendingCount: 2,
       connectionName: "default",
       connectionStatus: "connected",
       latestRun: { id: "run" },
     });
     const first = (await store.delivery.claim(now()))!;
-    expect(await stats()).toMatchObject({ pendingCount: 4 });
-    const acknowledgedAt = now();
-    store.delivery.complete({ lease: first, acknowledged: true, now: acknowledgedAt });
-    const second = (await store.delivery.claim(now()))!;
-    store.delivery.complete({ lease: second, acknowledged: false, errorCode: "http_503", retryAt: now(), now: now() });
-    expect(await stats()).toMatchObject({ recordCount: 2, deliveredCount: 2, pendingCount: 2 });
-    expect(await store.delivery.list()).toMatchObject([
-      { id: "first", deliveredRecords: 2, pendingRecords: 0, lastDeliveredAt: acknowledgedAt, attemptCount: 0 },
-      { id: "second", deliveredRecords: 0, pendingRecords: 2, lastError: "http_503", attemptCount: 1 },
-    ]);
+    expect(await stats()).toMatchObject({ pendingCount: 2 });
+    store.delivery.complete({ lease: first, acknowledged: false, errorCode: "http_503", retryAt: now(), now: now() });
+    expect(await stats()).toMatchObject({ recordCount: 2, deliveredCount: 0, pendingCount: 2 });
+    expect(store.delivery.status()).toMatchObject({
+      deliveredRecords: 0,
+      pendingRecords: 2,
+      lastError: "http_503",
+      attemptCount: 1,
+    });
     const retry = (await store.delivery.claim(now()))!;
     store.delivery.complete({ lease: retry, acknowledged: true, now: now() });
     expect((await store.getRecord(f.id, "record", "one"))?.content).toBeUndefined();
-    expect(await stats()).toMatchObject({ recordCount: 2, deliveredCount: 4, pendingCount: 0 });
-    await f.commit([{ kind: "record", record: { id: "one", body: "Updated" } }], undefined, [
-      { kind: "record", id: "two" },
-    ]);
-    expect(await stats()).toMatchObject({ recordCount: 1, deliveredCount: 4, pendingCount: 4 });
-    await store.delivery.register({
-      id: "second",
+    expect(await stats()).toMatchObject({ recordCount: 2, deliveredCount: 2, pendingCount: 0 });
+    await f.commit([{ kind: "record", record: { id: "one", body: "Updated" } }], [{ kind: "record", id: "two" }]);
+    expect(await stats()).toMatchObject({ recordCount: 1, deliveredCount: 2, pendingCount: 2 });
+    await store.delivery.configure({
       url: "https://second.example.com/records",
       bearerToken: "receiver-secret",
       enabled: false,
     });
-    expect(await stats()).toMatchObject({ pendingCount: 4 });
+    expect(await stats()).toMatchObject({ pendingCount: 2 });
+
+    store.delivery.remove();
+    expect(await stats()).toMatchObject({ pendingCount: 2 });
+    expect(store.delivery.status()).toMatchObject({ destination: undefined, pendingRecords: 2, deliveredRecords: 2 });
 
     const connection = await f.database.connectionStore.set("github", "another", {
       authType: "api_key",
@@ -189,7 +190,7 @@ describe("durable sync delivery", () => {
     expect((await store.status.read()).installations.find((item) => item.id === otherId)?.connectionStatus).toBe(
       "missing",
     );
-    expect(JSON.stringify({ ...(await store.status.read()), receivers: await store.delivery.list() })).not.toContain(
+    expect(JSON.stringify({ ...(await store.status.read()), delivery: store.delivery.status() })).not.toContain(
       "secret",
     );
   });
@@ -216,13 +217,31 @@ describe("durable sync delivery", () => {
     }
   });
 
+  it("rolls back destination removal when delivery fencing fails", async () => {
+    const f = await setup();
+    await f.commit();
+    const lease = (await f.database.syncStore.delivery.claim(now()))!;
+    const sql = new DatabaseSync(f.path);
+    try {
+      sql.exec(
+        "create trigger reject_fence before update on sync_delivery_batches begin select raise(abort, 'fencing failed'); end;",
+      );
+      expect(() => f.database.syncStore.delivery.remove()).toThrow("fencing failed");
+      expect(f.database.syncStore.delivery.getDestination()?.enabled).toBe(true);
+      sql.exec("drop trigger reject_fence");
+      f.database.syncStore.delivery.complete({ lease, acknowledged: true, now: now() });
+      expect(f.database.syncStore.delivery.status().deliveredRecords).toBe(1);
+    } finally {
+      sql.close();
+    }
+  });
+
   it("closes an interrupted attempt when a receiver changes and rejects its late ACK", async () => {
     const f = await setup();
     await f.register("first");
     await f.commit();
     const old = (await f.database.syncStore.delivery.claim(now()))!;
-    await f.database.syncStore.delivery.register({
-      id: "first",
+    await f.database.syncStore.delivery.configure({
       url: "https://new.example.com/records",
       bearerToken: "rotated-token",
       enabled: true,
@@ -233,7 +252,7 @@ describe("durable sync delivery", () => {
         sql
           .prepare("select completed_at, error_code from sync_delivery_attempts where batch_id = ? and attempt = 1")
           .get(old.id),
-      ).toEqual({ completed_at: expect.any(String), error_code: "receiver_reconfigured" });
+      ).toEqual({ completed_at: expect.any(String), error_code: "destination_changed" });
     } finally {
       sql.close();
     }
@@ -249,43 +268,47 @@ describe("durable sync delivery", () => {
       bearerToken: "rotated-token",
     });
     f.database.syncStore.delivery.complete({ lease: retry, acknowledged: true, now: now() });
-    expect((await f.database.syncStore.delivery.list())[0]).toMatchObject({ deliveredRecords: 1, pendingRecords: 0 });
+    expect(f.database.syncStore.delivery.status()).toMatchObject({ deliveredRecords: 1, pendingRecords: 0 });
   });
 
-  it("keeps immutable payloads until all ACKs, retries identical batches after restart, and bootstraps one new receiver", async () => {
+  it("retains pending records across destination removal and restart, then delivers identical events to the replacement", async () => {
     const f = await setup();
-    await f.register("first");
-    await f.register("second");
     const committed = await f.commit();
-    const first = (await f.database.syncStore.delivery.claim(now()))!;
-    f.database.syncStore.delivery.complete({ lease: first, acknowledged: true, now: now() });
-    expect((await f.database.syncStore.getRecord(f.id, "record", "one"))?.content).toBeDefined();
-    const second = (await f.database.syncStore.delivery.claim(now()))!;
-    f.database.syncStore.delivery.complete({
-      lease: second,
-      acknowledged: false,
-      retryAt: now(),
-      errorCode: "http_500",
-      now: now(),
-    });
+    const old = (await f.database.syncStore.delivery.claim(now()))!;
+    await f.commit([{ kind: "record", record: { id: "two", body: "Waiting for its first batch" } }]);
+    f.database.syncStore.delivery.remove();
+    expect(() => f.database.syncStore.delivery.complete({ lease: old, acknowledged: true, now: now() })).toThrow(
+      "lease",
+    );
     f.restart();
-    const retry = (await f.database.syncStore.delivery.claim(now()))!;
-    expect(retry.body).toBe(second.body);
-    expect(retry.attempt).toBe(2);
-    f.database.syncStore.delivery.complete({ lease: retry, acknowledged: true, now: now() });
-    expect((await f.database.syncStore.getRecord(f.id, "record", "one"))?.content).toBeUndefined();
-    expect((await f.commit()).changes).toHaveLength(0);
-    await f.register("new");
+    expect(f.database.syncStore.delivery.status()).toMatchObject({
+      destination: undefined,
+      pendingRecords: 2,
+      deliveredRecords: 0,
+    });
     expect(await f.database.syncStore.delivery.claim(now())).toBeUndefined();
-    expect((await f.commit(undefined, "new")).changes).toHaveLength(0);
-    const bootstrap = (await f.database.syncStore.delivery.claim(now()))!;
-    const record = (JSON.parse(bootstrap.body) as SyncDeliveryEnvelope).records[0]!;
+    f.database.syncStore.delivery.purge();
+    expect((await f.database.syncStore.getRecord(f.id, "record", "one"))?.content?.body).toBe("# Complete record");
+    await expect(f.commit()).rejects.toMatchObject({ code: "destination_required" });
+    expect((await f.database.syncStore.getCheckpoint(f.id))?.revision).toBe(2);
+    await f.register("replacement");
+    const retry = (await f.database.syncStore.delivery.claim(now()))!;
+    expect(retry).toMatchObject({ id: old.id, body: old.body, url: "https://replacement.example.com/records" });
+    const record = (JSON.parse(retry.body) as SyncDeliveryEnvelope).records[0]!;
     expect(record.eventId).toBe(committed.changes[0]!.eventId);
     expect(record.revision).toBe(1);
-    expect(record.content?.body).toBe("# Complete record");
-    expect(await f.database.syncStore.listOutbox("first")).toHaveLength(1);
-    f.database.syncStore.delivery.complete({ lease: bootstrap, acknowledged: true, now: now() });
-    const deletion = await f.commit([], undefined, [{ kind: "record", id: "one" }]);
+    f.database.syncStore.delivery.complete({ lease: retry, acknowledged: true, now: now() });
+    expect((await f.database.syncStore.getRecord(f.id, "record", "one"))?.content).toBeUndefined();
+    expect((await f.database.syncStore.getRecord(f.id, "record", "two"))?.content).toBeDefined();
+    const unbatched = (await f.database.syncStore.delivery.claim(now()))!;
+    expect(JSON.parse(unbatched.body).records[0]).toMatchObject({
+      id: "two",
+      content: { body: "Waiting for its first batch" },
+    });
+    f.database.syncStore.delivery.complete({ lease: unbatched, acknowledged: true, now: now() });
+    expect((await f.commit()).changes).toHaveLength(0);
+    expect(await f.database.syncStore.delivery.claim(now())).toBeUndefined();
+    const deletion = await f.commit([], [{ kind: "record", id: "one" }]);
     expect(deletion.changes[0]?.recordRevision).toBe(2);
     const tombstone = JSON.parse((await f.database.syncStore.delivery.claim(now()))!.body).records[0];
     expect(tombstone.operation).toBe("deleted");
@@ -330,11 +353,11 @@ describe("durable sync delivery", () => {
     const worker = new SyncDeliveryWorker({ store: f.database.syncStore.delivery, fetcher });
     expect(await worker.tick()).toBe(true);
     expect(await worker.tick()).toBe(false);
-    const status = await f.database.syncStore.delivery.list();
-    expect(status[0]?.lastError).toBe("http_429");
+    const status = f.database.syncStore.delivery.status();
+    expect(status.lastError).toBe("http_429");
     expect(JSON.stringify(status)).not.toContain("receiver-secret");
     const raw = new DatabaseSync(f.path);
-    const secret = raw.prepare("select bearer_secret from sync_receivers").get()!.bearer_secret;
+    const secret = raw.prepare("select bearer_secret from sync_destination").get()!.bearer_secret;
     raw.close();
     expect(secret).not.toContain("receiver-secret");
     vi.setSystemTime(Date.now() + 121_000);
@@ -346,7 +369,7 @@ describe("durable sync delivery", () => {
     });
     for (const url of ["http://public.example.com", "https://127.0.0.1", "https://169.254.169.254", "https://10.0.0.1"])
       await expect(
-        f.database.syncStore.delivery.register({ id: "blocked", url, bearerToken: "secret", enabled: true }),
+        f.database.syncStore.delivery.configure({ url, bearerToken: "secret", enabled: true }),
       ).rejects.toThrow();
   });
 
@@ -390,7 +413,7 @@ describe("durable sync delivery", () => {
     });
     await worker.tick();
     expect(received).toHaveLength(2);
-    expect((await f.database.syncStore.delivery.list())[0]?.pendingRecords).toBe(0);
+    expect(f.database.syncStore.delivery.status()?.pendingRecords).toBe(0);
   });
 });
 
@@ -431,7 +454,7 @@ describe("iteration delivery and destination management", () => {
     });
   });
 
-  it("attributes a targeted backfill to the iteration that queued it without recounting prior delivery", async () => {
+  it("attributes changes to their polling iteration without recounting prior delivery", async () => {
     const f = await setup();
     const store = f.database.syncStore;
     await f.register("first");
@@ -461,11 +484,13 @@ describe("iteration delivery and destination management", () => {
       lease: { owner: "owner", generation: 1 },
       expectedCheckpointRevision: 1,
       nextCheckpoint: {},
-      upserts: [{ kind: "record", record: { id: "one", body: "# Complete record" } }],
+      upserts: [
+        { kind: "record", record: { id: "one", body: "# Complete record" } },
+        { kind: "record", record: { id: "two", body: "New record" } },
+      ],
       committedAt: now(),
-      targetReceiverId: "second",
     };
-    expect((await store.commitPage(page)).changes).toHaveLength(0);
+    expect((await store.commitPage(page)).changes).toHaveLength(1);
     await store.commitPage({ ...page, expectedCheckpointRevision: 2 });
     expect((await store.status.getRun("run"))?.delivery).toMatchObject({ state: "delivered", totalRecords: 1 });
     expect((await store.status.getRun("backfill"))?.delivery).toMatchObject({ state: "pending", totalRecords: 1 });
@@ -480,55 +505,48 @@ describe("iteration delivery and destination management", () => {
     await f.commit();
     const delivery = f.database.syncStore.delivery;
     const old = (await delivery.claim(now()))!;
-    await delivery.update({ id: "first", url: "https://updated.example.com/records" });
+    await delivery.update({ url: "https://updated.example.com/records" });
     expect(() => delivery.complete({ lease: old, acknowledged: true, now: now() })).toThrow("no longer owned");
     const fresh = (await delivery.claim(now()))!;
     expect(fresh.url).toBe("https://updated.example.com/records");
     expect(fresh.bearerToken).toBe("receiver-secret");
     expect(fresh.body).toBe(old.body);
-    expect(JSON.stringify(await delivery.list())).not.toContain("receiver-secret");
-    await expect(delivery.update({ id: "missing", enabled: false })).rejects.toMatchObject({
-      code: "receiver_not_found",
-    });
-    await expect(delivery.update({ id: "first", url: "https://127.0.0.1" })).rejects.toThrow();
+    expect(JSON.stringify(delivery.status())).not.toContain("receiver-secret");
+    delivery.remove();
+    await expect(delivery.update({ enabled: false })).rejects.toMatchObject({ code: "destination_required" });
+    await expect(delivery.update({ url: "https://127.0.0.1" })).rejects.toThrow();
   });
 
-  it("removes tokens and pending delivery while retaining history and other destinations' payloads", async () => {
+  it("keeps per-iteration delivery pending when configuration is removed and reports its eventual acknowledgement", async () => {
     const f = await setup();
-    await f.register("first");
-    await f.register("second");
     await f.commit();
     const store = f.database.syncStore;
     const old = (await store.delivery.claim(now()))!;
-    store.delivery.remove("first");
+    store.delivery.remove();
     expect(() => store.delivery.complete({ lease: old, acknowledged: true, now: now() })).toThrow("no longer owned");
-    expect(await store.delivery.list()).toMatchObject([{ id: "second", pendingRecords: 1 }]);
-    expect((await store.status.getRun("run"))?.delivery).toMatchObject({
-      totalRecords: 2,
+    expect(store.delivery.status()).toMatchObject({ destination: undefined, pendingRecords: 1 });
+    expect(store.status.getRun("run")?.delivery).toMatchObject({
+      state: "waiting",
+      totalRecords: 1,
       pendingRecords: 1,
-      cancelledRecords: 1,
+      nextAttemptAt: undefined,
     });
-    expect((await store.getRecord(f.id, "record", "one"))?.content).toBeDefined();
     const raw = new DatabaseSync(f.path);
     try {
-      expect(raw.prepare("select bearer_secret from sync_receivers where id = 'first'").get()?.bearer_secret).toBe("");
+      expect(raw.prepare("select count(*) as count from sync_destination").get()?.count).toBe(0);
     } finally {
       raw.close();
     }
     f.restart();
-    const second = (await f.database.syncStore.delivery.claim(now()))!;
-    expect(second.url).toBe("https://second.example.com/records");
-    f.database.syncStore.delivery.complete({ lease: second, acknowledged: true, now: now() });
-    expect((await f.database.syncStore.status.getRun("run"))?.delivery).toMatchObject({
-      state: "cancelled",
+    expect(f.database.syncStore.status.getRun("run")?.delivery.state).toBe("waiting");
+    await f.register("replacement");
+    const next = (await f.database.syncStore.delivery.claim(now()))!;
+    expect(next.body).toBe(old.body);
+    f.database.syncStore.delivery.complete({ lease: next, acknowledged: true, now: now() });
+    expect(f.database.syncStore.status.getRun("run")?.delivery).toMatchObject({
+      state: "delivered",
       deliveredRecords: 1,
-      cancelledRecords: 1,
       pendingRecords: 0,
     });
-    expect((await f.database.syncStore.getRecord(f.id, "record", "one"))?.content).toBeUndefined();
-    expect(await f.database.syncStore.delivery.claim(now())).toBeUndefined();
-    await expect(f.register("first")).rejects.toThrow("Use a new destination ID");
-    await f.register("new");
-    expect(await f.database.syncStore.delivery.claim(now())).toBeUndefined();
   });
 });
