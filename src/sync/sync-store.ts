@@ -1,5 +1,7 @@
 import type { ISyncDeliveryStore } from "./delivery-store.ts";
+import type { ISyncScheduleStore } from "./schedule-store.ts";
 import type { ISyncSourceStore } from "./source-binding.ts";
+import type { ISyncStatusStore } from "./status-store.ts";
 
 export type JsonPrimitive = boolean | null | number | string;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -14,6 +16,9 @@ export type SyncRunState = "cancelled" | "failed" | "lease_expired" | "running" 
 export type SyncChangeOperation = "added" | "deleted" | "updated";
 
 export interface SyncInstallation {
+  consecutiveFailures: number;
+  lastError?: string;
+  requiresBackfill: boolean;
   sourceId: string;
   credentialRevision: string;
   bindingRevision: number;
@@ -32,6 +37,8 @@ export interface SyncInstallation {
 }
 
 export interface StartSyncRunInput {
+  /** An explicit backward reset, committed atomically with the new run. */
+  resetCheckpoint?: JsonValue;
   id: string;
   installationId: string;
   definitionVersion: string;
@@ -211,6 +218,8 @@ export interface SyncOutboxRecord {
 }
 
 export interface ISyncStore {
+  readonly schedule: ISyncScheduleStore;
+  readonly status: ISyncStatusStore;
   readonly delivery: ISyncDeliveryStore;
   readonly sources: ISyncSourceStore;
   getInstallation(id: string): Promise<SyncInstallation | undefined>;

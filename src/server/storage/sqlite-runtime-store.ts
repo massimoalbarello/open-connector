@@ -157,6 +157,7 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
 
   resetRuntimeData(): void {
     this.database.exec(`
+      delete from sync_binding_checks;
       delete from sync_outbox;
       delete from sync_delivery_attempts;
       delete from sync_delivery_batches;

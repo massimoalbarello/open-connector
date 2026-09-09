@@ -25,6 +25,30 @@ export function registerSyncRoutes(
 ): void {
   if (delivery)
     app.post("/api/sync/delivery/run", async (context) => context.json({ attempted: await delivery.tick() }));
+  app.get("/api/sync/status", async (context) =>
+    context.json({
+      acquisitionRunning: runner.busy,
+      ...(await store.status.read()),
+      delivery: store.delivery.status(),
+    }),
+  );
+  app.patch("/api/sync/installations/:id", async (context) => {
+    const schema = z.strictObject({
+      enabled: z.boolean(),
+      scheduleSeconds: z.number().int().min(60).max(86400).optional(),
+    });
+    const parsed = schema.safeParse(await readJsonBody(context, 64 * 1024));
+    if (!parsed.success) return jsonError(context, 400, "invalid_input", "Invalid schedule configuration.");
+    try {
+      const installationId = context.req.param("id");
+      store.schedule.configure({ installationId, ...parsed.data });
+      if (!parsed.data.enabled) runner.cancel(installationId);
+      return context.json(await store.getInstallation(installationId));
+    } catch (error) {
+      if (error instanceof SyncStoreError) return jsonError(context, 400, error.code, error.message);
+      throw error;
+    }
+  });
   app.get("/api/sync/destination", (context) => context.json(store.delivery.status()));
   app.put("/api/sync/destination", async (context) => {
     const schema = z.strictObject({

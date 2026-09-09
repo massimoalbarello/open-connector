@@ -26,6 +26,7 @@ export interface RunSyncInput {
   backfill?: boolean;
   maxPages?: number;
   signal?: AbortSignal;
+  reason?: "schedule";
 }
 
 export interface RunSyncResult {
@@ -43,6 +44,8 @@ export class SyncRunner {
   private readonly options: SyncRunnerOptions;
   private active?: AbortController;
   private pending?: Promise<RunSyncResult>;
+  private installationId?: string;
+  private stopped = false;
   private dryRun = false;
 
   constructor(options: SyncRunnerOptions) {
@@ -58,19 +61,30 @@ export class SyncRunner {
   }
 
   run(input: RunSyncInput): Promise<RunSyncResult> {
+    if (this.stopped) return Promise.reject(new SyncStoreError("run_busy", "Sync runtime is stopping."));
     if (this.active) return Promise.reject(new SyncStoreError("run_busy", "Another acquisition is already running."));
     const controller = new AbortController();
     this.active = controller;
     this.dryRun = input.dryRun === true;
-    const pending = this.execute(input, controller).finally(() => {
-      this.active = undefined;
-      this.pending = undefined;
-    });
+    const pending = this.execute(input, controller)
+      .catch((error) => {
+        throw controller.signal.aborted ? controller.signal.reason : error;
+      })
+      .finally(() => {
+        this.active = undefined;
+        this.installationId = undefined;
+        this.pending = undefined;
+      });
     this.pending = pending;
     return pending;
   }
 
+  cancel(installationId: string): void {
+    if (this.installationId === installationId) this.active?.abort(new Error("Sync installation was disabled."));
+  }
+
   async stop(): Promise<void> {
+    this.stopped = true;
     this.active?.abort(new Error("Sync runtime is stopping."));
     await this.pending?.catch(() => undefined);
   }
@@ -112,6 +126,7 @@ export class SyncRunner {
           config,
           signal,
         });
+    this.installationId = installation?.id;
     const verified = installation
       ? { id: installation.connectionId, revision: installation.credentialRevision }
       : await connections.verifySourceConnection(definition.provider, name, signal);
@@ -124,6 +139,10 @@ export class SyncRunner {
       definition.requiredScopes.some((scope) => !credential.profile.grantedScopes.includes(scope))
     )
       throw new SyncStoreError("invalid_input", "Required sync scopes have not been granted.");
+    if (installation) {
+      store.schedule.recover(startedAt);
+      store.schedule.reconcile(this.definitions(), startedAt);
+    }
     const storedCheckpoint = installation ? await store.getCheckpoint(installation.id) : undefined;
     if (storedCheckpoint && storedCheckpoint.definitionVersion !== definition.version)
       throw new SyncStoreError("invalid_input", "Checkpoint version needs migration.");
@@ -144,11 +163,13 @@ export class SyncRunner {
         id: runId,
         installationId: installation.id,
         definitionVersion: definition.version,
-        reason: input.backfill ? "backfill" : "manual",
+        reason: input.backfill ? "backfill" : (input.reason ?? "manual"),
+        resetCheckpoint: input.backfill ? definition.initialCheckpoint : undefined,
         leaseOwner: owner,
         leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
         startedAt,
       });
+      checkpointRevision = (await store.getCheckpoint(installation.id))?.revision ?? 0;
       heartbeat = setInterval(() => {
         heartbeatWork = heartbeatWork
           .then(async () => {
@@ -250,6 +271,7 @@ export class SyncRunner {
         result.complete = page.complete;
         if (page.complete || result.pages >= maxPages) break;
       }
+      if (!result.pages) throw new SyncStoreError("invalid_input", "Sync definition ended without a progress page.");
       if (heartbeat) clearInterval(heartbeat);
       await heartbeatWork;
       signal.throwIfAborted();
@@ -259,6 +281,14 @@ export class SyncRunner {
           ...lease,
           state: "succeeded",
           completedAt: new Date().toISOString(),
+        });
+      if (installation)
+        store.schedule.complete({
+          installationId: installation.id,
+          bindingRevision: installation.bindingRevision,
+          succeeded: true,
+          complete: result.complete,
+          now: new Date().toISOString(),
         });
       return result;
     } catch (cause) {
@@ -281,6 +311,15 @@ export class SyncRunner {
                 : "Acquisition failed; committed progress is retained.",
           })
           .catch(() => undefined);
+      if (installation)
+        store.schedule.complete({
+          installationId: installation.id,
+          bindingRevision: installation.bindingRevision,
+          succeeded: false,
+          complete: false,
+          errorCode: error instanceof SyncStoreError ? error.code : "acquisition_failed",
+          now: new Date().toISOString(),
+        });
       throw error;
     } finally {
       if (heartbeat) clearInterval(heartbeat);
