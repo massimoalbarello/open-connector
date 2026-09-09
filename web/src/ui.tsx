@@ -26,6 +26,7 @@ import {
   RefreshCw,
   Sun,
   TerminalSquare,
+  Webhook,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation } from "react-router";
@@ -33,6 +34,7 @@ import { AccessPage } from "./access-page";
 import { ActionsPage } from "./actions-page";
 import { ApiError, apiGet, apiPost } from "./api";
 import oomolConnectLogoUrl from "./assets/oomol-connect-logo.png";
+import { DestinationsPage } from "./destinations-page";
 import { persistLang, supportedLangs } from "./i18n";
 import { MarketplacePage } from "./marketplace-page";
 import { emptyData } from "./model";
@@ -42,6 +44,8 @@ import { ProvidersPage } from "./providers-page";
 import { ResourcesPage } from "./resources-page";
 import { RunsPage } from "./runs-page";
 import { InlineError, StatusDot } from "./shared-ui";
+import { SyncDetailPage } from "./sync-detail-page";
+import { SyncsPage } from "./syncs-page";
 import { useThemeMode } from "./theme";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -55,6 +59,8 @@ const navItems = [
   { path: "/oauth-apps", labelKey: "nav.oauthApps", icon: Fingerprint },
   { path: "/actions", labelKey: "nav.actions", icon: TerminalSquare },
   { path: "/runs", labelKey: "nav.runs", icon: Activity },
+  { path: "/syncs", labelKey: "nav.syncs", icon: RefreshCw },
+  { path: "/destinations", labelKey: "nav.destinations", icon: Webhook },
   { path: "/access", labelKey: "nav.access", icon: KeyRound },
   { path: "/resources", labelKey: "nav.docs", icon: BookOpen },
 ] as const;
@@ -442,6 +448,46 @@ function AppShell(props: {
               }
             />
             <Route path="/resources" element={<ResourcesPage />} />
+            <Route
+              path="/syncs"
+              element={
+                <SyncsPage
+                  providers={props.data.providers}
+                  connections={props.data.connections}
+                  onAuthExpired={props.onRefresh}
+                />
+              }
+            />
+            <Route
+              path="/syncs/:installationId"
+              element={
+                <SyncDetailPage
+                  providers={props.data.providers}
+                  connections={props.data.connections}
+                  onAuthExpired={props.onRefresh}
+                />
+              }
+            />
+            <Route
+              path="/syncs/available/:definitionId"
+              element={
+                <SyncDetailPage
+                  providers={props.data.providers}
+                  connections={props.data.connections}
+                  onAuthExpired={props.onRefresh}
+                />
+              }
+            />
+            <Route
+              path="/destinations"
+              element={
+                <DestinationsPage
+                  providers={props.data.providers}
+                  connections={props.data.connections}
+                  onAuthExpired={props.onRefresh}
+                />
+              }
+            />
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>
         </main>
@@ -593,6 +639,12 @@ function headingForPath(pathname: string): string {
   }
   if (section === "runs") {
     return "runs";
+  }
+  if (section === "syncs") {
+    return "syncs";
+  }
+  if (section === "destinations") {
+    return "destinations";
   }
   if (section === "access") {
     return "access";

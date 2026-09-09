@@ -1,3 +1,4 @@
+import type { ISecretCodec } from "../server/secrets/secret-codec-core.ts";
 import type { RuntimeRow } from "../server/storage/runtime-sql.ts";
 import type { SyncDefinitionContract } from "./record-contract.ts";
 import type {
@@ -8,7 +9,6 @@ import type {
   JsonObject,
   JsonValue,
   ListSyncChangesInput,
-  RegisterSyncSinkInput,
   RenewSyncRunLeaseInput,
   StartSyncRunInput,
   StartSyncSnapshotInput,
@@ -32,10 +32,15 @@ import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import { optionalRawString } from "../core/cast.ts";
 import { randomUUIDv7 } from "../core/uuid-v7.ts";
+import { PlainTextSecretCodec } from "../server/secrets/secret-codec-core.ts";
 import { parseJson, readString } from "../server/storage/runtime-sql.ts";
+import { maximumRecordBytes } from "./delivery-store.ts";
 import { normalizeSyncRecord } from "./record-contract.ts";
 import { canonicalizeJsonValue } from "./record-hash.ts";
+import { SqliteSyncDeliveryStore } from "./sqlite-delivery-store.ts";
+import { SqliteSyncScheduleStore } from "./sqlite-schedule-store.ts";
 import { SqliteSyncSourceStore } from "./sqlite-source-store.ts";
+import { SqliteSyncStatusStore } from "./sqlite-status-store.ts";
 import { runSyncTransaction } from "./sqlite-sync-transaction.ts";
 import { SyncStoreError } from "./sync-store.ts";
 
@@ -82,7 +87,7 @@ interface InsertChangeInput extends ChangeSource {
   recordId: string;
   operation: SyncChangeOperation;
   recordRevision: number;
-  payload: JsonObject;
+  payload?: JsonObject;
   payloadJson: string;
   payloadHash: string;
   deletedAt?: string;
@@ -102,10 +107,26 @@ export class SqliteSyncStore implements ISyncStore {
   private readonly database: DatabaseSync;
 
   readonly sources: SqliteSyncSourceStore;
+  readonly delivery: SqliteSyncDeliveryStore;
+  readonly schedule: SqliteSyncScheduleStore;
+  readonly status: SqliteSyncStatusStore;
   private readonly definitions: readonly SyncDefinitionContract[];
 
-  constructor(database: DatabaseSync, definitions: readonly SyncDefinitionContract[] = []) {
+  constructor(
+    database: DatabaseSync,
+    definitions: readonly SyncDefinitionContract[] = [],
+    codec: ISecretCodec = new PlainTextSecretCodec(),
+  ) {
+    this.delivery = new SqliteSyncDeliveryStore(database, codec);
     this.database = database;
+    this.schedule = new SqliteSyncScheduleStore(database, {
+      installation: (id) => this.readInstallation(id),
+    });
+    this.status = new SqliteSyncStatusStore(database, {
+      installation: (id) => this.readInstallation(id),
+      run: (id) => this.readRun(id),
+      runDelivery: (id) => this.delivery.runStatus(id),
+    });
     this.definitions = structuredClone(definitions);
     const ids = new Set<string>();
     for (const definition of this.definitions) {
@@ -124,27 +145,6 @@ export class SqliteSyncStore implements ISyncStore {
     return this.readInstallation(requiredIdentifier(id, "installation id"));
   }
 
-  async registerSink(input: RegisterSyncSinkInput): Promise<void> {
-    const id = requiredIdentifier(input.id, "sink id");
-    const kind = requiredIdentifier(input.kind, "sink kind");
-    const updatedAt = requiredTimestamp(input.updatedAt, "updatedAt");
-    if (typeof input.enabled !== "boolean") {
-      throw invalidInput("Sink enabled must be a boolean.");
-    }
-    this.database
-      .prepare(
-        `
-        insert into sync_sinks (id, kind, enabled, created_at, updated_at)
-        values (?, ?, ?, ?, ?)
-        on conflict(id) do update set
-          kind = excluded.kind,
-          enabled = excluded.enabled,
-          updated_at = excluded.updated_at
-      `,
-      )
-      .run(id, kind, input.enabled ? 1 : 0, updatedAt, updatedAt);
-  }
-
   async startRun(input: StartSyncRunInput): Promise<SyncRun> {
     const id = requiredIdentifier(input.id, "run id");
     const installationId = requiredIdentifier(input.installationId, "installation id");
@@ -157,15 +157,27 @@ export class SqliteSyncStore implements ISyncStore {
     if (leaseExpiresAt <= startedAt) {
       throw invalidInput("leaseExpiresAt must be later than startedAt.");
     }
+    if (Date.parse(leaseExpiresAt) <= Date.now()) throw invalidInput("leaseExpiresAt must be in the future.");
 
     runSyncTransaction(this.database, () => {
+      this.delivery.requireDestination();
+      if (this.database.prepare("select 1 from sync_runs where state = 'running'").get())
+        throw new SyncStoreError("run_busy", "Another acquisition is already running.");
       const installation = this.requireInstallation(installationId);
+      if (installation.removedAt) throw invalidInput("Restore this sync before starting another iteration.");
+      if (installation.requiresBackfill && input.resetCheckpoint === undefined)
+        throw invalidInput("Interrupted snapshot requires an explicit backfill run.");
+      if (installation.requiresBackfill && input.resetCheckpoint !== undefined) {
+        this.database
+          .prepare(
+            "update sync_installations set requires_backfill = 0, state = 'enabled', last_error = null where id = ?",
+          )
+          .run(installationId);
+        installation.state = "enabled";
+      }
       this.assertSourceBinding(installation);
       if (installation.state !== "enabled") {
         throw invalidInput("A run cannot start for an installation that is not enabled.");
-      }
-      if (Date.parse(leaseExpiresAt) <= Date.now()) {
-        throw invalidInput("leaseExpiresAt must be in the future.");
       }
       if (installation.definitionVersion !== definitionVersion) {
         throw invalidInput(
@@ -193,6 +205,20 @@ export class SqliteSyncStore implements ISyncStore {
           startedAt,
           installation.bindingRevision,
         );
+      if (input.resetCheckpoint !== undefined) {
+        const reset = canonicalizeJsonValue(input.resetCheckpoint);
+        const resetResult = this.writeCheckpoint({
+          installation,
+          run: this.requireRun(id),
+          expectedRevision: checkpointRevision,
+          value: reset.value,
+          valueJson: reset.value === null ? null : reset.json,
+          committedAt: startedAt,
+        });
+        this.database
+          .prepare("update sync_runs set checkpoint_revision = ? where id = ?")
+          .run(resetResult.revision, id);
+      }
     });
     return this.requireRun(id);
   }
@@ -206,6 +232,7 @@ export class SqliteSyncStore implements ISyncStore {
     const lease = normalizeLease(input);
     const expiresAt = requiredTimestamp(input.expiresAt, "expiresAt");
     runSyncTransaction(this.database, () => {
+      this.delivery.requireDestination();
       this.assertLease(runId, lease);
       if (Date.parse(expiresAt) <= Date.now()) {
         throw invalidInput("expiresAt must be in the future.");
@@ -246,6 +273,11 @@ export class SqliteSyncStore implements ISyncStore {
       if (activeSnapshot) {
         this.database
           .prepare(
+            "update sync_installations set requires_backfill = 1, state = 'needs_attention', last_error = 'snapshot_interrupted' where id = ?",
+          )
+          .run(run.installationId);
+        this.database
+          .prepare(
             "update sync_snapshots set state = 'abandoned', completed_at = ? where run_id = ? and state = 'active'",
           )
           .run(completedAt, runId);
@@ -276,7 +308,12 @@ export class SqliteSyncStore implements ISyncStore {
   async commitPage(input: CommitSyncPageInput): Promise<SyncCommitResult> {
     const installation = this.requireInstallation(input.installationId);
     const prepared = prepareCommit(input, this.requireDefinition(installation));
-    return runSyncTransaction(this.database, () => this.commitPreparedPage(prepared));
+    return runSyncTransaction(this.database, () => {
+      this.delivery.requireDestination();
+      const result = this.commitPreparedPage(prepared);
+      this.delivery.purge();
+      return result;
+    });
   }
 
   async startSnapshot(input: StartSyncSnapshotInput): Promise<SyncSnapshot> {
@@ -289,6 +326,7 @@ export class SqliteSyncStore implements ISyncStore {
     const models = normalizeModels(input.kinds);
 
     runSyncTransaction(this.database, () => {
+      this.delivery.requireDestination();
       const run = this.assertLease(runId, lease, installationId);
       this.assertDefinitionVersion(installationId, run);
       this.assertCheckpointRevision(installationId, expectedCheckpointRevision);
@@ -319,6 +357,7 @@ export class SqliteSyncStore implements ISyncStore {
     const checkpoint = readCanonicalValue(input.nextCheckpoint, "Sync checkpoint");
 
     return runSyncTransaction(this.database, () => {
+      this.delivery.requireDestination();
       const installation = this.requireInstallation(installationId);
       const run = this.assertLease(runId, lease, installationId);
       this.assertDefinitionVersion(installationId, run);
@@ -336,7 +375,7 @@ export class SqliteSyncStore implements ISyncStore {
           operation: "deleted",
           recordRevision: record.revision + 1,
           payload: record.content,
-          payloadJson: JSON.stringify(record.content),
+          payloadJson: JSON.stringify(record.content ?? null),
           payloadHash: record.contentHash,
           deletedAt: committedAt,
         });
@@ -372,6 +411,7 @@ export class SqliteSyncStore implements ISyncStore {
         committedAt,
       });
       this.updateRunProgress(runId, nextCheckpoint.revision, 1, 0, candidates.length, changes.length);
+      this.delivery.purge();
       return {
         checkpoint: nextCheckpoint,
         changes,
@@ -438,18 +478,17 @@ export class SqliteSyncStore implements ISyncStore {
     };
   }
 
-  async listOutbox(sinkId: string): Promise<SyncOutboxRecord[]> {
+  async listOutbox(): Promise<SyncOutboxRecord[]> {
     return this.database
       .prepare(
         `
-        select sink_id, change_sequence, state, attempt_count, next_attempt_at,
+        select change_sequence, state, attempt_count, next_attempt_at,
           lease_owner, lease_generation, lease_expires_at, delivered_at, last_error
         from sync_outbox
-        where sink_id = ?
         order by change_sequence
       `,
       )
-      .all(requiredIdentifier(sinkId, "sink id"))
+      .all()
       .map(readOutboxRow);
   }
 
@@ -573,7 +612,7 @@ export class SqliteSyncStore implements ISyncStore {
         operation: "deleted",
         recordRevision: current.revision + 1,
         payload: current.content,
-        payloadJson: JSON.stringify(current.content),
+        payloadJson: JSON.stringify(current.content ?? null),
         payloadHash: current.contentHash,
         deletedAt: input.committedAt,
       });
@@ -648,9 +687,9 @@ export class SqliteSyncStore implements ISyncStore {
       .prepare(
         `
         insert into sync_outbox (
-          sink_id, change_sequence, state, attempt_count, next_attempt_at, lease_generation
+          change_sequence, state, attempt_count, next_attempt_at, lease_generation
         )
-        select id, ?, 'pending', 0, ?, 0 from sync_sinks where enabled = 1
+        values (?, 'pending', 0, ?, 0)
       `,
       )
       .run(sequence, input.committedAt);
@@ -878,7 +917,7 @@ export class SqliteSyncStore implements ISyncStore {
       .prepare(
         `
         select source_id, credential_revision, binding_revision, id, definition_id, definition_version, provider, connection_id, config_value,
-          state, schedule_seconds, next_due_at, last_success_at, created_at, updated_at
+          state, schedule_seconds, next_due_at, last_success_at, created_at, updated_at, consecutive_failures, last_error, requires_backfill, removed_at
         from sync_installations where id = ?
       `,
       )
@@ -956,6 +995,8 @@ function prepareCommit(input: CommitSyncPageInput, definition: SyncDefinitionCon
     const id = normalized.id;
     assertUniqueRecord(keys, model, id);
     const payload = normalized.content;
+    if (Buffer.byteLength(payload.json) > maximumRecordBytes)
+      throw invalidInput("Record exceeds the 8 MiB delivery limit.");
     return {
       model,
       id,
@@ -989,6 +1030,7 @@ function readInstallationRow(row: RuntimeRow): SyncInstallation {
   const state = readString(row, "state");
   assertInstallationState(state);
   return {
+    removedAt: readOptionalString(row, "removed_at"),
     sourceId: readString(row, "source_id"),
     credentialRevision: readString(row, "credential_revision"),
     bindingRevision: readNumber(row, "binding_revision"),
@@ -999,6 +1041,9 @@ function readInstallationRow(row: RuntimeRow): SyncInstallation {
     connectionId: readString(row, "connection_id"),
     config: parseJson<JsonObject>(readString(row, "config_value")),
     state,
+    consecutiveFailures: readNumber(row, "consecutive_failures"),
+    lastError: readOptionalString(row, "last_error"),
+    requiresBackfill: row.requires_backfill === 1,
     scheduleSeconds: readOptionalNumber(row, "schedule_seconds"),
     nextDueAt: readOptionalString(row, "next_due_at"),
     lastSuccessAt: readOptionalString(row, "last_success_at"),
@@ -1052,7 +1097,7 @@ function readRecordRow(row: RuntimeRow): SyncRecord {
     installationId: readString(row, "installation_id"),
     kind: readString(row, "model"),
     id: readString(row, "record_id"),
-    content: parseJson<JsonObject>(readString(row, "payload")),
+    content: parseJson<JsonObject | null>(readString(row, "payload")) ?? undefined,
     contentHash: readString(row, "payload_hash"),
     revision: readNumber(row, "revision"),
     createdSequence: readNumber(row, "created_sequence"),
@@ -1080,7 +1125,7 @@ function readChangeRow(row: RuntimeRow): SyncChange {
     recordId: readString(row, "record_id"),
     operation,
     recordRevision: readNumber(row, "record_revision"),
-    content: parseJson<JsonObject>(readString(row, "payload")),
+    content: parseJson<JsonObject | null>(readString(row, "payload")) ?? undefined,
     contentHash: readString(row, "payload_hash"),
     deletedAt: readOptionalString(row, "deleted_at"),
     runId: readString(row, "run_id"),
@@ -1107,11 +1152,10 @@ function readSnapshotRow(row: RuntimeRow): SyncSnapshot {
 
 function readOutboxRow(row: RuntimeRow): SyncOutboxRecord {
   const state = readString(row, "state");
-  if (state !== "dead" && state !== "delivered" && state !== "leased" && state !== "pending") {
+  if (state !== "delivered" && state !== "leased" && state !== "pending") {
     throw new Error(`Unexpected sync outbox state: ${state}.`);
   }
   return {
-    sinkId: readString(row, "sink_id"),
     changeSequence: readNumber(row, "change_sequence"),
     state,
     attemptCount: readNumber(row, "attempt_count"),

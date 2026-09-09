@@ -6,6 +6,10 @@ import type { TransitFileUpload } from "../core/types.ts";
 import type { MarketplaceConfigInput, MarketplaceService } from "../marketplace/marketplace-service.ts";
 import type { OAuthClientConfigInput } from "../oauth/oauth-client-config-service.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
+import type { SyncDeliveryWorker } from "../sync/delivery-worker.ts";
+import type { SyncRunner } from "../sync/sync-runner.ts";
+import type { SyncScheduler } from "../sync/sync-scheduler.ts";
+import type { ISyncStore } from "../sync/sync-store.ts";
 import type { LocalAuthOptions } from "./api/auth.ts";
 import type { RuntimeActionHttpResult } from "./api/runtime-api.ts";
 import type { ITransitFileService } from "./files/transit-file-store.ts";
@@ -56,6 +60,7 @@ import {
   writeRuntimeFailure,
   writeRuntimeSuccess,
 } from "./api/runtime-api.ts";
+import { registerSyncRoutes } from "./api/sync-routes.ts";
 import { TransitFileError } from "./files/transit-file-store.ts";
 import { ProxyRunner } from "./proxy/proxy-runner.ts";
 import { decodeRunLogCursor } from "./storage/runtime-store.ts";
@@ -65,6 +70,10 @@ import { summarizeRuntimeToken } from "./storage/runtime-token-service.ts";
  * Dependencies required to construct the local connector server.
  */
 export interface IConnectServerOptions {
+  syncRunner?: SyncRunner;
+  syncScheduler?: SyncScheduler;
+  syncDelivery?: SyncDeliveryWorker;
+  syncStore?: ISyncStore;
   catalog: CatalogStore;
   providerLoader: IProviderLoader;
   connections: ConnectionService;
@@ -134,6 +143,14 @@ export class ConnectServer {
       app.use("/api/*", compress());
     }
     app.use("*", createLocalAuthMiddleware(auth));
+    if (this.options.syncRunner && this.options.syncStore)
+      registerSyncRoutes(
+        app,
+        this.options.syncRunner,
+        this.options.syncStore,
+        this.options.syncDelivery,
+        this.options.syncScheduler,
+      );
     if (this.options.marketplace) {
       app.get("/api/marketplace", (context) => context.json(this.options.marketplace!.getState()));
       app.put("/api/marketplace", (context) => this.configureMarketplace(context));

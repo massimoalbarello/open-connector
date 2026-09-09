@@ -67,6 +67,11 @@ async function fixture(validators: CredentialValidators = { apiKey: async () => 
 const bindingInput = { provider: "test", definitionId: definition.id, definitionVersion: definition.version };
 
 async function seed(database: SqliteRuntimeDatabase, installationId: string, runId = "run") {
+  await database.syncStore.delivery.configure({
+    url: "https://receiver.example.com",
+    bearerToken: "secret",
+    enabled: true,
+  });
   await database.syncStore.startRun({
     id: runId,
     installationId,

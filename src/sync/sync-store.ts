@@ -1,4 +1,7 @@
+import type { ISyncDeliveryStore } from "./delivery-store.ts";
+import type { ISyncScheduleStore } from "./schedule-store.ts";
 import type { ISyncSourceStore } from "./source-binding.ts";
+import type { ISyncStatusStore } from "./status-store.ts";
 
 export type JsonPrimitive = boolean | null | number | string;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -13,6 +16,10 @@ export type SyncRunState = "cancelled" | "failed" | "lease_expired" | "running" 
 export type SyncChangeOperation = "added" | "deleted" | "updated";
 
 export interface SyncInstallation {
+  removedAt?: string;
+  consecutiveFailures: number;
+  lastError?: string;
+  requiresBackfill: boolean;
   sourceId: string;
   credentialRevision: string;
   bindingRevision: number;
@@ -30,14 +37,9 @@ export interface SyncInstallation {
   updatedAt: string;
 }
 
-export interface RegisterSyncSinkInput {
-  id: string;
-  kind: string;
-  enabled: boolean;
-  updatedAt: string;
-}
-
 export interface StartSyncRunInput {
+  /** An explicit backward reset, committed atomically with the new run. */
+  resetCheckpoint?: JsonValue;
   id: string;
   installationId: string;
   definitionVersion: string;
@@ -153,7 +155,8 @@ export interface SyncRecord {
   installationId: string;
   kind: string;
   id: string;
-  content: JsonObject;
+  /** Omitted after the destination acknowledges the payload. */
+  content?: JsonObject;
   contentHash: string;
   revision: number;
   createdSequence: number;
@@ -177,7 +180,8 @@ export interface SyncChange {
   recordId: string;
   operation: SyncChangeOperation;
   recordRevision: number;
-  content: JsonObject;
+  /** Omitted after the destination acknowledges the payload. */
+  content?: JsonObject;
   contentHash: string;
   deletedAt?: string;
   runId: string;
@@ -203,9 +207,8 @@ export interface SyncChangePage {
 }
 
 export interface SyncOutboxRecord {
-  sinkId: string;
   changeSequence: number;
-  state: "dead" | "delivered" | "leased" | "pending";
+  state: "delivered" | "leased" | "pending";
   attemptCount: number;
   nextAttemptAt: string;
   leaseOwner?: string;
@@ -216,9 +219,11 @@ export interface SyncOutboxRecord {
 }
 
 export interface ISyncStore {
+  readonly schedule: ISyncScheduleStore;
+  readonly status: ISyncStatusStore;
+  readonly delivery: ISyncDeliveryStore;
   readonly sources: ISyncSourceStore;
   getInstallation(id: string): Promise<SyncInstallation | undefined>;
-  registerSink(input: RegisterSyncSinkInput): Promise<void>;
   startRun(input: StartSyncRunInput): Promise<SyncRun>;
   getRun(id: string): Promise<SyncRun | undefined>;
   renewRunLease(input: RenewSyncRunLeaseInput): Promise<SyncRun>;
@@ -230,16 +235,19 @@ export interface ISyncStore {
   finishSnapshot(input: FinishSyncSnapshotInput): Promise<SyncCommitResult>;
   getRecord(installationId: string, kind: string, recordId: string): Promise<SyncRecord | undefined>;
   listChanges(input?: ListSyncChangesInput): Promise<SyncChangePage>;
-  listOutbox(sinkId: string): Promise<SyncOutboxRecord[]>;
+  listOutbox(): Promise<SyncOutboxRecord[]>;
 }
 
 export type SyncStoreErrorCode =
+  | "destination_required"
   | "binding_conflict"
   | "credential_changed"
   | "checkpoint_conflict"
   | "installation_not_found"
   | "invalid_input"
   | "lease_lost"
+  | "cursor_expired"
+  | "run_busy"
   | "run_not_found"
   | "snapshot_inactive"
   | "snapshot_not_found";
