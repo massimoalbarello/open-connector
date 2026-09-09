@@ -11,7 +11,6 @@ import { SyncStoreError } from "../../sync/sync-store.ts";
 import { readJsonBody, jsonError } from "./http-utils.ts";
 
 const runSchema = z.strictObject({
-  targetReceiverId: z.string().min(1).max(128).optional(),
   connectionName: z.string().optional(),
   config: z.record(z.string(), z.json()).optional(),
   dryRun: z.boolean().optional(),
@@ -34,7 +33,7 @@ export function registerSyncRoutes(
       acquisitionRunning: runner.busy,
       schedulerRunning: scheduler?.running ?? false,
       ...(await store.status.read()),
-      receivers: await store.delivery.list(),
+      delivery: store.delivery.status(),
     }),
   );
   app.patch("/api/sync/installations/:id", async (context) => {
@@ -54,8 +53,8 @@ export function registerSyncRoutes(
       throw error;
     }
   });
-  app.get("/api/sync/receivers", async (context) => context.json(await store.delivery.list()));
-  app.put("/api/sync/receivers/:id", async (context) => {
+  app.get("/api/sync/destination", (context) => context.json(store.delivery.status()));
+  app.put("/api/sync/destination", async (context) => {
     const schema = z.strictObject({
       url: z.string().max(8192),
       bearerToken: z.string().max(8192),
@@ -64,12 +63,18 @@ export function registerSyncRoutes(
     const parsed = schema.safeParse(await readJsonBody(context, 64 * 1024));
     if (!parsed.success) return jsonError(context, 400, "invalid_input", "Invalid receiver registration.");
     try {
-      await store.delivery.register({ id: context.req.param("id"), ...parsed.data });
-      return context.json({ id: context.req.param("id") });
+      await store.delivery.configure(parsed.data);
+      runner.destinationChanged();
+      return context.json(store.delivery.status());
     } catch (error) {
       if (error instanceof SyncStoreError) return jsonError(context, 400, error.code, error.message);
       throw error;
     }
+  });
+  app.delete("/api/sync/destination", (context) => {
+    store.delivery.remove();
+    runner.destinationChanged();
+    return context.json(store.delivery.status());
   });
   app.get("/api/sync/definitions", (context) => context.json(runner.definitions()));
   app.get("/api/sync/runs/:id", async (context) => {
@@ -92,7 +97,10 @@ export function registerSyncRoutes(
       if (error instanceof SyncStoreError || error instanceof ConnectionError)
         return context.json(
           { error: { code: error.code, message: error.message } },
-          error.code === "run_busy" || error.code === "credential_changed" || error.code === "binding_conflict"
+          error.code === "destination_required" ||
+            error.code === "run_busy" ||
+            error.code === "credential_changed" ||
+            error.code === "binding_conflict"
             ? 409
             : 400,
         );

@@ -37,6 +37,7 @@ export class SyncScheduler {
 
   tick(): void {
     if (this.stopped) return;
+    this.options.runner.destinationChanged();
     if (!this.delivery)
       this.delivery = this.options.delivery
         .tick()
@@ -66,6 +67,7 @@ export class SyncScheduler {
     const now = new Date().toISOString();
     store.schedule.recover(now);
     store.schedule.reconcile(runner.definitions(), now);
+    if (!store.delivery.getDestination()?.enabled) return;
     const candidate = store.schedule.bindingDue(runner.definitions(), now);
     const scheduled = store.schedule.due(now);
     if (candidate && (!scheduled || this.preferBinding)) {
@@ -79,7 +81,7 @@ export class SyncScheduler {
         });
         store.schedule.bindingSucceeded(candidate);
       } catch (error) {
-        if (!(error instanceof SyncStoreError) || error.code !== "run_busy")
+        if (!(error instanceof SyncStoreError) || (error.code !== "run_busy" && error.code !== "destination_required"))
           store.schedule.bindingFailed(
             candidate,
             error instanceof SyncStoreError ? error.code : "source_verification_failed",
@@ -101,7 +103,7 @@ export class SyncScheduler {
         reason: "schedule",
       });
     } catch (error) {
-      if (!(error instanceof SyncStoreError) || error.code !== "run_busy")
+      if (!(error instanceof SyncStoreError) || (error.code !== "run_busy" && error.code !== "destination_required"))
         store.schedule.failBeforeRun({
           installation,
           startedAt: now,

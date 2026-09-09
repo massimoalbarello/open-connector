@@ -618,14 +618,14 @@
     "failures": "連續失敗次數",
     "sourceId": "資料來源 ID",
     "backfillRequired": "先前的歷史回填已中斷。恢復輪詢前需要明確執行回填。",
-    "countsHint": "記錄數統計未刪除的不重複記錄。已傳送和待傳送統計各目的地的記錄變更，包括更新和刪除；一筆記錄可能有多次傳送。",
+    "countsHint": "記錄數統計未刪除的不重複記錄。已傳送和待傳送統計記錄變更，包括更新和刪除；同一記錄可能傳送多次。",
     "bindingErrors": "資料來源驗證錯誤",
     "nextAttempt": "下次傳送或重試",
     "stopped": "排程器已停止",
     "webhookDestinations": "Webhook 傳送目的地",
     "allSources": "訂閱所有資料來源",
-    "noDestinationsTitle": "尚未註冊 Webhook 目的地",
-    "noDestinationsDescription": "透過同步 API 註冊接收端以傳送新變更。若要將既有記錄傳送到新目的地，請執行指定目的地的歷史回填。",
+    "noDestinationsTitle": "尚未設定 Webhook 目的地",
+    "noDestinationsDescription": "設定目的地後將恢復同步並傳送保留的記錄。",
     "notScheduled": "未排程",
     "afterCurrent": "目前迭代結束後",
     "due": "已到期 · 等待執行器",
@@ -657,7 +657,8 @@
       "failed": "失敗",
       "lease_expired": "已中斷",
       "succeeded": "成功",
-      "enabled": "已啟用"
+      "enabled": "已啟用",
+      "waitingDestination": "等待傳送目的地"
     },
     "connection": {
       "missing": "資料來源連線已移除。重新連接帳號以恢復輪詢。",
@@ -670,6 +671,7 @@
       "retry": "重試",
       "schedule": "定時",
       "webhook": "Webhook"
-    }
+    },
+    "waitingDestination": "同步正在等待已啟用的目的地。待傳送的記錄會保留。"
   }
 }

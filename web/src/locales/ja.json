@@ -621,14 +621,14 @@
     "failures": "連続失敗数",
     "sourceId": "ソース ID",
     "backfillRequired": "前回の履歴取得が中断されました。ポーリングを再開するには、履歴取得を明示的に開始してください。",
-    "countsHint": "レコード数は削除されていない一意なレコードの数です。配信済み・配信待ちは更新や削除を含む送信先ごとの変更数で、1 件のレコードが複数回配信されることがあります。",
+    "countsHint": "レコード数は削除されていない一意のレコード数です。配信済みと保留中は更新や削除を含む変更数で、同じレコードが複数回配信される場合があります。",
     "bindingErrors": "ソースの確認エラー",
     "nextAttempt": "次回の配信・再試行",
     "stopped": "スケジューラー停止中",
     "webhookDestinations": "Webhook 送信先",
     "allSources": "すべてのソースを購読",
-    "noDestinationsTitle": "Webhook 送信先は未登録です",
-    "noDestinationsDescription": "同期 API で受信先を登録すると新しい変更が配信されます。既存のレコードを新しい送信先へ送るには、送信先を指定して履歴取得を実行してください。",
+    "noDestinationsTitle": "Webhook 送信先が設定されていません",
+    "noDestinationsDescription": "送信先を設定すると同期が再開され、保持されているレコードが配信されます。",
     "notScheduled": "予定なし",
     "afterCurrent": "現在の実行後",
     "due": "実行時刻到達・ワーカー待ち",
@@ -660,7 +660,8 @@
       "failed": "失敗",
       "lease_expired": "中断",
       "succeeded": "成功",
-      "enabled": "有効"
+      "enabled": "有効",
+      "waitingDestination": "送信先を待機中"
     },
     "connection": {
       "missing": "ソースの接続が削除されました。ポーリングを再開するにはアカウントを再接続してください。",
@@ -673,6 +674,7 @@
       "retry": "再試行",
       "schedule": "定期実行",
       "webhook": "Webhook"
-    }
+    },
+    "waitingDestination": "同期は有効な送信先を待機しています。未配信のレコードは保持されます。"
   }
 }

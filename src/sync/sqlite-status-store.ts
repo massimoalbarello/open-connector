@@ -35,7 +35,7 @@ export class SqliteSyncStatusStore implements ISyncStatusStore {
         left join (
           select ch.installation_id, sum(o.state = 'delivered') as delivered, sum(o.state != 'delivered') as pending
           from sync_changes ch join sync_outbox o on o.change_sequence = ch.sequence
-          join sync_receivers r on r.id = o.sink_id group by ch.installation_id
+          group by ch.installation_id
         ) d on d.installation_id = i.id order by i.created_at, i.id`)
       .all()
       .map((row) => ({

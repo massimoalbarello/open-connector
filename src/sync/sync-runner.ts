@@ -19,7 +19,6 @@ export interface SyncRunnerOptions {
 }
 
 export interface RunSyncInput {
-  targetReceiverId?: string;
   definitionId: string;
   connectionName?: string;
   config?: JsonObject;
@@ -47,6 +46,7 @@ export class SyncRunner {
   private pending?: Promise<RunSyncResult>;
   private installationId?: string;
   private stopped = false;
+  private dryRun = false;
 
   constructor(options: SyncRunnerOptions) {
     this.options = options;
@@ -65,11 +65,16 @@ export class SyncRunner {
     if (this.active) return Promise.reject(new SyncStoreError("run_busy", "Another acquisition is already running."));
     const controller = new AbortController();
     this.active = controller;
-    const pending = this.execute(input, controller).finally(() => {
-      this.active = undefined;
-      this.installationId = undefined;
-      this.pending = undefined;
-    });
+    this.dryRun = input.dryRun === true;
+    const pending = this.execute(input, controller)
+      .catch((error) => {
+        throw controller.signal.aborted ? controller.signal.reason : error;
+      })
+      .finally(() => {
+        this.active = undefined;
+        this.installationId = undefined;
+        this.pending = undefined;
+      });
     this.pending = pending;
     return pending;
   }
@@ -82,6 +87,12 @@ export class SyncRunner {
     this.stopped = true;
     this.active?.abort(new Error("Sync runtime is stopping."));
     await this.pending?.catch(() => undefined);
+  }
+
+  /** Cancellation is prompt locally; transactional store checks protect other processes too. */
+  destinationChanged(): void {
+    if (!this.dryRun && !this.options.store.delivery.getDestination()?.enabled)
+      this.active?.abort(new SyncStoreError("destination_required", "Sync is waiting for an enabled destination."));
   }
 
   private async execute(input: RunSyncInput, controller: AbortController): Promise<RunSyncResult> {
@@ -103,6 +114,7 @@ export class SyncRunner {
       "Sync configuration",
     ) as JsonObject;
     const name = normalizeConnectionName(input.connectionName);
+    if (!input.dryRun) store.delivery.requireDestination();
     const startedAt = new Date().toISOString();
     const installation = input.dryRun
       ? undefined
@@ -153,7 +165,6 @@ export class SyncRunner {
         definitionVersion: definition.version,
         reason: input.backfill ? "backfill" : (input.reason ?? "manual"),
         resetCheckpoint: input.backfill ? definition.initialCheckpoint : undefined,
-        targetReceiverId: input.targetReceiverId,
         leaseOwner: owner,
         leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
         startedAt,
@@ -189,6 +200,7 @@ export class SyncRunner {
         connections: connectionStore,
         createProvider: registration.createProvider,
         signal,
+        assertActive: installation ? () => store.delivery.requireDestination() : undefined,
       });
       for await (const page of runtime.run({
         provider,
@@ -207,7 +219,6 @@ export class SyncRunner {
           await heartbeatWork;
           signal.throwIfAborted();
           const committed = await store.commitPage({
-            targetReceiverId: input.targetReceiverId ?? installation.bootstrapReceiverId,
             installationId: installation.id,
             runId,
             lease,
@@ -280,7 +291,9 @@ export class SyncRunner {
           now: new Date().toISOString(),
         });
       return result;
-    } catch (error) {
+    } catch (cause) {
+      const error = signal.aborted ? signal.reason : cause;
+      const waiting = error instanceof SyncStoreError && error.code === "destination_required";
       if (heartbeat) clearInterval(heartbeat);
       await heartbeatWork;
       if (installation)
@@ -288,12 +301,14 @@ export class SyncRunner {
           .finishRun({
             runId,
             ...lease,
-            state: signal.aborted ? "cancelled" : "failed",
+            state: signal.aborted || waiting ? "cancelled" : "failed",
             completedAt: new Date().toISOString(),
             errorCode: error instanceof SyncStoreError ? error.code : "acquisition_failed",
-            errorMessage: signal.aborted
-              ? "Acquisition cancelled."
-              : "Acquisition failed; committed progress is retained.",
+            errorMessage: waiting
+              ? "Waiting for destination; committed progress is retained."
+              : signal.aborted
+                ? "Acquisition cancelled."
+                : "Acquisition failed; committed progress is retained.",
           })
           .catch(() => undefined);
       if (installation)

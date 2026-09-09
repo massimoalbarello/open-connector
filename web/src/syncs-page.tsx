@@ -1,4 +1,4 @@
-import type { SyncReceiverStatus as SyncReceiver } from "../../src/sync/delivery-store.ts";
+import type { SyncDeliveryStatus } from "../../src/sync/delivery-store.ts";
 import type { SyncInstallationStatus as SyncInstallation, SyncStatus } from "../../src/sync/status-store.ts";
 import type { SyncRun } from "../../src/sync/sync-store.ts";
 import type { ConnectionRecord, ProviderDefinition } from "./model";
@@ -119,11 +119,13 @@ export function SyncsOverview({ status, providers }: SyncsOverviewProps): ReactN
   const t = useTranslate();
   const [expanded, setExpanded] = useState<string>();
   const records = status.installations.reduce((sum, item) => sum + item.recordCount, 0);
-  const delivered = status.receivers.reduce((sum, item) => sum + item.deliveredRecords, 0);
-  const pending = status.receivers.reduce((sum, item) => sum + item.pendingRecords, 0);
+  const delivered = status.delivery.deliveredRecords;
+  const pending = status.delivery.pendingRecords;
+  const destinationReady = status.delivery.destination?.enabled === true;
   return (
     <>
       {!status.schedulerRunning ? <FormStatus message={t("syncs.schedulerStopped")} /> : null}
+      {!destinationReady ? <FormStatus message={t("syncs.waitingDestination")} /> : null}
       <div className="syncs-metrics">
         <SyncMetric
           label={t("syncs.syncedRecords")}
@@ -145,8 +147,8 @@ export function SyncsOverview({ status, providers }: SyncsOverviewProps): ReactN
         />
         <SyncMetric
           label={t("syncs.destinations")}
-          value={status.receivers.length}
-          hint={t("syncs.enabledCount", { count: status.receivers.filter((item) => item.enabled).length })}
+          value={Number(!!status.delivery.destination)}
+          hint={t("syncs.enabledCount", { count: Number(destinationReady) })}
           icon={<Webhook size={16} />}
         />
       </div>
@@ -198,7 +200,7 @@ export function SyncsOverview({ status, providers }: SyncsOverviewProps): ReactN
                           </button>
                         </TableCell>
                         <TableCell>
-                          <SyncBadge state={syncHealth(sync)} />
+                          <SyncBadge state={syncHealth(sync, destinationReady)} />
                         </TableCell>
                         <TableCell>
                           <SyncTime value={sync.latestRun?.startedAt} empty={t("syncs.never")} />
@@ -209,7 +211,11 @@ export function SyncsOverview({ status, providers }: SyncsOverviewProps): ReactN
                           ) : null}
                         </TableCell>
                         <TableCell>
-                          <NextPoll sync={sync} schedulerRunning={status.schedulerRunning} />
+                          <NextPoll
+                            sync={sync}
+                            schedulerRunning={status.schedulerRunning}
+                            destinationReady={destinationReady}
+                          />
                         </TableCell>
                         <TableCell className="syncs-number">{sync.recordCount.toLocaleString()}</TableCell>
                         <TableCell className="syncs-number">{sync.deliveredCount.toLocaleString()}</TableCell>
@@ -294,7 +300,7 @@ export function SyncsOverview({ status, providers }: SyncsOverviewProps): ReactN
           <h2 id="syncs-destinations-title">{t("syncs.webhookDestinations")}</h2>
           <span className="syncs-secondary">{t("syncs.allSources")}</span>
         </div>
-        {status.receivers.length === 0 ? (
+        {!status.delivery.destination ? (
           <EmptyState
             title={t("syncs.noDestinationsTitle")}
             description={t("syncs.noDestinationsDescription")}
@@ -302,9 +308,7 @@ export function SyncsOverview({ status, providers }: SyncsOverviewProps): ReactN
           />
         ) : (
           <div className="syncs-destinations">
-            {status.receivers.map((receiver) => (
-              <Destination key={receiver.id} receiver={receiver} schedulerRunning={status.schedulerRunning} />
-            ))}
+            <Destination delivery={status.delivery} schedulerRunning={status.schedulerRunning} />
           </div>
         )}
       </section>
@@ -352,7 +356,7 @@ function SyncBadge({ state }: { state: string }): ReactNode {
   const t = useTranslate();
   const tone = ["failed", "lease_expired", "needsAttention", "disconnected"].includes(state)
     ? "error"
-    : ["retrying", "verifying", "waiting"].includes(state)
+    : ["retrying", "verifying", "waiting", "waitingDestination"].includes(state)
       ? "warning"
       : ["running", "succeeded", "scheduled", "enabled"].includes(state)
         ? "success"
@@ -360,9 +364,17 @@ function SyncBadge({ state }: { state: string }): ReactNode {
   return <Badge tone={tone}>{t(`syncs.states.${state}`)}</Badge>;
 }
 
-function NextPoll({ sync, schedulerRunning }: { sync: SyncInstallation; schedulerRunning: boolean }): ReactNode {
+function NextPoll({
+  sync,
+  schedulerRunning,
+  destinationReady,
+}: {
+  sync: SyncInstallation;
+  schedulerRunning: boolean;
+  destinationReady: boolean;
+}): ReactNode {
   const t = useTranslate();
-  if (!syncCanPoll(sync)) return <span className="syncs-secondary">{t("syncs.notScheduled")}</span>;
+  if (!syncCanPoll(sync, destinationReady)) return <span className="syncs-secondary">{t("syncs.notScheduled")}</span>;
   if (sync.latestRun?.state === "running") return <span className="syncs-secondary">{t("syncs.afterCurrent")}</span>;
   if (!schedulerRunning) return <span className="syncs-secondary">{t("syncs.stopped")}</span>;
   return (
@@ -375,52 +387,58 @@ function NextPoll({ sync, schedulerRunning }: { sync: SyncInstallation; schedule
   );
 }
 
-function Destination({ receiver, schedulerRunning }: { receiver: SyncReceiver; schedulerRunning: boolean }): ReactNode {
+function Destination({
+  delivery,
+  schedulerRunning,
+}: {
+  delivery: SyncDeliveryStatus;
+  schedulerRunning: boolean;
+}): ReactNode {
   const t = useTranslate();
   return (
     <Card className="syncs-destination">
       <div className="section-heading-row">
         <strong>
           <Webhook size={16} />
-          {receiver.id}
+          {t("syncs.webhookDestinations")}
         </strong>
-        <SyncBadge state={!receiver.enabled ? "paused" : receiver.lastError ? "retrying" : "enabled"} />
+        <SyncBadge state={!delivery.destination?.enabled ? "paused" : delivery.lastError ? "retrying" : "enabled"} />
       </div>
-      <p className="syncs-url mono">{receiver.url}</p>
+      <p className="syncs-url mono">{delivery.destination?.url}</p>
       <dl className="syncs-details">
         <div>
           <dt>{t("syncs.delivered")}</dt>
-          <dd>{receiver.deliveredRecords.toLocaleString()}</dd>
+          <dd>{delivery.deliveredRecords.toLocaleString()}</dd>
         </div>
         <div>
           <dt>{t("syncs.pending")}</dt>
-          <dd>{receiver.pendingRecords.toLocaleString()}</dd>
+          <dd>{delivery.pendingRecords.toLocaleString()}</dd>
         </div>
         <div>
           <dt>{t("syncs.lastDelivery")}</dt>
           <dd>
-            <SyncTime value={receiver.lastDeliveredAt} empty={t("syncs.never")} />
+            <SyncTime value={delivery.lastDeliveredAt} empty={t("syncs.never")} />
           </dd>
         </div>
         <div>
           <dt>{t("syncs.nextAttempt")}</dt>
           <dd>
-            {!receiver.enabled ? (
+            {!delivery.destination?.enabled ? (
               t("syncs.states.paused")
             ) : !schedulerRunning ? (
               t("syncs.stopped")
-            ) : receiver.pendingRecords === 0 ? (
+            ) : delivery.pendingRecords === 0 ? (
               "—"
-            ) : receiver.nextAttemptAt ? (
-              <SyncTime value={receiver.nextAttemptAt} />
+            ) : delivery.nextAttemptAt ? (
+              <SyncTime value={delivery.nextAttemptAt} />
             ) : (
               t("syncs.queued")
             )}
           </dd>
         </div>
       </dl>
-      {receiver.lastError ? (
-        <InlineError message={`${receiver.lastError} · ${t("syncs.attempts", { count: receiver.attemptCount })}`} />
+      {delivery.lastError ? (
+        <InlineError message={`${delivery.lastError} · ${t("syncs.attempts", { count: delivery.attemptCount })}`} />
       ) : null}
     </Card>
   );

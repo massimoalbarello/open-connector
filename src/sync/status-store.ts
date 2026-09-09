@@ -1,4 +1,4 @@
-import type { SyncReceiverStatus } from "./delivery-store.ts";
+import type { SyncDeliveryStatus } from "./delivery-store.ts";
 import type { SyncBindingCandidate } from "./schedule-store.ts";
 import type { SyncInstallation, SyncRun } from "./sync-store.ts";
 
@@ -6,7 +6,7 @@ import type { SyncInstallation, SyncRun } from "./sync-store.ts";
 export interface SyncStatus extends SyncStoreStatus {
   acquisitionRunning: boolean;
   schedulerRunning: boolean;
-  receivers: SyncReceiverStatus[];
+  delivery: SyncDeliveryStatus;
 }
 
 export interface SyncStoreStatus {
@@ -20,7 +20,7 @@ export interface SyncInstallationStatus extends SyncInstallation {
   latestRun?: SyncRun;
   /** Distinct current records, including those whose acknowledged payload was purged. */
   recordCount: number;
-  /** Record changes per webhook destination; updates and fan-out count separately. */
+  /** Acknowledged record changes, including updates and deletions. */
   deliveredCount: number;
   pendingCount: number;
 }

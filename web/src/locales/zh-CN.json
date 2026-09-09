@@ -618,14 +618,14 @@
     "failures": "连续失败次数",
     "sourceId": "数据源 ID",
     "backfillRequired": "之前的历史回填已中断。恢复轮询前需要显式执行回填。",
-    "countsHint": "记录数统计未删除的唯一记录。已投递和待投递统计各目标的记录变更，包括更新和删除；一条记录可能有多次投递。",
+    "countsHint": "记录数统计未删除的唯一记录。已投递和待投递统计记录变更，包括更新和删除；同一记录可能投递多次。",
     "bindingErrors": "数据源验证错误",
     "nextAttempt": "下次投递或重试",
     "stopped": "调度器已停止",
     "webhookDestinations": "Webhook 投递目标",
     "allSources": "订阅所有数据源",
-    "noDestinationsTitle": "尚未注册 Webhook 目标",
-    "noDestinationsDescription": "通过同步 API 注册接收端以投递新变更。要将已有记录发送到新目标，请运行定向历史回填。",
+    "noDestinationsTitle": "尚未配置 Webhook 目标",
+    "noDestinationsDescription": "配置目标后将恢复同步并投递保留的记录。",
     "notScheduled": "未安排",
     "afterCurrent": "当前迭代结束后",
     "due": "已到期 · 等待执行器",
@@ -657,7 +657,8 @@
       "failed": "失败",
       "lease_expired": "已中断",
       "succeeded": "成功",
-      "enabled": "已启用"
+      "enabled": "已启用",
+      "waitingDestination": "等待投递目标"
     },
     "connection": {
       "missing": "数据源连接已移除。重新连接账号以恢复轮询。",
@@ -670,6 +671,7 @@
       "retry": "重试",
       "schedule": "定时",
       "webhook": "Webhook"
-    }
+    },
+    "waitingDestination": "同步正在等待已启用的目标。待投递的记录会保留。"
   }
 }

@@ -55,19 +55,15 @@ const status: SyncStatus = {
   installations: [installation],
   runs: [installation.latestRun!],
   bindingErrors: [],
-  receivers: [
-    {
-      id: "context-use",
-      url: "https://context.example.com/records",
-      enabled: true,
-      pendingRecords: 4,
-      deliveredRecords: 20,
-      attemptCount: 2,
-      lastError: "http_503",
-      nextAttemptAt: "2026-09-08T12:16:00.000Z",
-      lastDeliveredAt: "2026-09-08T12:00:05.000Z",
-    },
-  ],
+  delivery: {
+    destination: { url: "https://context.example.com/records", enabled: true },
+    pendingRecords: 4,
+    deliveredRecords: 20,
+    attemptCount: 2,
+    lastError: "http_503",
+    nextAttemptAt: "2026-09-08T12:16:00.000Z",
+    lastDeliveredAt: "2026-09-08T12:00:05.000Z",
+  },
 };
 
 function render(value: SyncStatus): string {
@@ -81,6 +77,15 @@ function render(value: SyncStatus): string {
 }
 
 describe("sync monitoring", () => {
+  it("shows retained delivery counts while the destination is absent and hides the next poll", () => {
+    const html = render({ ...status, delivery: { ...status.delivery, destination: undefined } });
+    expect(html).toContain("Waiting for destination");
+    expect(html).toContain("Pending records are retained");
+    expect(html).not.toContain('dateTime="2026-09-08T12:15:00.000Z"');
+    expect(syncCanPoll(installation, false)).toBe(false);
+    expect(syncHealth({ ...installation, state: "disabled" }, false)).toBe("paused");
+  });
+
   it("shows polling and delivery separately with retry details and unambiguous counts", () => {
     const html = render(status);
     for (const text of [
@@ -89,7 +94,6 @@ describe("sync monitoring", () => {
       "Synced records",
       "Delivered",
       "Pending",
-      "context-use",
       "https://context.example.com/records",
       "http_503",
       "2 attempts on current batch",
@@ -107,7 +111,7 @@ describe("sync monitoring", () => {
     const html = render({
       ...status,
       installations: [],
-      receivers: [],
+      delivery: { pendingRecords: 0, deliveredRecords: 0, attemptCount: 0 },
       runs: [],
       bindingErrors: [
         {
@@ -121,10 +125,10 @@ describe("sync monitoring", () => {
       ],
     });
     expect(html).toContain("No syncs yet");
-    expect(html).toContain("No webhook destinations registered");
+    expect(html).toContain("No webhook destination configured");
     expect(html).toContain("No iterations yet");
     expect(html).toContain("source_verification_failed");
-    expect(html).toContain("targeted backfill");
+    expect(html).toContain("retained records");
   });
 
   it("shows failed iterations and their errors alongside successful iterations", () => {
@@ -160,7 +164,7 @@ describe("sync monitoring", () => {
     const paused = render({
       ...status,
       installations: [{ ...installation, state: "disabled" }],
-      receivers: [{ ...status.receivers[0]!, enabled: false }],
+      delivery: { ...status.delivery, destination: { ...status.delivery.destination!, enabled: false } },
     });
     expect(paused).toContain("Not scheduled");
     expect(paused).toContain("Paused");
@@ -175,9 +179,9 @@ describe("sync monitoring", () => {
       [{ requiresBackfill: true }, "needsAttention"],
       [{ state: "needs_attention" }, "needsAttention"],
     ] as [Partial<SyncInstallation>, string][]) {
-      expect(syncHealth({ ...installation, ...patch })).toBe(health);
-      expect(syncCanPoll({ ...installation, ...patch })).toBe(false);
+      expect(syncHealth({ ...installation, ...patch }, true)).toBe(health);
+      expect(syncCanPoll({ ...installation, ...patch }, true)).toBe(false);
     }
-    expect(syncHealth({ ...installation, lastError: "http_429", consecutiveFailures: 1 })).toBe("retrying");
+    expect(syncHealth({ ...installation, lastError: "http_429", consecutiveFailures: 1 }, true)).toBe("retrying");
   });
 });

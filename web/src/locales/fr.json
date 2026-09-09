@@ -623,7 +623,7 @@
     "acknowledged": "Livraisons d’enregistrements confirmées",
     "pending": "En attente",
     "awaitingAck": "Livraisons en attente de confirmation",
-    "destinations": "Destinations",
+    "destinations": "Destination",
     "enabledCount": "{{count}} activés",
     "polling": "Synchronisations des sources",
     "acquisitionIdle": "Interrogation inactive",
@@ -641,14 +641,14 @@
     "failures": "Échecs consécutifs",
     "sourceId": "Identifiant de la source",
     "backfillRequired": "Un rattrapage précédent a été interrompu. Relancez explicitement le rattrapage pour reprendre l’interrogation.",
-    "countsHint": "Les enregistrements sont uniques et non supprimés. Les livraisons comptent les changements par destination, mises à jour et suppressions comprises ; un enregistrement peut être livré plusieurs fois.",
+    "countsHint": "Les enregistrements comptent les éléments uniques non supprimés. Les livraisons et les éléments en attente comptent les modifications, mises à jour et suppressions comprises ; un enregistrement peut être livré plusieurs fois.",
     "bindingErrors": "Erreurs de vérification des sources",
     "nextAttempt": "Prochaine livraison / tentative",
     "stopped": "Planificateur arrêté",
-    "webhookDestinations": "Destinations webhook",
+    "webhookDestinations": "Destination webhook",
     "allSources": "Abonnées à toutes les sources",
-    "noDestinationsTitle": "Aucune destination webhook enregistrée",
-    "noDestinationsDescription": "Enregistrez un récepteur via l’API de synchronisation pour livrer les nouveaux changements. Lancez un rattrapage ciblé pour envoyer les enregistrements existants à une nouvelle destination.",
+    "noDestinationsTitle": "Aucune destination webhook configurée",
+    "noDestinationsDescription": "Configurez une destination pour reprendre les synchronisations et livrer les enregistrements conservés.",
     "notScheduled": "Non planifié",
     "afterCurrent": "Après l’exécution en cours",
     "due": "Échéance atteinte · en attente d’exécution",
@@ -680,7 +680,8 @@
       "failed": "Échec",
       "lease_expired": "Interrompu",
       "succeeded": "Réussi",
-      "enabled": "Activé"
+      "enabled": "Activé",
+      "waitingDestination": "En attente de destination"
     },
     "connection": {
       "missing": "La connexion à la source a été supprimée. Reconnectez le compte pour reprendre l’interrogation.",
@@ -693,6 +694,7 @@
       "retry": "Nouvelle tentative",
       "schedule": "Planifié",
       "webhook": "Webhook"
-    }
+    },
+    "waitingDestination": "Les synchronisations attendent une destination activée. Les enregistrements en attente sont conservés."
   }
 }
