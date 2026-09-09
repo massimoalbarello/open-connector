@@ -1,5 +1,5 @@
 import type { SyncDeliveryWorker } from "../../sync/delivery-worker.ts";
-import type { SyncStatus } from "../../sync/schedule-store.ts";
+import type { SyncStatus } from "../../sync/status-store.ts";
 import type { SyncRunner } from "../../sync/sync-runner.ts";
 import type { SyncScheduler } from "../../sync/sync-scheduler.ts";
 import type { ISyncStore, JsonObject } from "../../sync/sync-store.ts";
@@ -33,7 +33,7 @@ export function registerSyncRoutes(
     context.json<SyncStatus>({
       acquisitionRunning: runner.busy,
       schedulerRunning: scheduler?.running ?? false,
-      ...(await store.schedule.status()),
+      ...(await store.status.read()),
       receivers: await store.delivery.list(),
     }),
   );

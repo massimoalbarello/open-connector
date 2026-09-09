@@ -111,7 +111,7 @@ describe("durable sync delivery", () => {
       { kind: "record", record: { id: "one", body: "First" } },
       { kind: "record", record: { id: "two", body: "Second" } },
     ]);
-    const stats = async () => (await store.schedule.status()).installations.find((item) => item.id === f.id);
+    const stats = async () => (await store.status.read()).installations.find((item) => item.id === f.id);
     expect(await stats()).toMatchObject({
       recordCount: 2,
       deliveredCount: 0,
@@ -168,7 +168,7 @@ describe("durable sync delivery", () => {
       },
       expectedBindingRevision: store.sources.getBindingRevision(),
     });
-    expect((await store.schedule.status()).installations.find((item) => item.id === otherId)).toMatchObject({
+    expect((await store.status.read()).installations.find((item) => item.id === otherId)).toMatchObject({
       recordCount: 0,
       deliveredCount: 0,
       pendingCount: 0,
@@ -182,16 +182,16 @@ describe("durable sync delivery", () => {
       values: {},
       metadata: {},
     });
-    expect((await store.schedule.status()).installations.find((item) => item.id === otherId)?.connectionStatus).toBe(
+    expect((await store.status.read()).installations.find((item) => item.id === otherId)?.connectionStatus).toBe(
       "changed",
     );
     await f.database.connectionStore.delete("github", "another");
-    expect((await store.schedule.status()).installations.find((item) => item.id === otherId)?.connectionStatus).toBe(
+    expect((await store.status.read()).installations.find((item) => item.id === otherId)?.connectionStatus).toBe(
       "missing",
     );
-    expect(
-      JSON.stringify({ ...(await store.schedule.status()), receivers: await store.delivery.list() }),
-    ).not.toContain("secret");
+    expect(JSON.stringify({ ...(await store.status.read()), receivers: await store.delivery.list() })).not.toContain(
+      "secret",
+    );
   });
 
   it("keeps each sync's latest iteration even when it falls outside the recent history window", async () => {
@@ -206,7 +206,7 @@ describe("durable sync delivery", () => {
         const timestamp = new Date(Date.now() + 1000 + index).toISOString();
         insert.run(`other-${index}`, timestamp, timestamp, timestamp);
       }
-      const status = await f.database.syncStore.schedule.status();
+      const status = await f.database.syncStore.status.read();
       expect(status.runs).toHaveLength(100);
       expect(status.runs.some((run) => run.id === "run")).toBe(false);
       expect(status.installations[0]?.latestRun).toMatchObject({ id: "run", state: "succeeded" });

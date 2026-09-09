@@ -11,6 +11,7 @@ import { startLoggingReceiver } from "../../examples/sync/receiver-server.ts";
 import { createCatalogStore } from "../catalog-store.ts";
 import { ConnectionService } from "../connection-service.ts";
 import { s } from "../core/json-schema.ts";
+import { createGitHubSyncProvider } from "../providers/github/sync-provider.ts";
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { createLocalAuthMiddleware } from "../server/api/auth.ts";
 import { registerSyncRoutes } from "../server/api/sync-routes.ts";
@@ -87,7 +88,7 @@ async function fixture(custom?: SyncDefinitionRuntime, contract: SyncDefinition 
       store: database.syncStore,
       connections,
       connectionStore: database.connectionStore,
-      registrations: [{ definition: contract, load: async () => runtime }],
+      registrations: [{ definition: contract, createProvider: createGitHubSyncProvider, load: async () => runtime }],
     });
     delivery = new SyncDeliveryWorker({ store: database.syncStore.delivery, fetcher });
     scheduler = new SyncScheduler({ store: database.syncStore, runner, delivery });
@@ -149,7 +150,7 @@ describe("embedded sync scheduler", () => {
     f.scheduler.tick();
     await vi.waitFor(() => expect(f.state.visits).toBe(1));
     await vi.waitFor(() => expect(f.runner.busy).toBe(false));
-    const first = (await f.database.syncStore.schedule.status()).installations[0]!;
+    const first = (await f.database.syncStore.status.read()).installations[0]!;
     expect(first.scheduleSeconds).toBe(60);
     expect(Date.parse(first.nextDueAt!) - Date.parse(first.lastSuccessAt!)).toBe(60_000);
     f.scheduler.tick();
@@ -163,7 +164,7 @@ describe("embedded sync scheduler", () => {
     f.scheduler.tick();
     await vi.waitFor(() => expect(f.state.visits).toBe(2));
     await vi.waitFor(() => expect(f.runner.busy).toBe(false));
-    const status = await f.database.syncStore.schedule.status();
+    const status = await f.database.syncStore.status.read();
     expect(status.runs).toHaveLength(2);
     expect(status.runs.every((run) => run.reason === "schedule")).toBe(true);
     expect((await f.database.syncStore.getRecord(first.id, "record", "0"))?.revision).toBe(2);
@@ -177,18 +178,18 @@ describe("embedded sync scheduler", () => {
     const f = await fixture();
     f.state.verifyFails = true;
     f.scheduler.tick();
-    await vi.waitFor(async () => expect((await f.database.syncStore.schedule.status()).bindingErrors).toHaveLength(1));
+    await vi.waitFor(async () => expect((await f.database.syncStore.status.read()).bindingErrors).toHaveLength(1));
     await f.restart();
     f.scheduler.tick();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(f.state.verifications).toBe(1);
-    expect(JSON.stringify(await f.database.syncStore.schedule.status())).not.toContain("private-secret");
+    expect(JSON.stringify(await f.database.syncStore.status.read())).not.toContain("private-secret");
     f.state.verifyFails = false;
     await f.database.connectionStore.set("github", "default", { ...f.credential, apiKey: "replacement" });
     f.scheduler.tick();
     await vi.waitFor(() => expect(f.state.visits).toBe(1));
     await vi.waitFor(() => expect(f.runner.busy).toBe(false));
-    expect((await f.database.syncStore.schedule.status()).bindingErrors).toHaveLength(0);
+    expect((await f.database.syncStore.status.read()).bindingErrors).toHaveLength(0);
   });
 
   it("keeps failed polling verification in recent iterations across restart and a successful retry", async () => {
@@ -196,14 +197,14 @@ describe("embedded sync scheduler", () => {
     const f = await fixture();
     f.scheduler.tick();
     await vi.waitFor(() => expect(f.runner.busy).toBe(false));
-    const first = (await f.database.syncStore.schedule.status()).installations[0]!;
+    const first = (await f.database.syncStore.status.read()).installations[0]!;
     const checkpoint = await f.database.syncStore.getCheckpoint(first.id);
     f.state.verifyFails = true;
     vi.setSystemTime(first.nextDueAt!);
     const startedAt = now();
     f.scheduler.tick();
-    await vi.waitFor(async () => expect((await f.database.syncStore.schedule.status()).runs).toHaveLength(2));
-    const failed = (await f.database.syncStore.schedule.status()).runs[0]!;
+    await vi.waitFor(async () => expect((await f.database.syncStore.status.read()).runs).toHaveLength(2));
+    const failed = (await f.database.syncStore.status.read()).runs[0]!;
     expect(failed).toMatchObject({
       installationId: first.id,
       reason: "schedule",
@@ -239,10 +240,8 @@ describe("embedded sync scheduler", () => {
     f.state.verifyFails = false;
     vi.setSystemTime(status.installations[0].nextDueAt);
     f.scheduler.tick();
-    await vi.waitFor(async () =>
-      expect((await f.database.syncStore.schedule.status()).runs[0]?.state).toBe("succeeded"),
-    );
-    const retried = await f.database.syncStore.schedule.status();
+    await vi.waitFor(async () => expect((await f.database.syncStore.status.read()).runs[0]?.state).toBe("succeeded"));
+    const retried = await f.database.syncStore.status.read();
     expect(retried.runs.map((run) => run.state)).toEqual(["succeeded", "failed", "succeeded"]);
     expect(retried.installations[0]?.consecutiveFailures).toBe(0);
   });
@@ -262,7 +261,7 @@ describe("embedded sync scheduler", () => {
     vi.setSystemTime(installation.nextDueAt!);
     f.scheduler.tick();
     await vi.waitFor(() => expect(f.runner.busy).toBe(false));
-    const status = await f.database.syncStore.schedule.status();
+    const status = await f.database.syncStore.status.read();
     expect(status.runs.map((run) => run.state)).toEqual(["failed", "succeeded"]);
     expect(status.installations[0]?.consecutiveFailures).toBe(1);
     expect(JSON.stringify(status)).not.toContain("private-acquisition-error");
@@ -283,7 +282,7 @@ describe("embedded sync scheduler", () => {
       errorCode: "acquisition_failed",
     });
     expect(await f.database.syncStore.getInstallation(installation.id)).toEqual(stopped);
-    expect((await f.database.syncStore.schedule.status()).runs).toHaveLength(1);
+    expect((await f.database.syncStore.status.read()).runs).toHaveLength(1);
   });
 
   it("commits a failed poll and its backoff atomically and ignores a repeated completion", async () => {
@@ -298,14 +297,14 @@ describe("embedded sync scheduler", () => {
       raw.exec(`create trigger reject_backoff before update of consecutive_failures on sync_installations
         begin select raise(abort, 'backoff write failed'); end;`);
       expect(() => f.database.syncStore.schedule.failBeforeRun(failure)).toThrow("backoff write failed");
-      const unchanged = await f.database.syncStore.schedule.status();
+      const unchanged = await f.database.syncStore.status.read();
       expect(unchanged.runs).toHaveLength(1);
       expect(unchanged.installations[0]?.nextDueAt).toBe(installation.nextDueAt);
       expect(unchanged.installations[0]?.consecutiveFailures).toBe(0);
       raw.exec("drop trigger reject_backoff");
       f.database.syncStore.schedule.failBeforeRun(failure);
       f.database.syncStore.schedule.failBeforeRun(failure);
-      const completed = await f.database.syncStore.schedule.status();
+      const completed = await f.database.syncStore.status.read();
       expect(completed.runs.map((run) => run.state)).toEqual(["failed", "succeeded"]);
       expect(completed.installations[0]?.consecutiveFailures).toBe(1);
     } finally {
@@ -362,7 +361,7 @@ describe("embedded sync scheduler", () => {
     await vi.waitFor(() => expect(entered).toBe(true));
     const other = new SqliteRuntimeDatabase(f.path, { syncDefinitions: [definition] });
     try {
-      const installation = (await f.database.syncStore.schedule.status()).installations[0]!;
+      const installation = (await f.database.syncStore.status.read()).installations[0]!;
       await expect(
         other.syncStore.startRun({
           id: "other",
@@ -376,7 +375,7 @@ describe("embedded sync scheduler", () => {
       ).rejects.toMatchObject({ code: "run_busy" });
       await f.scheduler.stop();
       expect(await outcome).toBeInstanceOf(Error);
-      expect((await f.database.syncStore.schedule.status()).runs[0]?.state).toBe("cancelled");
+      expect((await f.database.syncStore.status.read()).runs[0]?.state).toBe("cancelled");
       await expect(f.runner.run({ definitionId: definition.id })).rejects.toThrow("stopping");
     } finally {
       other.close();
@@ -480,7 +479,7 @@ it("runs the compiled GitHub sync through the scheduler and real HTTP receiver, 
     enabled: true,
   });
   f.scheduler.tick();
-  await vi.waitFor(async () => expect((await f.database.syncStore.schedule.status()).runs[0]?.state).toBe("succeeded"));
+  await vi.waitFor(async () => expect((await f.database.syncStore.status.read()).runs[0]?.state).toBe("succeeded"));
   f.scheduler.tick();
   await vi.waitFor(() => expect(received).toHaveLength(1));
   expect(received[0]?.content?.body).toContain("Commit 300");

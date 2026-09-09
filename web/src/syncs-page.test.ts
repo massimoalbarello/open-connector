@@ -1,4 +1,4 @@
-import type { SyncInstallationStatus as SyncInstallation, SyncStatus } from "../../src/sync/schedule-store.ts";
+import type { SyncInstallationStatus as SyncInstallation, SyncStatus } from "../../src/sync/status-store.ts";
 
 import { I18nProvider } from "@embra/i18n/react";
 import { createElement } from "react";
