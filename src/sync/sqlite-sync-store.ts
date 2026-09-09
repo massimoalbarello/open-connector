@@ -9,7 +9,6 @@ import type {
   JsonObject,
   JsonValue,
   ListSyncChangesInput,
-  RegisterSyncSinkInput,
   RenewSyncRunLeaseInput,
   StartSyncRunInput,
   StartSyncSnapshotInput,
@@ -63,7 +62,6 @@ interface PreparedDelete {
 }
 
 interface PreparedCommit {
-  targetReceiverId?: string;
   installationId: string;
   runId: string;
   lease: SyncLeaseInput;
@@ -135,27 +133,6 @@ export class SqliteSyncStore implements ISyncStore {
     return this.readInstallation(requiredIdentifier(id, "installation id"));
   }
 
-  async registerSink(input: RegisterSyncSinkInput): Promise<void> {
-    const id = requiredIdentifier(input.id, "sink id");
-    const kind = requiredIdentifier(input.kind, "sink kind");
-    const updatedAt = requiredTimestamp(input.updatedAt, "updatedAt");
-    if (typeof input.enabled !== "boolean") {
-      throw invalidInput("Sink enabled must be a boolean.");
-    }
-    this.database
-      .prepare(
-        `
-        insert into sync_sinks (id, kind, enabled, created_at, updated_at)
-        values (?, ?, ?, ?, ?)
-        on conflict(id) do update set
-          kind = excluded.kind,
-          enabled = excluded.enabled,
-          updated_at = excluded.updated_at
-      `,
-      )
-      .run(id, kind, input.enabled ? 1 : 0, updatedAt, updatedAt);
-  }
-
   async startRun(input: StartSyncRunInput): Promise<SyncRun> {
     const id = requiredIdentifier(input.id, "run id");
     const installationId = requiredIdentifier(input.installationId, "installation id");
@@ -170,6 +147,7 @@ export class SqliteSyncStore implements ISyncStore {
     }
 
     runSyncTransaction(this.database, () => {
+      this.delivery.requireDestination();
       const installation = this.requireInstallation(installationId);
       this.assertSourceBinding(installation);
       if (installation.state !== "enabled") {
@@ -217,6 +195,7 @@ export class SqliteSyncStore implements ISyncStore {
     const lease = normalizeLease(input);
     const expiresAt = requiredTimestamp(input.expiresAt, "expiresAt");
     runSyncTransaction(this.database, () => {
+      this.delivery.requireDestination();
       this.assertLease(runId, lease);
       if (Date.parse(expiresAt) <= Date.now()) {
         throw invalidInput("expiresAt must be in the future.");
@@ -288,15 +267,7 @@ export class SqliteSyncStore implements ISyncStore {
     const installation = this.requireInstallation(input.installationId);
     const prepared = prepareCommit(input, this.requireDefinition(installation));
     return runSyncTransaction(this.database, () => {
-      if (
-        input.targetReceiverId &&
-        !this.database
-          .prepare(
-            "select r.id from sync_receivers r join sync_sinks s on s.id = r.id where r.id = ? and s.enabled = 1",
-          )
-          .get(input.targetReceiverId)
-      )
-        throw invalidInput("Bootstrap receiver is not enabled.");
+      this.delivery.requireDestination();
       const result = this.commitPreparedPage(prepared);
       this.delivery.purge();
       return result;
@@ -313,6 +284,7 @@ export class SqliteSyncStore implements ISyncStore {
     const models = normalizeModels(input.kinds);
 
     runSyncTransaction(this.database, () => {
+      this.delivery.requireDestination();
       const run = this.assertLease(runId, lease, installationId);
       this.assertDefinitionVersion(installationId, run);
       this.assertCheckpointRevision(installationId, expectedCheckpointRevision);
@@ -343,6 +315,7 @@ export class SqliteSyncStore implements ISyncStore {
     const checkpoint = readCanonicalValue(input.nextCheckpoint, "Sync checkpoint");
 
     return runSyncTransaction(this.database, () => {
+      this.delivery.requireDestination();
       const installation = this.requireInstallation(installationId);
       const run = this.assertLease(runId, lease, installationId);
       this.assertDefinitionVersion(installationId, run);
@@ -463,18 +436,17 @@ export class SqliteSyncStore implements ISyncStore {
     };
   }
 
-  async listOutbox(sinkId: string): Promise<SyncOutboxRecord[]> {
+  async listOutbox(): Promise<SyncOutboxRecord[]> {
     return this.database
       .prepare(
         `
-        select sink_id, change_sequence, state, attempt_count, next_attempt_at,
+        select change_sequence, state, attempt_count, next_attempt_at,
           lease_owner, lease_generation, lease_expires_at, delivered_at, last_error
         from sync_outbox
-        where sink_id = ?
         order by change_sequence
       `,
       )
-      .all(requiredIdentifier(sinkId, "sink id"))
+      .all()
       .map(readOutboxRow);
   }
 
@@ -586,21 +558,6 @@ export class SqliteSyncStore implements ISyncStore {
       }
     }
 
-    if (input.targetReceiverId) {
-      for (const upsert of input.upserts) {
-        const current = this.readRecord(input.installationId, upsert.model, upsert.id)!;
-        const inserted = this.database
-          .prepare(
-            "insert or ignore into sync_outbox(sink_id, change_sequence, state, next_attempt_at) values (?, ?, 'pending', ?)",
-          )
-          .run(input.targetReceiverId, current.lastChangeSequence, input.committedAt);
-        if (inserted.changes)
-          this.database
-            .prepare("update sync_changes set payload = ? where sequence = ? and payload = 'null'")
-            .run(upsert.payloadJson, current.lastChangeSequence);
-      }
-    }
-
     for (const deletion of input.deletes) {
       const current = this.readRecord(input.installationId, deletion.model, deletion.id);
       if (!current || current.deletedAt) {
@@ -688,9 +645,9 @@ export class SqliteSyncStore implements ISyncStore {
       .prepare(
         `
         insert into sync_outbox (
-          sink_id, change_sequence, state, attempt_count, next_attempt_at, lease_generation
+          change_sequence, state, attempt_count, next_attempt_at, lease_generation
         )
-        select id, ?, 'pending', 0, ?, 0 from sync_sinks where enabled = 1
+        values (?, 'pending', 0, ?, 0)
       `,
       )
       .run(sequence, input.committedAt);
@@ -1020,7 +977,6 @@ function prepareCommit(input: CommitSyncPageInput, definition: SyncDefinitionCon
     expectedCheckpointRevision,
     checkpoint: checkpoint.value,
     checkpointJson: checkpoint.value === null ? null : checkpoint.json,
-    targetReceiverId: input.targetReceiverId,
     upserts,
     deletes,
     snapshotId,
@@ -1150,11 +1106,10 @@ function readSnapshotRow(row: RuntimeRow): SyncSnapshot {
 
 function readOutboxRow(row: RuntimeRow): SyncOutboxRecord {
   const state = readString(row, "state");
-  if (state !== "dead" && state !== "delivered" && state !== "leased" && state !== "pending") {
+  if (state !== "delivered" && state !== "leased" && state !== "pending") {
     throw new Error(`Unexpected sync outbox state: ${state}.`);
   }
   return {
-    sinkId: readString(row, "sink_id"),
     changeSequence: readNumber(row, "change_sequence"),
     state,
     attemptCount: readNumber(row, "attempt_count"),

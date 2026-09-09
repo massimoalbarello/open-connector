@@ -3,16 +3,17 @@ import type { JsonObject, SyncChangeOperation } from "./sync-store.ts";
 export const maximumDeliveryBytes: number = 16 * 1024 * 1024;
 export const maximumRecordBytes: number = 8 * 1024 * 1024;
 
-export interface SyncReceiverInput {
-  id: string;
+export interface SyncDestinationInput {
   url: string;
   bearerToken: string;
   enabled: boolean;
 }
-export interface SyncReceiverStatus {
-  id: string;
+export interface SyncDestination {
   url: string;
   enabled: boolean;
+}
+export interface SyncDeliveryStatus {
+  destination?: SyncDestination;
   pendingRecords: number;
   deliveredRecords: number;
   lastError?: string;
@@ -54,8 +55,12 @@ export interface CompleteSyncDeliveryInput {
   now: string;
 }
 export interface ISyncDeliveryStore {
-  register(input: SyncReceiverInput): Promise<void>;
-  list(): Promise<SyncReceiverStatus[]>;
+  configure(input: SyncDestinationInput): Promise<void>;
+  /** Remove configuration and fence in-flight ACKs; queued records remain pending. */
+  remove(): void;
+  getDestination(): SyncDestination | undefined;
+  requireDestination(): void;
+  status(): SyncDeliveryStatus;
   claim(now: string): Promise<SyncDeliveryLease | undefined>;
   complete(input: CompleteSyncDeliveryInput): void;
   purge(): void;

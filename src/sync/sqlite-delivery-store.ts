@@ -6,8 +6,9 @@ import type {
   SyncDeliveryEnvelope,
   SyncDeliveryLease,
   SyncDeliveryRecord,
-  SyncReceiverInput,
-  SyncReceiverStatus,
+  SyncDestinationInput,
+  SyncDestination,
+  SyncDeliveryStatus,
 } from "./delivery-store.ts";
 import type { DatabaseSync } from "node:sqlite";
 
@@ -28,110 +29,122 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
     this.codec = codec;
   }
 
-  async register(input: SyncReceiverInput): Promise<void> {
+  async configure(input: SyncDestinationInput): Promise<void> {
     if (
-      !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(input.id) ||
-      typeof input.enabled !== "boolean" ||
+      !input.url ||
       !input.bearerToken ||
+      typeof input.enabled !== "boolean" ||
       input.bearerToken.length > 8192 ||
       /\s/.test(input.bearerToken)
     )
-      throw new SyncStoreError("invalid_input", "Invalid receiver ID, enabled flag or Bearer token.");
+      throw new SyncStoreError("invalid_input", "Destination URL, Bearer token and enabled flag are required.");
     const url = assertPublicHttpUrl(input.url, {
-      fieldName: "Receiver URL",
+      fieldName: "Destination URL",
       createError: (message) => new SyncStoreError("invalid_input", message),
     });
     if (url.protocol !== "https:" || url.hash)
-      throw new SyncStoreError("invalid_input", "Receivers require public HTTPS without a fragment.");
+      throw new SyncStoreError("invalid_input", "The destination requires public HTTPS without a fragment.");
     const secret = await this.codec.encode(input.bearerToken);
     const now = new Date().toISOString();
     runSyncTransaction(this.database, () => {
       this.database
-        .prepare(
-          "insert into sync_sinks(id, kind, enabled, created_at, updated_at) values (?, 'http', ?, ?, ?) on conflict(id) do update set enabled = excluded.enabled, updated_at = excluded.updated_at",
-        )
-        .run(input.id, Number(input.enabled), now, now);
-      this.database
-        .prepare(
-          "insert into sync_receivers(id, url, bearer_secret) values (?, ?, ?) on conflict(id) do update set url = excluded.url, bearer_secret = excluded.bearer_secret",
-        )
-        .run(input.id, url.toString(), secret);
-      // Reconfiguration fences an old worker's ACK while preserving stable batch membership.
-      this.database
-        .prepare(
-          "update sync_delivery_attempts set completed_at = ?, error_code = 'receiver_reconfigured' where completed_at is null and batch_id in (select id from sync_delivery_batches where sink_id = ?)",
-        )
-        .run(now, input.id);
-      this.database
-        .prepare(
-          "update sync_delivery_batches set state = 'pending', lease_generation = lease_generation + 1, next_attempt_at = ?, lease_expires_at = null where sink_id = ? and state != 'delivered'",
-        )
-        .run(now, input.id);
-      this.database
-        .prepare("update sync_outbox set state = 'pending', next_attempt_at = ? where sink_id = ? and state = 'leased'")
-        .run(now, input.id);
+        .prepare(`insert into sync_destination(id, url, bearer_secret, enabled) values (1, ?, ?, ?)
+        on conflict(id) do update set url = excluded.url, bearer_secret = excluded.bearer_secret, enabled = excluded.enabled`)
+        .run(url.toString(), secret, Number(input.enabled));
+      this.releaseBatches(now);
     });
   }
 
-  async list(): Promise<SyncReceiverStatus[]> {
-    return this.database
-      .prepare(`select r.id, r.url, s.enabled,
-      (select count(*) from sync_outbox where sink_id = r.id and state != 'delivered') as pending,
-      (select count(*) from sync_outbox where sink_id = r.id and state = 'delivered') as delivered,
-      b.last_error, b.next_attempt_at from sync_receivers r join sync_sinks s on s.id = r.id
-      left join sync_delivery_batches b on b.sink_id = r.id and b.state != 'delivered' order by r.id`)
-      .all()
-      .map((row) => ({
-        id: readString(row, "id"),
-        url: readString(row, "url"),
-        enabled: row.enabled === 1,
-        pendingRecords: Number(row.pending),
-        deliveredRecords: Number(row.delivered),
-        lastError: row.last_error === null ? undefined : String(row.last_error),
-        nextAttemptAt: row.next_attempt_at === null ? undefined : String(row.next_attempt_at),
-      }));
+  remove(): void {
+    runSyncTransaction(this.database, () => {
+      this.database.prepare("delete from sync_destination").run();
+      this.releaseBatches(new Date().toISOString());
+    });
+  }
+
+  getDestination(): SyncDestination | undefined {
+    const row = this.database.prepare("select url, enabled from sync_destination where id = 1").get();
+    return row ? { url: readString(row, "url"), enabled: row.enabled === 1 } : undefined;
+  }
+
+  requireDestination(): void {
+    if (!this.getDestination()?.enabled)
+      throw new SyncStoreError("destination_required", "Sync is waiting for an enabled destination.");
+  }
+
+  status(): SyncDeliveryStatus {
+    const row = this.database
+      .prepare(`select
+      coalesce(sum(state != 'delivered'), 0) as pending,
+      coalesce(sum(state = 'delivered'), 0) as delivered from sync_outbox`)
+      .get()!;
+    const batch = this.database
+      .prepare("select last_error, next_attempt_at from sync_delivery_batches where state != 'delivered'")
+      .get();
+    const destination = this.getDestination();
+    return {
+      destination,
+      pendingRecords: Number(row.pending),
+      deliveredRecords: Number(row.delivered),
+      lastError: batch?.last_error == null ? undefined : readString(batch, "last_error"),
+      nextAttemptAt: destination?.enabled && batch ? readString(batch, "next_attempt_at") : undefined,
+    };
+  }
+
+  // The queue survives configuration changes. Old workers cannot acknowledge a replacement's delivery.
+  private releaseBatches(now: string): void {
+    this.database
+      .prepare(`update sync_delivery_attempts set completed_at = ?, error_code = 'destination_changed'
+      where completed_at is null`)
+      .run(now);
+    this.database
+      .prepare(`update sync_delivery_batches set state = 'pending', lease_generation = lease_generation + 1,
+      next_attempt_at = ?, lease_expires_at = null, last_error = null where state != 'delivered'`)
+      .run(now);
+    this.database
+      .prepare(`update sync_outbox set state = 'pending', next_attempt_at = ?,
+      lease_expires_at = null, last_error = null where state != 'delivered'`)
+      .run(now);
   }
 
   async claim(now: string): Promise<SyncDeliveryLease | undefined> {
     const claimed = runSyncTransaction(this.database, () => {
-      let batch = this.database
-        .prepare(`select b.* from sync_delivery_batches b join sync_sinks s on s.id = b.sink_id
-        where s.enabled = 1 and b.state != 'delivered' and b.next_attempt_at <= ?
-        and (b.state = 'pending' or b.lease_expires_at <= ?) order by b.next_attempt_at, b.id limit 1`)
-        .get(now, now);
+      const destination = this.database.prepare("select * from sync_destination where id = 1 and enabled = 1").get();
+      if (!destination) return undefined;
+      let batch = this.database.prepare(`select * from sync_delivery_batches where state != 'delivered'`).get();
+      if (
+        batch &&
+        (readString(batch, "next_attempt_at") > now ||
+          (batch.state === "leased" && readString(batch, "lease_expires_at") > now))
+      )
+        return undefined;
       if (!batch) {
-        const sink = this.database
-          .prepare(`select s.id from sync_sinks s join sync_receivers r on r.id = s.id
-          where s.enabled = 1 and exists(select 1 from sync_outbox o where o.sink_id = s.id and o.state = 'pending' and o.batch_id is null)
-          and not exists(select 1 from sync_delivery_batches b where b.sink_id = s.id and b.state != 'delivered') order by coalesce((select max(delivered_at) from sync_delivery_batches b where b.sink_id = s.id), ''), s.id limit 1`)
-          .get();
-        if (!sink) return undefined;
         const id = randomUUIDv7();
         const rows = this.database
           .prepare(`select c.*, i.source_id from sync_outbox o join sync_changes c on c.sequence = o.change_sequence
           join sync_installations i on i.id = c.installation_id
-          where o.sink_id = ? and o.state = 'pending' and o.batch_id is null order by c.sequence limit 50`)
-          .iterate(readString(sink, "id"));
+          where o.state = 'pending' and o.batch_id is null order by c.sequence limit 50`)
+          .iterate();
         const envelope: SyncDeliveryEnvelope = { version: 1, batchId: id, records: [] };
         const selected: number[] = [];
         for (const row of rows) {
           envelope.records.push(readDeliveryRecord(row));
           if (Buffer.byteLength(JSON.stringify(envelope)) > maximumDeliveryBytes) {
+            if (!selected.length)
+              throw new SyncStoreError("invalid_input", "Pending record exceeds delivery byte limit.");
             envelope.records.pop();
             break;
           }
           selected.push(Number(row.sequence));
         }
-        if (!selected.length) throw new SyncStoreError("invalid_input", "Pending record exceeds delivery byte limit.");
+        if (!selected.length) return undefined;
         this.database
           .prepare(
-            "insert into sync_delivery_batches(id, sink_id, state, next_attempt_at, created_at) values (?, ?, 'pending', ?, ?)",
+            "insert into sync_delivery_batches(id, state, next_attempt_at, created_at) values (?, 'pending', ?, ?)",
           )
-          .run(id, readString(sink, "id"), now, now);
+          .run(id, now, now);
         for (const sequence of selected)
-          this.database
-            .prepare("update sync_outbox set batch_id = ? where sink_id = ? and change_sequence = ?")
-            .run(id, readString(sink, "id"), sequence);
+          this.database.prepare("update sync_outbox set batch_id = ? where change_sequence = ?").run(id, sequence);
         batch = this.database.prepare("select * from sync_delivery_batches where id = ?").get(id)!;
       }
       const id = readString(batch, "id");
@@ -157,9 +170,6 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
       this.database
         .prepare("insert into sync_delivery_attempts(batch_id, attempt, started_at) values (?, ?, ?)")
         .run(id, attempt, now);
-      const receiver = this.database
-        .prepare("select * from sync_receivers where id = ?")
-        .get(readString(batch, "sink_id"))!;
       const rows = this.database
         .prepare(`select c.*, i.source_id from sync_outbox o join sync_changes c on c.sequence = o.change_sequence
         join sync_installations i on i.id = c.installation_id where o.batch_id = ? order by c.sequence`)
@@ -170,8 +180,8 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
         owner,
         generation,
         attempt,
-        url: readString(receiver, "url"),
-        bearerToken: readString(receiver, "bearer_secret"),
+        url: readString(destination, "url"),
+        bearerToken: readString(destination, "bearer_secret"),
         body: JSON.stringify(envelope),
       };
     });
@@ -223,11 +233,11 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
     });
   }
 
-  /** Retain compact metadata forever; bodies only while some intended receiver still owes an ACK. */
+  /** Retain unacknowledged bodies even when destination configuration is absent. */
   purge(): void {
     this.database
       .prepare(`update sync_changes set payload = 'null' where payload != 'null'
-      and not exists(select 1 from sync_outbox o where o.change_sequence = sync_changes.sequence and o.state != 'delivered')`)
+      and exists(select 1 from sync_outbox o where o.change_sequence = sync_changes.sequence and o.state = 'delivered')`)
       .run();
     this.database
       .prepare(`update sync_records set payload = 'null' where payload != 'null'
