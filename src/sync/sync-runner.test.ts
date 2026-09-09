@@ -30,6 +30,11 @@ const definition = {
 async function setup(runtime: SyncDefinitionRuntime, validators?: CredentialValidators) {
   const database = new SqliteRuntimeDatabase(":memory:", { syncDefinitions: [definition] });
   databases.push(database);
+  await database.syncStore.delivery.configure({
+    url: "https://receiver.example.com",
+    bearerToken: "secret",
+    enabled: true,
+  });
   const catalog = createCatalogStore([
     { service: "github", displayName: "GitHub", categories: [], authTypes: ["api_key"], auth: [], actions: [] },
   ]);
@@ -67,6 +72,64 @@ afterEach(() => {
 });
 
 describe("compiled sync runner", () => {
+  it("waits before verification without a destination and resumes only committed pages after destination removal", async () => {
+    const cursors: number[] = [];
+    const verify = vi.fn(async () => ({ sourceIdentity: { accountId: "native", authorizationBoundary: "scope" } }));
+    const { database, runner, load } = await setup(
+      {
+        async *run(context) {
+          const cursor = Number((context.checkpoint as { cursor: number }).cursor);
+          cursors.push(cursor);
+          yield {
+            records: [{ kind: "test", record: { id: String(cursor), body: "Saved" } }],
+            checkpoint: { cursor: cursor + 1 },
+            complete: cursor > 0,
+          };
+          database.syncStore.delivery.remove();
+          yield {
+            records: [{ kind: "test", record: { id: "uncommitted", body: "Must retry" } }],
+            checkpoint: { cursor: 2 },
+            complete: true,
+          };
+        },
+      },
+      { apiKey: verify },
+    );
+    database.syncStore.delivery.remove();
+    await expect(runner.run({ definitionId: definition.id })).rejects.toMatchObject({ code: "destination_required" });
+    expect(verify).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+    await database.syncStore.delivery.configure({
+      url: "https://first.example.com",
+      bearerToken: "secret",
+      enabled: true,
+    });
+    await expect(runner.run({ definitionId: definition.id })).rejects.toMatchObject({ code: "destination_required" });
+    const changes = (await database.syncStore.listChanges()).items;
+    expect(changes).toHaveLength(1);
+    const installationId = changes[0]!.installationId;
+    expect(await database.syncStore.getCheckpoint(installationId)).toMatchObject({ revision: 1, value: { cursor: 1 } });
+    expect(await database.syncStore.getRun(changes[0]!.runId)).toMatchObject({
+      state: "cancelled",
+      errorCode: "destination_required",
+      pageCount: 1,
+    });
+    await database.syncStore.delivery.configure({
+      url: "https://next.example.com",
+      bearerToken: "secret",
+      enabled: false,
+    });
+    await expect(runner.run({ definitionId: definition.id })).rejects.toMatchObject({ code: "destination_required" });
+    await database.syncStore.delivery.configure({
+      url: "https://next.example.com",
+      bearerToken: "secret",
+      enabled: true,
+    });
+    expect((await runner.run({ definitionId: definition.id })).complete).toBe(true);
+    expect(cursors).toEqual([0, 1]);
+    expect(database.syncStore.delivery.status().pendingRecords).toBe(2);
+  });
+
   it("loads lazily and resumes durable pages without duplicating unchanged records", async () => {
     const cursors: unknown[] = [];
     const { database, runner, load } = await setup({
@@ -101,6 +164,7 @@ describe("compiled sync runner", () => {
         };
       },
     });
+    database.syncStore.delivery.remove();
     const result = await runner.run({ definitionId: definition.id, dryRun: true });
     expect(result.preview?.[0]).toMatchObject({ id: "preview", content: { body: "# Preview" } });
     expect(database.syncStore.sources.getBindingRevision()).toBe(0);

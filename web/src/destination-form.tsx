@@ -1,4 +1,4 @@
-import type { SyncReceiverStatus as SyncReceiver } from "../../src/sync/delivery-store.ts";
+import type { SyncDestination } from "../../src/sync/delivery-store.ts";
 import type { ReactNode, SubmitEvent } from "react";
 
 import { useTranslate } from "@embra/i18n/react";
@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 interface DestinationFormProps {
-  receiver?: SyncReceiver;
+  destination?: SyncDestination;
   onClose(): void;
   onSaved(): void;
   onAuthExpired(): void;
@@ -21,10 +21,9 @@ interface DestinationFormProps {
 
 export function DestinationForm(props: DestinationFormProps): ReactNode {
   const t = useTranslate();
-  const [id, setId] = useState(() => props.receiver?.id ?? `webhook-${crypto.randomUUID().slice(0, 8)}`);
-  const [url, setUrl] = useState(props.receiver?.url ?? "");
+  const [url, setUrl] = useState(props.destination?.url ?? "");
   const [token, setToken] = useState("");
-  const [enabled, setEnabled] = useState(props.receiver?.enabled ?? true);
+  const [enabled, setEnabled] = useState(props.destination?.enabled ?? true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   async function submit(event: SubmitEvent<HTMLFormElement>): Promise<void> {
@@ -32,8 +31,8 @@ export function DestinationForm(props: DestinationFormProps): ReactNode {
     setSaving(true);
     setError(undefined);
     try {
-      const path = `/api/sync/receivers/${encodeURIComponent(id.trim())}`;
-      if (props.receiver) await apiPatch(path, { url: url.trim(), bearerToken: token.trim() || undefined, enabled });
+      const path = "/api/sync/destination";
+      if (props.destination) await apiPatch(path, { url: url.trim(), bearerToken: token.trim() || undefined, enabled });
       else await apiPut(path, { url: url.trim(), bearerToken: token.trim(), enabled });
       props.onSaved();
     } catch (caught) {
@@ -52,21 +51,10 @@ export function DestinationForm(props: DestinationFormProps): ReactNode {
     >
       <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>{t(props.receiver ? "destinations.edit" : "destinations.add")}</DialogTitle>
+          <DialogTitle>{t(props.destination ? "destinations.edit" : "destinations.add")}</DialogTitle>
           <DialogDescription>{t("destinations.formDescription")}</DialogDescription>
         </DialogHeader>
         <form className="form-grid" onSubmit={(event) => void submit(event)}>
-          <Label className="field">
-            <span>{t("destinations.id")}</span>
-            <Input
-              value={id}
-              onChange={(event) => setId(event.target.value)}
-              readOnly={Boolean(props.receiver)}
-              required
-              maxLength={128}
-              pattern="[A-Za-z0-9][A-Za-z0-9_.\-]*"
-            />
-          </Label>
           <Label className="field">
             <span>{t("destinations.url")}</span>
             <Input
@@ -83,8 +71,8 @@ export function DestinationForm(props: DestinationFormProps): ReactNode {
               inputType: "password",
               label: t("destinations.token"),
               secret: true,
-              required: !props.receiver,
-              description: props.receiver ? t("destinations.keepToken") : t("destinations.tokenHint"),
+              required: !props.destination,
+              description: props.destination ? t("destinations.keepToken") : t("destinations.tokenHint"),
             }}
             value={token}
             onChange={setToken}
@@ -94,7 +82,7 @@ export function DestinationForm(props: DestinationFormProps): ReactNode {
             {t("destinations.enabled")}
           </Label>
           <p className="syncs-footnote">{t("destinations.disabledHint")}</p>
-          {props.receiver ? <p className="syncs-footnote">{t("destinations.updateHint")}</p> : null}
+          {props.destination ? <p className="syncs-footnote">{t("destinations.updateHint")}</p> : null}
           {error ? <InlineError message={error} /> : null}
           <div className="button-row">
             <Button type="submit" disabled={saving}>

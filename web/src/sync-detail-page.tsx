@@ -23,6 +23,7 @@ export function SyncDetailPage(props: SyncPageProps): ReactNode {
     installationId ? `/api/sync/installations/${encodeURIComponent(installationId)}/status` : "/api/sync/status",
     props,
   );
+  const destinationReady = resource.value?.delivery.destination?.enabled === true;
   const sync = resource.value?.installations.find((item) => item.id === installationId);
   const definition = resource.value?.definitions?.find((item) => item.id === (sync?.definitionId ?? definitionId));
   const [editing, setEditing] = useState(false);
@@ -68,7 +69,7 @@ export function SyncDetailPage(props: SyncPageProps): ReactNode {
             <div className="button-row">
               {sync ? (
                 <>
-                  <SyncBadge state={syncHealth(sync)} />
+                  <SyncBadge state={syncHealth(sync, destinationReady)} />
                   {sync.state === "enabled" ? (
                     <Button
                       variant="outline"
@@ -106,7 +107,7 @@ export function SyncDetailPage(props: SyncPageProps): ReactNode {
                     size="sm"
                     disabled={
                       Boolean(working) ||
-                      !syncCanPoll(sync) ||
+                      !syncCanPoll(sync, destinationReady) ||
                       sync.latestRun?.state === "running" ||
                       !resource.value?.schedulerRunning
                     }
@@ -136,6 +137,7 @@ export function SyncDetailPage(props: SyncPageProps): ReactNode {
               )}
             </div>
           </div>
+          {!destinationReady ? <FormStatus message={t("syncs.waitingDestination")} /> : null}
           {!resource.value?.schedulerRunning ? <FormStatus message={t("syncs.schedulerStopped")} /> : null}
           {notice ? <FormStatus message={notice} /> : null}
           {sync ? (
@@ -157,7 +159,7 @@ export function SyncDetailPage(props: SyncPageProps): ReactNode {
                   <div>
                     <dt>{t("syncs.nextPoll")}</dt>
                     <dd>
-                      {!syncCanPoll(sync) ? (
+                      {!syncCanPoll(sync, destinationReady) ? (
                         t("syncs.notScheduled")
                       ) : !resource.value?.schedulerRunning ? (
                         t("syncs.stopped")

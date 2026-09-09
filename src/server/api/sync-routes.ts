@@ -11,7 +11,6 @@ import { SyncStoreError } from "../../sync/sync-store.ts";
 import { readJsonBody, jsonError } from "./http-utils.ts";
 
 const runSchema = z.strictObject({
-  targetReceiverId: z.string().min(1).max(128).optional(),
   connectionName: z.string().optional(),
   config: z.record(z.string(), z.json()).optional(),
   dryRun: z.boolean().optional(),
@@ -34,7 +33,7 @@ export function registerSyncRoutes(
       acquisitionRunning: runner.busy,
       schedulerRunning: scheduler?.running ?? false,
       ...(await store.status.read()),
-      receivers: await store.delivery.list(),
+      delivery: store.delivery.status(),
       definitions: runner.definitions(),
     }),
   );
@@ -46,7 +45,7 @@ export function registerSyncRoutes(
       ...status,
       acquisitionRunning: runner.busy,
       schedulerRunning: scheduler?.running ?? false,
-      receivers: await store.delivery.list(),
+      delivery: store.delivery.status(),
       definitions: runner.definitions(),
     });
   });
@@ -76,6 +75,7 @@ export function registerSyncRoutes(
     if (!scheduler?.running)
       return jsonError(context, 503, "scheduler_stopped", "Automatic polling is stopped on this runtime.");
     try {
+      store.delivery.requireDestination();
       store.schedule.requestRun(context.req.param("id"));
       scheduler.tick();
       return context.json({ queued: true }, 202);
@@ -110,8 +110,8 @@ export function registerSyncRoutes(
       return syncError(context, error);
     }
   });
-  app.get("/api/sync/receivers", async (context) => context.json(await store.delivery.list()));
-  app.patch("/api/sync/receivers/:id", async (context) => {
+  app.get("/api/sync/destination", (context) => context.json(store.delivery.status()));
+  app.patch("/api/sync/destination", async (context) => {
     const schema = z.strictObject({
       url: z.string().max(8192).optional(),
       bearerToken: z.string().min(1).max(8192).optional(),
@@ -120,23 +120,24 @@ export function registerSyncRoutes(
     const parsed = schema.safeParse(await readJsonBody(context, 64 * 1024));
     if (!parsed.success) return jsonError(context, 400, "invalid_input", "Invalid destination configuration.");
     try {
-      const id = context.req.param("id");
-      await store.delivery.update({ id, ...parsed.data });
-      return context.json({ id });
+      await store.delivery.update(parsed.data);
+      runner.destinationChanged();
+      if (scheduler?.running) scheduler.tick();
+      return context.json(store.delivery.status());
     } catch (error) {
       return syncError(context, error);
     }
   });
-  app.delete("/api/sync/receivers/:id", (context) => {
+  app.delete("/api/sync/destination", (context) => {
     try {
-      const id = context.req.param("id");
-      store.delivery.remove(id);
-      return context.json({ id });
+      store.delivery.remove();
+      runner.destinationChanged();
+      return context.json(store.delivery.status());
     } catch (error) {
       return syncError(context, error);
     }
   });
-  app.put("/api/sync/receivers/:id", async (context) => {
+  app.put("/api/sync/destination", async (context) => {
     const schema = z.strictObject({
       url: z.string().max(8192),
       bearerToken: z.string().max(8192),
@@ -145,8 +146,10 @@ export function registerSyncRoutes(
     const parsed = schema.safeParse(await readJsonBody(context, 64 * 1024));
     if (!parsed.success) return jsonError(context, 400, "invalid_input", "Invalid receiver registration.");
     try {
-      await store.delivery.register({ id: context.req.param("id"), ...parsed.data });
-      return context.json({ id: context.req.param("id") });
+      await store.delivery.configure(parsed.data);
+      runner.destinationChanged();
+      if (scheduler?.running) scheduler.tick();
+      return context.json(store.delivery.status());
     } catch (error) {
       return syncError(context, error);
     }
@@ -178,9 +181,12 @@ function syncError(context: Context, error: unknown): Response {
   if (error instanceof SyncStoreError || error instanceof ConnectionError)
     return jsonError(
       context,
-      error.code === "installation_not_found" || error.code === "receiver_not_found"
+      error.code === "installation_not_found"
         ? 404
-        : error.code === "run_busy" || error.code === "binding_conflict" || error.code === "credential_changed"
+        : error.code === "destination_required" ||
+            error.code === "run_busy" ||
+            error.code === "binding_conflict" ||
+            error.code === "credential_changed"
           ? 409
           : 400,
       error.code,

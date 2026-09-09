@@ -101,6 +101,11 @@ async function fixture(custom?: SyncDefinitionRuntime, contract: SyncDefinition 
     metadata: {},
     profile: { accountId: "display", displayName: "Display", grantedScopes: [] },
   };
+  await database!.syncStore.delivery.configure({
+    url: "https://receiver.example.com/records",
+    bearerToken: "secret",
+    enabled: true,
+  });
   await database!.connectionStore.set("github", "default", credential);
   cleanups.push(async () => {
     await scheduler.stop();
@@ -138,11 +143,71 @@ afterEach(async () => {
 });
 
 describe("embedded sync scheduler", () => {
+  it("waits without failures, cancels when the destination is removed, and resumes acquisition and delivery after restart", async () => {
+    const cursors: number[] = [];
+    const f = await fixture({
+      async *run(context) {
+        const cursor = Number((context.checkpoint as { cursor: number }).cursor);
+        cursors.push(cursor);
+        yield {
+          records: [{ kind: "record", record: { id: String(cursor), body: "Saved" } }],
+          checkpoint: { cursor: cursor + 1 },
+          complete: cursor > 0,
+        };
+        await new Promise<void>((resolve) => context.signal.addEventListener("abort", () => resolve(), { once: true }));
+      },
+    });
+    const destination = { url: "https://receiver.example.com/records", bearerToken: "secret", enabled: true };
+    f.database.syncStore.delivery.remove();
+    f.scheduler.tick();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(f.state.verifications).toBe(0);
+    expect((await f.database.syncStore.status.read()).bindingErrors).toEqual([]);
+    await f.database.syncStore.delivery.configure(destination);
+    f.scheduler.tick();
+    await vi.waitFor(async () => expect((await f.database.syncStore.listChanges()).items).toHaveLength(1));
+    const app = new Hono();
+    app.use("/api/*", createLocalAuthMiddleware({ adminToken: "admin" }));
+    registerSyncRoutes(app, f.runner, f.database.syncStore, f.delivery);
+    expect((await app.request("/api/sync/destination", { method: "DELETE" })).status).toBe(401);
+    expect(
+      (await app.request("/api/sync/destination", { method: "DELETE", headers: { authorization: "Bearer admin" } }))
+        .status,
+    ).toBe(200);
+    await vi.waitFor(() => expect(f.runner.busy).toBe(false));
+    const waiting = await f.database.syncStore.status.read();
+    expect(waiting.runs).toMatchObject([{ state: "cancelled", errorCode: "destination_required", pageCount: 1 }]);
+    expect(waiting.installations[0]).toMatchObject({ state: "enabled", consecutiveFailures: 0, lastError: undefined });
+    f.scheduler.tick();
+    await f.restart();
+    f.scheduler.tick();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(cursors).toEqual([0]);
+    expect((await f.database.syncStore.status.read()).runs).toHaveLength(1);
+    expect(f.database.syncStore.delivery.status()).toMatchObject({ destination: undefined, pendingRecords: 1 });
+    await f.database.syncStore.delivery.configure({ ...destination, url: "https://replacement.example.com/records" });
+    f.scheduler.tick();
+    await vi.waitFor(() => expect(cursors).toEqual([0, 1]));
+    await vi.waitFor(() => expect(f.runner.busy).toBe(false));
+    f.scheduler.tick();
+    await vi.waitFor(() =>
+      expect(f.database.syncStore.delivery.status()).toMatchObject({ deliveredRecords: 2, pendingRecords: 0 }),
+    );
+    const records = f.fetcher.mock.calls.flatMap(([, input]) => JSON.parse(String(input?.body)).records);
+    expect(records.map((record) => record.id)).toEqual(["0", "1"]);
+    f.database.syncStore.schedule.configure({ installationId: waiting.installations[0]!.id, enabled: false });
+    f.database.syncStore.delivery.remove();
+    await f.database.syncStore.delivery.configure(destination);
+    f.scheduler.tick();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(cursors).toEqual([0, 1]);
+    expect((await f.database.syncStore.status.read()).installations[0]?.state).toBe("disabled");
+  });
+
   it("automatically acquires connected sources, persists cadence, coalesces missed intervals and delivers independently", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const f = await fixture();
-    await f.database.syncStore.delivery.register({
-      id: "receiver",
+    await f.database.syncStore.delivery.configure({
       url: "https://receiver.example.com/records",
       bearerToken: "secret",
       enabled: true,
@@ -340,39 +405,6 @@ describe("embedded sync scheduler", () => {
     }
   });
 
-  it("continues a targeted backfill after restart without changing event IDs or revisions", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    const f = await fixture();
-    await f.runner.run({ definitionId: definition.id });
-    const original = (await f.database.syncStore.listChanges()).items;
-    expect(original.every((change) => change.content === undefined)).toBe(true);
-    await f.database.syncStore.delivery.register({
-      id: "new",
-      url: "https://new.example.com/records",
-      bearerToken: "secret",
-      enabled: true,
-    });
-    const partial = await f.runner.run({
-      definitionId: definition.id,
-      backfill: true,
-      targetReceiverId: "new",
-      maxPages: 1,
-    });
-    expect(partial.complete).toBe(false);
-    expect((await f.database.syncStore.getInstallation(partial.installationId!))?.bootstrapReceiverId).toBe("new");
-    await f.restart();
-    vi.setSystemTime(Date.now() + 2000);
-    f.scheduler.tick();
-    await vi.waitFor(() => expect(f.state.visits).toBe(3));
-    await vi.waitFor(() => expect(f.runner.busy).toBe(false));
-    f.scheduler.tick();
-    await vi.waitFor(async () => expect((await f.database.syncStore.delivery.list())[0]?.pendingRecords).toBe(0));
-    const delivered = f.fetcher.mock.calls.flatMap(([, input]) => JSON.parse(String(input?.body)).records);
-    expect(delivered.map((record) => record.eventId).sort()).toEqual(original.map((record) => record.eventId).sort());
-    expect(delivered.every((record) => record.revision === 1)).toBe(true);
-    expect((await f.database.syncStore.getInstallation(partial.installationId!))?.bootstrapReceiverId).toBeUndefined();
-  });
-
   it("enforces the global acquisition slot across database instances and cancels cleanly on shutdown", async () => {
     let entered = false;
     const f = await fixture({
@@ -462,7 +494,7 @@ describe("embedded sync scheduler", () => {
           id: run.installationId,
           recordCount: 2,
           deliveredCount: 0,
-          pendingCount: 0,
+          pendingCount: 2,
           latestRun: { state: "succeeded" },
         },
       ],
@@ -500,8 +532,7 @@ it("runs the compiled GitHub sync through the scheduler and real HTTP receiver, 
   });
   cleanups.push(receiver.close);
   f.fetcher.mockImplementation((_url, input) => fetch(receiver.url, input));
-  await f.database.syncStore.delivery.register({
-    id: "log",
+  await f.database.syncStore.delivery.configure({
     url: "https://log.example.com/records",
     bearerToken: "receiver",
     enabled: true,
@@ -513,7 +544,7 @@ it("runs the compiled GitHub sync through the scheduler and real HTTP receiver, 
   expect(received[0]?.content?.body).toContain("Commit 300");
   expect(received[0]?.content?.body).toContain("Thread 50");
   expect(received[0]?.revision).toBe(1);
-  await vi.waitFor(async () => expect((await f.database.syncStore.delivery.list())[0]?.pendingRecords).toBe(0));
+  await vi.waitFor(async () => expect(f.database.syncStore.delivery.status().pendingRecords).toBe(0));
   await f.restart();
   upstream.comments[0]!.body = "An old child comment was corrected";
   vi.setSystemTime(Date.now() + 26 * 3600_000);
@@ -556,8 +587,8 @@ it("manages syncs through authenticated routes without losing committed progress
     ["installations", "POST"],
     ["installations/test", "DELETE"],
     ["installations/test/run", "POST"],
-    ["receivers/test", "PATCH"],
-    ["receivers/test", "DELETE"],
+    ["destination", "PATCH"],
+    ["destination", "DELETE"],
   ])
     expect((await app.request(`/api/sync/${path}`, { method })).status).toBe(401);
   expect((await request("installations", "POST", { definitionId: definition.id, scheduleSeconds: 1 })).status).toBe(
@@ -606,30 +637,28 @@ it("manages syncs through authenticated routes without losing committed progress
   expect((await f.database.syncStore.status.read(sync.id)).runs).toHaveLength(2);
 });
 
-it("validates destination management at the HTTP boundary and preserves the token on partial updates", async () => {
+it("validates singleton destination management and preserves the token on partial updates", async () => {
   const f = await fixture();
   const app = new Hono();
   app.use("/api/*", createLocalAuthMiddleware({ adminToken: "admin" }));
   registerSyncRoutes(app, f.runner, f.database.syncStore, f.delivery, f.scheduler);
-  const request = (method: string, id: string, body?: unknown) =>
-    app.request(`/api/sync/receivers/${id}`, {
+  const request = (method: string, body?: unknown) =>
+    app.request("/api/sync/destination", {
       method,
       headers: { authorization: "Bearer admin", "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-  expect(
-    (await request("PUT", "new", { url: "https://receiver.example.com/records", bearerToken: "secret" })).status,
-  ).toBe(200);
-  expect((await request("PATCH", "new", { url: "https://updated.example.com/records", enabled: false })).status).toBe(
+  expect((await request("PUT", { url: "https://receiver.example.com/records", bearerToken: "secret" })).status).toBe(
     200,
   );
-  expect(await f.database.syncStore.delivery.list()).toMatchObject([
-    { id: "new", url: "https://updated.example.com/records", enabled: false },
-  ]);
-  expect((await request("PATCH", "new", { bearerToken: "" })).status).toBe(400);
-  expect((await request("PATCH", "new", { url: "http://receiver.example.com" })).status).toBe(400);
-  expect((await request("PATCH", "missing", { enabled: true })).status).toBe(404);
-  expect((await request("DELETE", "new")).status).toBe(200);
-  expect((await request("DELETE", "new")).status).toBe(404);
-  expect(await f.database.syncStore.delivery.list()).toEqual([]);
+  expect((await request("PATCH", { url: "https://updated.example.com/records", enabled: false })).status).toBe(200);
+  expect(await (await request("GET")).json()).toMatchObject({
+    destination: { url: "https://updated.example.com/records", enabled: false },
+  });
+  expect((await request("PATCH", { bearerToken: "" })).status).toBe(400);
+  expect((await request("PATCH", { url: "http://receiver.example.com" })).status).toBe(400);
+  expect((await request("DELETE")).status).toBe(200);
+  expect((await request("DELETE")).status).toBe(200);
+  expect((await request("PATCH", { enabled: true })).status).toBe(409);
+  expect(f.database.syncStore.delivery.getDestination()).toBeUndefined();
 });

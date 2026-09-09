@@ -40,7 +40,7 @@
     "runs": "运行记录",
     "access": "API Key",
     "docs": "文档",
-    "destinations": "目标地址"
+    "destinations": "投递目标"
   },
   "shell": {
     "invalidUnlockToken": "请输入有效的管理员 token 来解锁控制台。",
@@ -80,7 +80,7 @@
         "title": "资源"
       },
       "destinations": {
-        "title": "目标地址"
+        "title": "投递目标"
       }
     }
   },
@@ -589,7 +589,7 @@
     }
   },
   "syncs": {
-    "description": "监控数据源轮询和向 Webhook 目标的记录投递。",
+    "description": "监控源轮询和向 Webhook 目标投递记录的状态。",
     "updated": "更新于",
     "autoRefresh": "每 10 秒刷新",
     "loadFailed": "无法加载同步状态。",
@@ -622,14 +622,14 @@
     "failures": "连续失败次数",
     "sourceId": "数据源 ID",
     "backfillRequired": "之前的历史回填已中断。恢复轮询前需要显式执行回填。",
-    "countsHint": "记录数统计未删除的唯一记录。已投递和待投递统计各目标的记录变更，包括更新和删除；一条记录可能有多次投递。",
+    "countsHint": "记录数统计未删除的唯一记录。已投递和待投递统计记录变更，包括更新和删除；同一记录可能投递多次。",
     "bindingErrors": "数据源验证错误",
     "nextAttempt": "下次投递或重试",
     "stopped": "调度器已停止",
     "webhookDestinations": "Webhook 投递目标",
     "allSources": "订阅所有数据源",
-    "noDestinationsTitle": "尚未注册 Webhook 目标",
-    "noDestinationsDescription": "通过同步 API 注册接收端以投递新变更。要将已有记录发送到新目标，请运行定向历史回填。",
+    "noDestinationsTitle": "尚未配置 Webhook 目标",
+    "noDestinationsDescription": "配置目标后将恢复同步并投递保留的记录。",
     "notScheduled": "未安排",
     "afterCurrent": "当前迭代结束后",
     "due": "已到期 · 等待执行器",
@@ -662,7 +662,8 @@
       "lease_expired": "已中断",
       "succeeded": "成功",
       "enabled": "已启用",
-      "notConfigured": "未配置"
+      "notConfigured": "未配置",
+      "waitingDestination": "等待投递目标"
     },
     "connection": {
       "missing": "数据源连接已移除。重新连接账号以恢复轮询。",
@@ -682,16 +683,13 @@
       "delivering": "投递中",
       "retrying": "重试中",
       "delivered": "已投递",
-      "cancelled": "已取消"
+      "waiting": "等待投递目标"
     },
     "manage": {
       "unavailable": "同步不可用",
-      "deliveryUnavailable": "投递状态不可用",
-      "noDeliveryDestination": "采集时未设置目标地址",
       "nothingToDeliver": "无需投递",
       "deliveryProgress": "已投递 {{delivered}} / {{total}} 条",
       "pendingCount": "{{count}} 条等待中",
-      "cancelledCount": "{{count}} 条已取消",
       "historyLimit": "此同步最近的 100 次迭代",
       "pollingResult": "轮询",
       "delivery": "投递",
@@ -725,24 +723,24 @@
       "stopHint": "停止将取消当前轮询并保留已提交的进度。已加入队列的记录仍会继续投递。",
       "removeSync": "移除同步？",
       "removeSyncDescription": "轮询将停止，此同步将被隐藏。记录、历史和进度会保留；再次添加相同同步即可恢复。队列中的投递仍会继续。"
-    }
+    },
+    "waitingDestination": "同步正在等待已启用的目标。待投递的记录会保留。"
   },
   "destinations": {
-    "description": "管理接收所有同步记录的 Webhook 目标地址。",
+    "description": "管理接收所有同步记录的 Webhook 目标。",
     "add": "添加目标地址",
     "edit": "编辑目标地址",
     "formDescription": "使用公共 HTTPS 端点和接收端要求的 Bearer 令牌。",
-    "id": "目标地址 ID",
     "url": "Webhook 地址",
     "token": "Bearer 令牌",
     "keepToken": "留空以保留已保存的令牌。",
     "tokenHint": "通过每次投递的 Authorization 请求头发送。",
     "enabled": "已启用",
-    "disabledHint": "禁用期间不会接收新的变更。已排队的投递会等待重新启用。",
+    "disabledHint": "禁用目标会暂停同步和投递。待投递的记录会保留。",
     "updateHint": "等待中的投递将使用更新后的地址和令牌。",
-    "emptyDescription": "添加目标地址以接收同步记录的变更。",
-    "newRecordsHint": "新的目标地址接收未来的变更。要发送已有记录，需通过同步 API 显式执行定向回填。",
+    "emptyDescription": "添加目标以恢复同步并投递保留的记录。",
     "remove": "移除目标地址？",
-    "removeDescription": "这将删除已保存的令牌并取消 {{count}} 条等待投递的记录。投递历史会保留，已经发出的请求仍可能到达。"
+    "removeDescription": "这会移除保存的 URL 和令牌并暂停轮询。{{count}} 条待投递记录将保留给下一个目标。已经发出的请求仍可能到达。",
+    "retentionHint": "移除目标后，待投递的记录会保留，并在启用目标后投递。已确认接收的记录不会重发。"
   }
 }
