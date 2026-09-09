@@ -125,6 +125,7 @@ export class SqliteSyncStore implements ISyncStore {
     this.status = new SqliteSyncStatusStore(database, {
       installation: (id) => this.readInstallation(id),
       run: (id) => this.readRun(id),
+      runDelivery: (id) => this.delivery.runStatus(id),
     });
     this.definitions = structuredClone(definitions);
     const ids = new Set<string>();
@@ -163,6 +164,7 @@ export class SqliteSyncStore implements ISyncStore {
       if (this.database.prepare("select 1 from sync_runs where state = 'running'").get())
         throw new SyncStoreError("run_busy", "Another acquisition is already running.");
       const installation = this.requireInstallation(installationId);
+      if (installation.removedAt) throw invalidInput("Restore this sync before starting another iteration.");
       if (installation.requiresBackfill && input.resetCheckpoint === undefined)
         throw invalidInput("Interrupted snapshot requires an explicit backfill run.");
       if (installation.requiresBackfill && input.resetCheckpoint !== undefined) {
@@ -915,7 +917,7 @@ export class SqliteSyncStore implements ISyncStore {
       .prepare(
         `
         select source_id, credential_revision, binding_revision, id, definition_id, definition_version, provider, connection_id, config_value,
-          state, schedule_seconds, next_due_at, last_success_at, created_at, updated_at, consecutive_failures, last_error, requires_backfill
+          state, schedule_seconds, next_due_at, last_success_at, created_at, updated_at, consecutive_failures, last_error, requires_backfill, removed_at
         from sync_installations where id = ?
       `,
       )
@@ -1028,6 +1030,7 @@ function readInstallationRow(row: RuntimeRow): SyncInstallation {
   const state = readString(row, "state");
   assertInstallationState(state);
   return {
+    removedAt: readOptionalString(row, "removed_at"),
     sourceId: readString(row, "source_id"),
     credentialRevision: readString(row, "credential_revision"),
     bindingRevision: readNumber(row, "binding_revision"),

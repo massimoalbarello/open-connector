@@ -16,6 +16,7 @@ export type SyncRunState = "cancelled" | "failed" | "lease_expired" | "running" 
 export type SyncChangeOperation = "added" | "deleted" | "updated";
 
 export interface SyncInstallation {
+  removedAt?: string;
   consecutiveFailures: number;
   lastError?: string;
   requiresBackfill: boolean;

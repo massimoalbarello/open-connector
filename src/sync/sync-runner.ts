@@ -1,6 +1,6 @@
 import type { ConnectionService, IConnectionStore } from "../connection-service.ts";
 import type { SyncRegistration } from "./sync-definition.ts";
-import type { ISyncStore, JsonObject, JsonValue, SyncRun } from "./sync-store.ts";
+import type { ISyncStore, JsonObject, JsonValue, SyncRun, SyncInstallation } from "./sync-store.ts";
 
 import { normalizeConnectionName } from "../connection-service.ts";
 import { randomUUIDv7 } from "../core/uuid-v7.ts";
@@ -39,6 +39,15 @@ export interface RunSyncResult {
   preview?: JsonObject[];
 }
 
+export interface CreateSyncInstallationInput {
+  definitionId: string;
+  connectionName?: string;
+  config?: JsonObject;
+  scheduleSeconds?: number;
+  enabled: boolean;
+  signal?: AbortSignal;
+}
+
 /** Runs trusted compiled acquisition with pinned auth, validated progress and fenced page commits. */
 export class SyncRunner {
   private readonly options: SyncRunnerOptions;
@@ -58,6 +67,36 @@ export class SyncRunner {
 
   definitions(): readonly SyncRegistration["definition"][] {
     return this.options.registrations.map((item) => item.definition);
+  }
+
+  async create(input: CreateSyncInstallationInput): Promise<SyncInstallation> {
+    const definition = this.definitions().find((item) => item.id === input.definitionId);
+    if (!definition) throw new SyncStoreError("invalid_input", "Unknown sync definition.");
+    if (
+      input.scheduleSeconds !== undefined &&
+      (!Number.isInteger(input.scheduleSeconds) || input.scheduleSeconds < 60 || input.scheduleSeconds > 86400)
+    )
+      throw new SyncStoreError("invalid_input", "Schedule interval must be between 60 and 86400 seconds.");
+    const config = validateSyncValue(
+      input.config ?? definition.defaultConfig,
+      definition.configSchema,
+      "Sync configuration",
+    );
+    const installation = await new SyncSourceBindingService(this.options.connections, this.options.store).bind({
+      definitionId: definition.id,
+      definitionVersion: definition.version,
+      provider: definition.provider,
+      connectionName: input.connectionName,
+      config,
+      signal: input.signal,
+    });
+    this.options.store.schedule.configure({
+      installationId: installation.id,
+      enabled: input.enabled,
+      scheduleSeconds: input.scheduleSeconds ?? definition.scheduleSeconds,
+      restore: true,
+    });
+    return (await this.options.store.getInstallation(installation.id))!;
   }
 
   run(input: RunSyncInput): Promise<RunSyncResult> {
@@ -296,8 +335,8 @@ export class SyncRunner {
       const waiting = error instanceof SyncStoreError && error.code === "destination_required";
       if (heartbeat) clearInterval(heartbeat);
       await heartbeatWork;
-      if (installation)
-        await store
+      if (installation) {
+        const failedRun = await store
           .finishRun({
             runId,
             ...lease,
@@ -311,15 +350,17 @@ export class SyncRunner {
                 : "Acquisition failed; committed progress is retained.",
           })
           .catch(() => undefined);
-      if (installation)
-        store.schedule.complete({
-          installationId: installation.id,
-          bindingRevision: installation.bindingRevision,
-          succeeded: false,
-          complete: false,
-          errorCode: error instanceof SyncStoreError ? error.code : "acquisition_failed",
-          now: new Date().toISOString(),
-        });
+        // Stop/rebind already fenced this run. Its old worker must not change the new schedule.
+        if (failedRun)
+          store.schedule.complete({
+            installationId: installation.id,
+            bindingRevision: installation.bindingRevision,
+            succeeded: false,
+            complete: false,
+            errorCode: error instanceof SyncStoreError ? error.code : "acquisition_failed",
+            now: new Date().toISOString(),
+          });
+      }
       throw error;
     } finally {
       if (heartbeat) clearInterval(heartbeat);

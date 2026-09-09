@@ -292,7 +292,7 @@ describe("embedded sync scheduler", () => {
     expect(response.status).toBe(200);
     const status = await response.json();
     expect(status.installations[0]).toMatchObject({
-      latestRun: failed,
+      latestRun: JSON.parse(JSON.stringify(failed)),
       consecutiveFailures: 1,
       lastSuccessAt: first.lastSuccessAt,
       recordCount: 2,
@@ -330,6 +330,34 @@ describe("embedded sync scheduler", () => {
     expect(status.runs.map((run) => run.state)).toEqual(["failed", "succeeded"]);
     expect(status.installations[0]?.consecutiveFailures).toBe(1);
     expect(JSON.stringify(status)).not.toContain("private-acquisition-error");
+  });
+
+  it("rolls back a sync removal if its tombstone cannot be saved", async () => {
+    const f = await fixture();
+    const first = await f.runner.run({ definitionId: definition.id });
+    const store = f.database.syncStore;
+    const installation = (await store.getInstallation(first.installationId!))!;
+    await store.startRun({
+      id: "removing",
+      installationId: installation.id,
+      definitionVersion: "1",
+      reason: "manual",
+      leaseOwner: "worker",
+      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      startedAt: now(),
+    });
+    const before = await store.getRun("removing");
+    const raw = new DatabaseSync(f.path);
+    try {
+      raw.exec(
+        "create trigger reject_removal before update of removed_at on sync_installations when new.removed_at is not null begin select raise(abort, 'removal write failed'); end;",
+      );
+      expect(() => store.schedule.remove(installation.id)).toThrow("removal write failed");
+      expect(await store.getInstallation(installation.id)).toEqual(installation);
+      expect(await store.getRun("removing")).toEqual(before);
+    } finally {
+      raw.close();
+    }
   });
 
   it("does not record a late verification failure after the sync was stopped", async () => {
@@ -529,4 +557,108 @@ it("runs the compiled GitHub sync through the scheduler and real HTTP receiver, 
   expect(received[1]?.sourceId).toBe(received[0]?.sourceId);
   expect(received[1]?.revision).toBe(2);
   expect(received[1]?.content?.body).toContain("An old child comment was corrected");
+});
+
+it("manages syncs through authenticated routes without losing committed progress", async () => {
+  const cursors: number[] = [];
+  const f = await fixture({
+    async *run(context) {
+      const cursor = Number((context.checkpoint as { cursor: number }).cursor);
+      cursors.push(cursor);
+      yield {
+        records: [{ kind: "record", record: { id: String(cursor), body: "Saved" } }],
+        checkpoint: { cursor: cursor + 1 },
+        complete: cursor > 0,
+      };
+      if (!cursor)
+        await new Promise<void>((resolve) => context.signal.addEventListener("abort", () => resolve(), { once: true }));
+    },
+  });
+  const app = new Hono();
+  app.use("/api/*", createLocalAuthMiddleware({ adminToken: "admin" }));
+  registerSyncRoutes(app, f.runner, f.database.syncStore, f.delivery, f.scheduler);
+  const request = (path: string, method = "GET", body?: unknown) =>
+    app.request(`/api/sync/${path}`, {
+      method,
+      headers: { authorization: "Bearer admin", "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  for (const [path, method] of [
+    ["installations", "POST"],
+    ["installations/test", "DELETE"],
+    ["installations/test/run", "POST"],
+    ["destination", "PATCH"],
+    ["destination", "DELETE"],
+  ])
+    expect((await app.request(`/api/sync/${path}`, { method })).status).toBe(401);
+  expect((await request("installations", "POST", { definitionId: definition.id, scheduleSeconds: 1 })).status).toBe(
+    400,
+  );
+  const created = await request("installations", "POST", {
+    definitionId: definition.id,
+    enabled: false,
+    scheduleSeconds: 120,
+  });
+  expect(created.status).toBe(201);
+  const sync = await created.json();
+  expect(sync).toMatchObject({ state: "disabled", scheduleSeconds: 120 });
+  expect((await request(`installations/${sync.id}/run`, "POST")).status).toBe(503);
+  f.scheduler.start();
+  expect((await request(`installations/${sync.id}`, "PATCH", { enabled: true })).status).toBe(200);
+  await vi.waitFor(async () =>
+    expect((await f.database.syncStore.getCheckpoint(sync.id))?.value).toEqual({ cursor: 1 }),
+  );
+  expect((await request(`installations/${sync.id}/run`, "POST")).status).toBe(409);
+  expect((await request(`installations/${sync.id}`, "PATCH", { enabled: false })).status).toBe(200);
+  await vi.waitFor(() => expect(f.runner.busy).toBe(false));
+  const stopped = await (await request(`installations/${sync.id}/status`)).json();
+  expect(stopped).toMatchObject({
+    installations: [{ state: "disabled", recordCount: 1, consecutiveFailures: 0 }],
+    runs: [{ state: "cancelled" }],
+  });
+  expect(stopped.installations[0].lastError).toBeUndefined();
+  expect((await request(`installations/${sync.id}/run`, "POST")).status).toBe(202);
+  await vi.waitFor(async () =>
+    expect((await f.database.syncStore.status.read(sync.id)).runs.some((run) => run.state === "succeeded")).toBe(true),
+  );
+  expect(cursors).toEqual([0, 1]);
+  expect((await request(`installations/${sync.id}`, "DELETE")).status).toBe(200);
+  expect((await request(`installations/${sync.id}/status`)).status).toBe(404);
+  expect((await request(`installations/${sync.id}`, "PATCH", { enabled: true })).status).toBe(404);
+  await f.restart();
+  f.scheduler.tick();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(cursors).toEqual([0, 1]);
+  expect((await f.database.syncStore.status.read()).installations).toEqual([]);
+  const restored = await f.runner.create({ definitionId: definition.id, enabled: false, scheduleSeconds: 300 });
+  expect(restored).toMatchObject({ id: sync.id, state: "disabled", scheduleSeconds: 300 });
+  expect(restored.removedAt).toBeUndefined();
+  expect((await f.database.syncStore.getCheckpoint(sync.id))?.value).toEqual({ cursor: 2 });
+  expect((await f.database.syncStore.status.read(sync.id)).runs).toHaveLength(2);
+});
+
+it("validates singleton destination management and preserves the token on partial updates", async () => {
+  const f = await fixture();
+  const app = new Hono();
+  app.use("/api/*", createLocalAuthMiddleware({ adminToken: "admin" }));
+  registerSyncRoutes(app, f.runner, f.database.syncStore, f.delivery, f.scheduler);
+  const request = (method: string, body?: unknown) =>
+    app.request("/api/sync/destination", {
+      method,
+      headers: { authorization: "Bearer admin", "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  expect((await request("PUT", { url: "https://receiver.example.com/records", bearerToken: "secret" })).status).toBe(
+    200,
+  );
+  expect((await request("PATCH", { url: "https://updated.example.com/records", enabled: false })).status).toBe(200);
+  expect(await (await request("GET")).json()).toMatchObject({
+    destination: { url: "https://updated.example.com/records", enabled: false },
+  });
+  expect((await request("PATCH", { bearerToken: "" })).status).toBe(400);
+  expect((await request("PATCH", { url: "http://receiver.example.com" })).status).toBe(400);
+  expect((await request("DELETE")).status).toBe(200);
+  expect((await request("DELETE")).status).toBe(200);
+  expect((await request("PATCH", { enabled: true })).status).toBe(409);
+  expect(f.database.syncStore.delivery.getDestination()).toBeUndefined();
 });

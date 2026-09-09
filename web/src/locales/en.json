@@ -39,7 +39,8 @@
     "actions": "Actions",
     "runs": "Runs",
     "access": "API Key",
-    "docs": "Docs"
+    "docs": "Docs",
+    "destinations": "Destination"
   },
   "shell": {
     "invalidUnlockToken": "Enter a valid admin token to unlock the console.",
@@ -77,6 +78,9 @@
       },
       "resources": {
         "title": "Resources"
+      },
+      "destinations": {
+        "title": "Destination"
       }
     }
   },
@@ -602,7 +606,7 @@
     }
   },
   "syncs": {
-    "description": "Monitor source polling and record delivery to your webhook destinations.",
+    "description": "Monitor source polling and record delivery to your webhook destination.",
     "updated": "Updated",
     "autoRefresh": "Refreshes every 10 seconds",
     "loadFailed": "Could not load sync status.",
@@ -675,6 +679,7 @@
       "lease_expired": "Interrupted",
       "succeeded": "Succeeded",
       "enabled": "Enabled",
+      "notConfigured": "Not configured",
       "waitingDestination": "Waiting for destination"
     },
     "connection": {
@@ -689,6 +694,70 @@
       "schedule": "Scheduled",
       "webhook": "Webhook"
     },
+    "deliveryStates": {
+      "none": "Nothing to deliver",
+      "pending": "Pending",
+      "delivering": "Delivering",
+      "retrying": "Retrying",
+      "delivered": "Delivered",
+      "waiting": "Waiting for destination"
+    },
+    "manage": {
+      "unavailable": "Sync unavailable",
+      "nothingToDeliver": "Nothing to deliver",
+      "deliveryProgress": "{{delivered}} of {{total}} delivered",
+      "pendingCount": "{{count}} pending",
+      "historyLimit": "Latest 100 iterations for this sync",
+      "pollingResult": "Polling",
+      "delivery": "Delivery",
+      "iterationDeliveryHint": "Delivery counts belong to records queued by this iteration, including backfills. Polling and delivery finish independently.",
+      "invalidConfig": "Configuration must be a JSON object.",
+      "saveFailed": "Could not save changes.",
+      "edit": "Edit",
+      "add": "Add sync",
+      "editDescription": "Change the polling interval. Saved progress is retained.",
+      "addDescription": "Choose a sync and a connected account. Polling starts from its saved progress, or from the beginning for a new sync.",
+      "definition": "Sync definition",
+      "account": "Connected account",
+      "connectAccount": "Connect a supported account first in",
+      "intervalMinutes": "Polling interval (minutes)",
+      "config": "Configuration",
+      "save": "Save",
+      "start": "Start",
+      "remove": "Remove",
+      "overviewDescription": "Monitor polling and delivery across your syncs. Open a sync for its history and controls.",
+      "manageDestinations": "Manage destinations",
+      "noMatchingSyncs": "No syncs match your search.",
+      "latestDelivery": "Latest iteration delivery",
+      "availableHint": "Available syncs can be started after connecting an account.",
+      "search": "Search syncs or accounts",
+      "detailDescription": "Manage polling and inspect each iteration's delivery progress.",
+      "allSyncs": "All syncs",
+      "runQueued": "Polling queued. It will start when the worker is available.",
+      "stop": "Stop",
+      "resume": "Resume",
+      "runNow": "Run now",
+      "stopHint": "Stop cancels the current poll and retains committed progress. Already queued records continue to be delivered.",
+      "removeSync": "Remove sync?",
+      "removeSyncDescription": "Polling will stop and this sync will be hidden. Records, history and saved progress are retained; adding the same sync again restores it. Queued deliveries continue."
+    },
     "waitingDestination": "Syncs are waiting for an enabled destination. Pending records are retained."
+  },
+  "destinations": {
+    "description": "Manage the webhook destination that receives records from all your syncs.",
+    "add": "Add destination",
+    "edit": "Edit destination",
+    "formDescription": "Use a public HTTPS endpoint and the Bearer token expected by its receiver.",
+    "url": "Webhook URL",
+    "token": "Bearer token",
+    "keepToken": "Leave blank to keep the saved token.",
+    "tokenHint": "Sent in the Authorization header of each delivery.",
+    "enabled": "Enabled",
+    "disabledHint": "Disabling the destination pauses polling and delivery. Pending records are retained.",
+    "updateHint": "Pending deliveries will use the updated URL and token.",
+    "emptyDescription": "Add a destination to resume syncs and deliver retained records.",
+    "remove": "Remove destination?",
+    "removeDescription": "This removes the saved URL and token and pauses polling. {{count}} pending deliveries are retained for the next destination. A request already in flight may still arrive.",
+    "retentionHint": "Pending records survive destination removal and are delivered when a destination is enabled. Records already acknowledged are not replayed."
   }
 }

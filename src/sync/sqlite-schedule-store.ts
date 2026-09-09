@@ -231,6 +231,18 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
   }
 
   configure(input: ConfigureSyncScheduleInput): void {
+    runSyncTransaction(this.database, () => this.updateSchedule(input, new Date().toISOString()));
+  }
+
+  remove(installationId: string): void {
+    const now = new Date().toISOString();
+    runSyncTransaction(this.database, () => {
+      this.updateSchedule({ installationId, enabled: false }, now);
+      this.database.prepare("update sync_installations set removed_at = ? where id = ?").run(now, installationId);
+    });
+  }
+
+  private updateSchedule(input: ConfigureSyncScheduleInput, now: string): void {
     if (
       typeof input.enabled !== "boolean" ||
       (input.scheduleSeconds !== undefined &&
@@ -238,40 +250,51 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
     )
       throw new SyncStoreError("invalid_input", "Schedule interval must be between 60 and 86400 seconds.");
     const installation = this.readers.installation(input.installationId);
-    if (!installation) throw new SyncStoreError("installation_not_found", "Sync installation not found.");
+    if (!installation || (installation.removedAt && !input.restore))
+      throw new SyncStoreError("installation_not_found", "Sync installation not found.");
     if (input.enabled && installation.requiresBackfill)
       throw new SyncStoreError("invalid_input", "Interrupted snapshot requires an explicit backfill run.");
-    const now = new Date().toISOString();
-    runSyncTransaction(this.database, () => {
+    this.database
+      .prepare(
+        "update sync_installations set state = ?, schedule_seconds = ?, next_due_at = ?, updated_at = ?, removed_at = null where id = ?",
+      )
+      .run(
+        input.enabled ? "enabled" : "disabled",
+        input.scheduleSeconds ?? installation.scheduleSeconds ?? 900,
+        now,
+        now,
+        input.installationId,
+      );
+    if (!input.enabled) {
       this.database
         .prepare(
-          "update sync_installations set state = ?, schedule_seconds = ?, next_due_at = ?, updated_at = ? where id = ?",
+          "update sync_installations set requires_backfill = 1 where id = ? and exists(select 1 from sync_snapshots where installation_id = ? and state = 'active')",
         )
-        .run(
-          input.enabled ? "enabled" : "disabled",
-          input.scheduleSeconds ?? installation.scheduleSeconds ?? 900,
-          now,
-          now,
-          input.installationId,
-        );
-      if (!input.enabled) {
-        this.database
-          .prepare(
-            "update sync_installations set requires_backfill = 1 where id = ? and exists(select 1 from sync_snapshots where installation_id = ? and state = 'active')",
-          )
-          .run(input.installationId, input.installationId);
-        this.database
-          .prepare(
-            "update sync_runs set state = 'cancelled', completed_at = ?, error_code = 'installation_disabled' where installation_id = ? and state = 'running'",
-          )
-          .run(now, input.installationId);
-        this.database
-          .prepare(
-            "update sync_snapshots set state = 'abandoned', completed_at = ? where installation_id = ? and state = 'active'",
-          )
-          .run(now, input.installationId);
-      }
-    });
+        .run(input.installationId, input.installationId);
+      this.database
+        .prepare(
+          "update sync_runs set state = 'cancelled', completed_at = ?, error_code = 'installation_disabled' where installation_id = ? and state = 'running'",
+        )
+        .run(now, input.installationId);
+      this.database
+        .prepare(
+          "update sync_snapshots set state = 'abandoned', completed_at = ? where installation_id = ? and state = 'active'",
+        )
+        .run(now, input.installationId);
+    }
+  }
+
+  requestRun(installationId: string): void {
+    const installation = this.readers.installation(installationId);
+    if (!installation || installation.removedAt)
+      throw new SyncStoreError("installation_not_found", "Sync installation not found.");
+    if (
+      this.database
+        .prepare("select 1 from sync_runs where installation_id = ? and state = 'running'")
+        .get(installationId)
+    )
+      throw new SyncStoreError("run_busy", "This sync is already running.");
+    this.configure({ installationId, enabled: true });
   }
 }
 

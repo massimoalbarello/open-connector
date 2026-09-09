@@ -8,6 +8,20 @@ export interface SyncDestinationInput {
   bearerToken: string;
   enabled: boolean;
 }
+export interface UpdateSyncDestinationInput {
+  url?: string;
+  bearerToken?: string;
+  enabled?: boolean;
+}
+export interface SyncRunDelivery {
+  state: "none" | "waiting" | "pending" | "delivering" | "retrying" | "delivered";
+  totalRecords: number;
+  deliveredRecords: number;
+  pendingRecords: number;
+  lastError?: string;
+  nextAttemptAt?: string;
+  lastDeliveredAt?: string;
+}
 export interface SyncDestination {
   url: string;
   enabled: boolean;
@@ -58,6 +72,8 @@ export interface CompleteSyncDeliveryInput {
 }
 export interface ISyncDeliveryStore {
   configure(input: SyncDestinationInput): Promise<void>;
+  update(input: UpdateSyncDestinationInput): Promise<void>;
+  runStatus(runId: string): SyncRunDelivery;
   /** Remove configuration and fence in-flight ACKs; queued records remain pending. */
   remove(): void;
   getDestination(): SyncDestination | undefined;

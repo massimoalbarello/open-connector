@@ -22,6 +22,7 @@ create table if not exists sync_installations (
   consecutive_failures integer not null default 0,
   last_error text,
   requires_backfill integer not null default 0,
+  removed_at text,
   state text not null check (state in ('enabled', 'disabled', 'needs_attention')),
   schedule_seconds integer check (schedule_seconds is null or schedule_seconds > 0),
   next_due_at text,

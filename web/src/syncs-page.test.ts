@@ -3,9 +3,12 @@ import type { SyncInstallationStatus as SyncInstallation, SyncStatus } from "../
 import { I18nProvider } from "@embra/i18n/react";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router";
 import { describe, expect, it } from "vitest";
+import { DestinationOverview } from "./destinations-page";
 import { createAppI18n } from "./i18n";
 import { syncCanPoll, syncHealth } from "./sync-model";
+import { RecentIterations } from "./sync-ui";
 import { SyncsOverview } from "./syncs-page";
 
 const installation: SyncInstallation = {
@@ -47,6 +50,13 @@ const installation: SyncInstallation = {
     pageCount: 2,
     upsertCount: 12,
     changeCount: 3,
+    delivery: {
+      state: "retrying",
+      totalRecords: 3,
+      deliveredRecords: 1,
+      pendingRecords: 2,
+      lastError: "http_503",
+    },
   },
 };
 const status: SyncStatus = {
@@ -55,6 +65,20 @@ const status: SyncStatus = {
   installations: [installation],
   runs: [installation.latestRun!],
   bindingErrors: [],
+  definitions: [
+    {
+      id: "github.pull-requests",
+      provider: "github",
+      version: "1",
+      scheduleSeconds: 900,
+      defaultConfig: {},
+      configSchema: { type: "object" },
+      checkpointSchema: { type: "object" },
+      initialCheckpoint: {},
+      kinds: [{ kind: "pull-request" }],
+      requiredScopes: [],
+    },
+  ],
   delivery: {
     destination: { url: "https://context.example.com/records", enabled: true },
     pendingRecords: 4,
@@ -71,48 +95,50 @@ function render(value: SyncStatus): string {
     createElement(
       I18nProvider,
       { i18n: createAppI18n("en") },
-      createElement(SyncsOverview, { status: value, providers: [] }),
+      createElement(MemoryRouter, {}, createElement(SyncsOverview, { status: value, providers: [] })),
     ),
   );
 }
 
 describe("sync monitoring", () => {
-  it("shows retained delivery counts while the destination is absent and hides the next poll", () => {
-    const html = render({ ...status, delivery: { ...status.delivery, destination: undefined } });
+  it("shows a waiting sync and retained delivery counts while no destination is configured", () => {
+    const delivery = { ...status.delivery, destination: undefined };
+    const html = render({ ...status, delivery });
     expect(html).toContain("Waiting for destination");
-    expect(html).toContain("Pending records are retained");
     expect(html).not.toContain('dateTime="2026-09-08T12:15:00.000Z"');
-    expect(syncCanPoll(installation, false)).toBe(false);
     expect(syncHealth({ ...installation, state: "disabled" }, false)).toBe("paused");
+    expect(syncCanPoll(installation, false)).toBe(false);
+    const destination = renderToStaticMarkup(
+      createElement(
+        I18nProvider,
+        { i18n: createAppI18n("en") },
+        createElement(DestinationOverview, { delivery, schedulerRunning: true, onEdit() {}, onRemove() {} }),
+      ),
+    );
+    expect(destination).toContain("No webhook destination configured");
+    expect(destination).toContain("Pending records are retained");
+    expect(destination).toContain("<dd>4</dd>");
+    expect(destination).toContain("<dd>20</dd>");
+    expect(destination).not.toContain('dateTime="2026-09-08T12:16:00.000Z"');
   });
 
-  it("shows polling and delivery separately with retry details and unambiguous counts", () => {
+  it("shows a compact table linking sync details and destinations", () => {
     const html = render(status);
-    for (const text of [
-      "github.pull-requests",
-      "personal",
-      "Synced records",
-      "Delivered",
-      "Pending",
-      "https://context.example.com/records",
-      "http_503",
-      "2 attempts on current batch",
-      "one record can have multiple deliveries",
-      "Recent iterations",
-      "run-1",
-    ])
+    for (const text of ["github.pull-requests", "personal", "Latest iteration delivery", "1 of 3 delivered"])
       expect(html).toContain(text);
+    expect(html).toContain('href="/syncs/sync-1"');
+    expect(html).toContain('href="/destinations"');
     expect(html).toContain('dateTime="2026-09-08T12:15:00.000Z"');
-    expect(html).toContain('dateTime="2026-09-08T12:00:05.000Z"');
-    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("context.example.com");
+    expect(html).not.toContain("Recent iterations");
   });
 
-  it("shows empty states and verification failures before an installation exists", () => {
+  it("offers available definitions before an installation exists and shows verification failures", () => {
     const html = render({
       ...status,
       installations: [],
-      delivery: { pendingRecords: 0, deliveredRecords: 0, attemptCount: 0 },
       runs: [],
+      delivery: { pendingRecords: 0, deliveredRecords: 0, attemptCount: 0 },
       bindingErrors: [
         {
           connectionId: "pending",
@@ -124,51 +150,69 @@ describe("sync monitoring", () => {
         },
       ],
     });
-    expect(html).toContain("No syncs yet");
-    expect(html).toContain("No webhook destination configured");
-    expect(html).toContain("No iterations yet");
+    expect(html).toContain('href="/syncs/available/github.pull-requests"');
+    expect(html).toContain("Not configured");
     expect(html).toContain("source_verification_failed");
-    expect(html).toContain("retained records");
   });
 
-  it("shows failed iterations and their errors alongside successful iterations", () => {
-    const html = render({
-      ...status,
-      runs: [
-        {
-          ...installation.latestRun!,
-          id: "failed-poll",
-          state: "failed",
-          pageCount: 0,
-          upsertCount: 0,
-          changeCount: 0,
-          errorCode: "acquisition_failed",
-          errorMessage: "Polling failed before acquisition started; committed progress is retained.",
-        },
-        installation.latestRun!,
-      ],
-    });
-    expect(html).toContain("failed-poll");
-    expect(html).toContain("Failed");
-    expect(html).toContain("acquisition_failed");
-    expect(html).toContain("Polling failed before acquisition started; committed progress is retained.");
-    expect(html).toContain("run-1");
-    expect(html).toContain("Succeeded");
+  it("shows failed polling independently of delivery and distinguishes no changes from missing destinations", () => {
+    const original = installation.latestRun!;
+    const html = renderToStaticMarkup(
+      createElement(
+        I18nProvider,
+        { i18n: createAppI18n("en") },
+        createElement(RecentIterations, {
+          runs: [
+            {
+              ...original,
+              id: "failed-poll",
+              state: "failed",
+              errorCode: "acquisition_failed",
+              errorMessage: "Committed progress is retained.",
+            },
+            {
+              ...original,
+              id: "delivered-poll",
+              delivery: {
+                ...original.delivery,
+                state: "delivered",
+                deliveredRecords: 3,
+                pendingRecords: 0,
+                lastError: undefined,
+              },
+            },
+            {
+              ...original,
+              id: "no-destination",
+              delivery: { ...original.delivery, state: "waiting", nextAttemptAt: undefined },
+            },
+            { ...original, id: "no-changes", changeCount: 0, delivery: { ...original.delivery, totalRecords: 0 } },
+          ],
+        }),
+      ),
+    );
+    for (const text of [
+      "failed-poll",
+      "Failed",
+      "acquisition_failed",
+      "Committed progress is retained.",
+      "Retrying",
+      "http_503",
+      "3 of 3 delivered",
+      "Succeeded",
+      "Waiting for destination",
+      "Nothing to deliver",
+    ])
+      expect(html).toContain(text);
   });
 
-  it("does not promise scheduled polling or delivery when disabled or stopped", () => {
+  it("does not promise scheduled polling when disabled or stopped", () => {
     const html = render({ ...status, schedulerRunning: false });
     expect(html).toContain("Automatic polling and delivery are stopped");
     expect(html).not.toContain('dateTime="2026-09-08T12:15:00.000Z"');
-    expect(html).not.toContain('dateTime="2026-09-08T12:16:00.000Z"');
-    const paused = render({
-      ...status,
-      installations: [{ ...installation, state: "disabled" }],
-      delivery: { ...status.delivery, destination: { ...status.delivery.destination!, enabled: false } },
-    });
+    const paused = render({ ...status, installations: [{ ...installation, state: "disabled" }] });
     expect(paused).toContain("Not scheduled");
     expect(paused).toContain("Paused");
-    expect(paused).not.toContain('dateTime="2026-09-08T12:16:00.000Z"');
   });
 
   it("gives connection and backfill problems priority over previous success", () => {

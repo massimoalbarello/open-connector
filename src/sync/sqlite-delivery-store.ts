@@ -7,6 +7,8 @@ import type {
   SyncDeliveryLease,
   SyncDeliveryRecord,
   SyncDestinationInput,
+  UpdateSyncDestinationInput,
+  SyncRunDelivery,
   SyncDestination,
   SyncDeliveryStatus,
 } from "./delivery-store.ts";
@@ -38,21 +40,82 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
       /\s/.test(input.bearerToken)
     )
       throw new SyncStoreError("invalid_input", "Destination URL, Bearer token and enabled flag are required.");
-    const url = assertPublicHttpUrl(input.url, {
-      fieldName: "Destination URL",
-      createError: (message) => new SyncStoreError("invalid_input", message),
-    });
-    if (url.protocol !== "https:" || url.hash)
+    await this.save(input, false);
+  }
+
+  async update(input: UpdateSyncDestinationInput): Promise<void> {
+    await this.save(input, true);
+  }
+
+  private async save(input: UpdateSyncDestinationInput, requireExisting: boolean): Promise<void> {
+    if (
+      (input.enabled !== undefined && typeof input.enabled !== "boolean") ||
+      (input.bearerToken !== undefined &&
+        (!input.bearerToken || input.bearerToken.length > 8192 || /\s/.test(input.bearerToken)))
+    )
+      throw new SyncStoreError("invalid_input", "Invalid destination enabled flag or Bearer token.");
+    const url =
+      input.url === undefined
+        ? undefined
+        : assertPublicHttpUrl(input.url, {
+            fieldName: "Destination URL",
+            createError: (message) => new SyncStoreError("invalid_input", message),
+          });
+    if (url && (url.protocol !== "https:" || url.hash))
       throw new SyncStoreError("invalid_input", "The destination requires public HTTPS without a fragment.");
-    const secret = await this.codec.encode(input.bearerToken);
-    const now = new Date().toISOString();
+    const secret = input.bearerToken === undefined ? undefined : await this.codec.encode(input.bearerToken);
     runSyncTransaction(this.database, () => {
+      const existing = this.database.prepare("select * from sync_destination where id = 1").get();
+      if (requireExisting && !existing)
+        throw new SyncStoreError("destination_required", "Destination is not configured.");
+      if (!existing && (!url || !secret || input.enabled === undefined))
+        throw new SyncStoreError("invalid_input", "Destination URL, Bearer token and enabled flag are required.");
       this.database
         .prepare(`insert into sync_destination(id, url, bearer_secret, enabled) values (1, ?, ?, ?)
         on conflict(id) do update set url = excluded.url, bearer_secret = excluded.bearer_secret, enabled = excluded.enabled`)
-        .run(url.toString(), secret, Number(input.enabled));
-      this.releaseBatches(now);
+        .run(
+          url?.toString() ?? readString(existing!, "url"),
+          secret ?? readString(existing!, "bearer_secret"),
+          Number(input.enabled ?? existing?.enabled === 1),
+        );
+      this.releaseBatches(new Date().toISOString());
     });
+  }
+
+  runStatus(runId: string): SyncRunDelivery {
+    const row = this.database
+      .prepare(`select count(*) as total,
+      coalesce(sum(o.state = 'delivered'), 0) as delivered,
+      coalesce(sum(o.state != 'delivered'), 0) as pending,
+      coalesce(sum(o.state = 'leased'), 0) as leased,
+      max(case when o.state = 'pending' then o.last_error end) as last_error,
+      min(case when o.state = 'pending' then o.next_attempt_at end) as next_attempt_at,
+      max(o.delivered_at) as last_delivered_at
+      from sync_outbox o join sync_changes c on c.sequence = o.change_sequence where c.run_id = ?`)
+      .get(runId)!;
+    const ready = this.getDestination()?.enabled === true;
+    const total = Number(row.total),
+      pending = Number(row.pending);
+    return {
+      state:
+        total === 0
+          ? "none"
+          : pending === 0
+            ? "delivered"
+            : !ready
+              ? "waiting"
+              : Number(row.leased) > 0
+                ? "delivering"
+                : row.last_error
+                  ? "retrying"
+                  : "pending",
+      totalRecords: total,
+      deliveredRecords: Number(row.delivered),
+      pendingRecords: pending,
+      lastError: row.last_error === null ? undefined : readString(row, "last_error"),
+      nextAttemptAt: !ready || row.next_attempt_at === null ? undefined : readString(row, "next_attempt_at"),
+      lastDeliveredAt: row.last_delivered_at === null ? undefined : readString(row, "last_delivered_at"),
+    };
   }
 
   remove(): void {
