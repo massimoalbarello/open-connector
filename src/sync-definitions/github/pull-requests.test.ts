@@ -1,4 +1,5 @@
-import type { SyncContext, SyncProvider } from "../../sync/sync-definition.ts";
+import type { SyncProvider } from "../../sync/provider-adapter.ts";
+import type { SyncContext } from "../../sync/sync-definition.ts";
 import type { JsonObject } from "../../sync/sync-store.ts";
 
 import { describe, expect, it, vi } from "vitest";

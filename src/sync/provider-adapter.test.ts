@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { createGitHubSyncProvider } from "../providers/github/sync-provider.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite-runtime-store.ts";
-import { githubPullRequests } from "../sync-definitions/github/definition.ts";
 import { createSyncProvider } from "./provider-adapter.ts";
 
 const { fetcher } = vi.hoisted(() => ({ fetcher: vi.fn<typeof fetch>() }));
@@ -10,6 +10,40 @@ vi.mock("../providers/provider-runtime.ts", async (original) => ({
 }));
 
 describe("sync provider capability", () => {
+  it("rejects a result when a registered provider's credential changes during the request", async () => {
+    const database = new SqliteRuntimeDatabase(":memory:");
+    try {
+      await database.connectionStore.set("example", "default", {
+        authType: "api_key",
+        apiKey: "original",
+        profile: { accountId: "example", displayName: "Example", grantedScopes: [] },
+        values: {},
+        metadata: {},
+      });
+      const connection = (await database.connectionStore.get("example", "default"))!;
+      const provider = createSyncProvider({
+        connection,
+        connections: database.connectionStore,
+        signal: new AbortController().signal,
+        createProvider: () => ({
+          async graphql() {
+            await database.connectionStore.set("example", "default", {
+              authType: "api_key",
+              apiKey: "replacement",
+              profile: { accountId: "example", displayName: "Example", grantedScopes: [] },
+              values: {},
+              metadata: {},
+            });
+            return { record: "stale" };
+          },
+        }),
+      });
+      await expect(provider.graphql("query { record }")).rejects.toMatchObject({ code: "credential_changed" });
+    } finally {
+      database.close();
+    }
+  });
+
   it("pins credentials, restricts requests, and discards partial GraphQL responses", async () => {
     const database = new SqliteRuntimeDatabase(":memory:");
     try {
@@ -25,7 +59,7 @@ describe("sync provider capability", () => {
       const provider = createSyncProvider({
         connection,
         connections: database.connectionStore,
-        definition: githubPullRequests,
+        createProvider: createGitHubSyncProvider,
         signal: new AbortController().signal,
       });
       fetcher.mockResolvedValue(new Response(JSON.stringify({ data: { viewer: { id: "native" } } })));
