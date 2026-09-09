@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../catalog-store.ts";
 import { ConnectionService } from "../connection-service.ts";
 import { s } from "../core/json-schema.ts";
+import { createGitHubSyncProvider } from "../providers/github/sync-provider.ts";
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { createLocalAuthMiddleware } from "../server/api/auth.ts";
 import { registerSyncRoutes } from "../server/api/sync-routes.ts";
@@ -49,7 +50,7 @@ async function setup(runtime: SyncDefinitionRuntime, validators?: CredentialVali
   });
   const connections = new ConnectionService({ catalog, providerLoader: loader, store: database.connectionStore });
   const load = vi.fn(async () => runtime);
-  const registrations: SyncRegistration[] = [{ definition, load }];
+  const registrations: SyncRegistration[] = [{ definition, load, createProvider: createGitHubSyncProvider }];
   const runner = new SyncRunner({
     store: database.syncStore,
     connectionStore: database.connectionStore,
