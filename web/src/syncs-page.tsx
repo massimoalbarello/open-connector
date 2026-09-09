@@ -1,4 +1,4 @@
-import type { SyncStatus } from "../../src/sync/schedule-store.ts";
+import type { SyncStatus } from "../../src/sync/status-store.ts";
 import type { ProviderDefinition } from "./model";
 import type { SyncPageProps } from "./sync-data";
 import type { ReactNode } from "react";

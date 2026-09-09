@@ -226,7 +226,7 @@ export class SyncRunner {
       const provider = createSyncProvider({
         connection,
         connections: connectionStore,
-        definition,
+        createProvider: registration.createProvider,
         signal,
       });
       for await (const page of runtime.run({

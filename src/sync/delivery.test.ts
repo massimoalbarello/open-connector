@@ -111,7 +111,7 @@ describe("durable sync delivery", () => {
       { kind: "record", record: { id: "one", body: "First" } },
       { kind: "record", record: { id: "two", body: "Second" } },
     ]);
-    const stats = async () => (await store.schedule.status()).installations.find((item) => item.id === f.id);
+    const stats = async () => (await store.status.read()).installations.find((item) => item.id === f.id);
     expect(await stats()).toMatchObject({
       recordCount: 2,
       deliveredCount: 0,
@@ -168,7 +168,7 @@ describe("durable sync delivery", () => {
       },
       expectedBindingRevision: store.sources.getBindingRevision(),
     });
-    expect((await store.schedule.status()).installations.find((item) => item.id === otherId)).toMatchObject({
+    expect((await store.status.read()).installations.find((item) => item.id === otherId)).toMatchObject({
       recordCount: 0,
       deliveredCount: 0,
       pendingCount: 0,
@@ -182,16 +182,16 @@ describe("durable sync delivery", () => {
       values: {},
       metadata: {},
     });
-    expect((await store.schedule.status()).installations.find((item) => item.id === otherId)?.connectionStatus).toBe(
+    expect((await store.status.read()).installations.find((item) => item.id === otherId)?.connectionStatus).toBe(
       "changed",
     );
     await f.database.connectionStore.delete("github", "another");
-    expect((await store.schedule.status()).installations.find((item) => item.id === otherId)?.connectionStatus).toBe(
+    expect((await store.status.read()).installations.find((item) => item.id === otherId)?.connectionStatus).toBe(
       "missing",
     );
-    expect(
-      JSON.stringify({ ...(await store.schedule.status()), receivers: await store.delivery.list() }),
-    ).not.toContain("secret");
+    expect(JSON.stringify({ ...(await store.status.read()), receivers: await store.delivery.list() })).not.toContain(
+      "secret",
+    );
   });
 
   it("keeps each sync's latest iteration even when it falls outside the recent history window", async () => {
@@ -206,11 +206,11 @@ describe("durable sync delivery", () => {
         const timestamp = new Date(Date.now() + 1000 + index).toISOString();
         insert.run(`other-${index}`, timestamp, timestamp, timestamp);
       }
-      const status = await f.database.syncStore.schedule.status();
+      const status = await f.database.syncStore.status.read();
       expect(status.runs).toHaveLength(100);
       expect(status.runs.some((run) => run.id === "run")).toBe(false);
       expect(status.installations[0]?.latestRun).toMatchObject({ id: "run", state: "succeeded" });
-      expect((await f.database.syncStore.schedule.status(f.id)).runs.map((run) => run.id)).toEqual(["run"]);
+      expect((await f.database.syncStore.status.read(f.id)).runs.map((run) => run.id)).toEqual(["run"]);
     } finally {
       raw.close();
     }
@@ -408,23 +408,23 @@ describe("iteration delivery and destination management", () => {
       completedAt: now(),
       errorCode: "acquisition_failed",
     });
-    expect((await store.getRun("run"))?.delivery).toMatchObject({
+    expect((await store.status.getRun("run"))?.delivery).toMatchObject({
       state: "pending",
       totalRecords: 1,
       pendingRecords: 1,
     });
     const first = (await store.delivery.claim(now()))!;
-    expect((await store.getRun("run"))?.delivery.state).toBe("delivering");
+    expect((await store.status.getRun("run"))?.delivery.state).toBe("delivering");
     store.delivery.complete({ lease: first, acknowledged: false, errorCode: "http_503", retryAt: now(), now: now() });
     f.restart();
-    expect((await f.database.syncStore.getRun("run"))?.delivery).toMatchObject({
+    expect((await f.database.syncStore.status.getRun("run"))?.delivery).toMatchObject({
       state: "retrying",
       lastError: "http_503",
       pendingRecords: 1,
     });
     const retry = (await f.database.syncStore.delivery.claim(now()))!;
     f.database.syncStore.delivery.complete({ lease: retry, acknowledged: true, now: now() });
-    expect(await f.database.syncStore.getRun("run")).toMatchObject({
+    expect(await f.database.syncStore.status.getRun("run")).toMatchObject({
       state: "failed",
       errorCode: "acquisition_failed",
       delivery: { state: "delivered", deliveredRecords: 1, pendingRecords: 0 },
@@ -467,11 +467,11 @@ describe("iteration delivery and destination management", () => {
     };
     expect((await store.commitPage(page)).changes).toHaveLength(0);
     await store.commitPage({ ...page, expectedCheckpointRevision: 2 });
-    expect((await store.getRun("run"))?.delivery).toMatchObject({ state: "delivered", totalRecords: 1 });
-    expect((await store.getRun("backfill"))?.delivery).toMatchObject({ state: "pending", totalRecords: 1 });
+    expect((await store.status.getRun("run"))?.delivery).toMatchObject({ state: "delivered", totalRecords: 1 });
+    expect((await store.status.getRun("backfill"))?.delivery).toMatchObject({ state: "pending", totalRecords: 1 });
     const pending = (await store.delivery.claim(now()))!;
     store.delivery.complete({ lease: pending, acknowledged: true, now: now() });
-    expect((await store.getRun("backfill"))?.delivery).toMatchObject({ state: "delivered", totalRecords: 1 });
+    expect((await store.status.getRun("backfill"))?.delivery).toMatchObject({ state: "delivered", totalRecords: 1 });
   });
 
   it("updates a destination without returning or replacing its token and fences old acknowledgements", async () => {
@@ -503,7 +503,7 @@ describe("iteration delivery and destination management", () => {
     store.delivery.remove("first");
     expect(() => store.delivery.complete({ lease: old, acknowledged: true, now: now() })).toThrow("no longer owned");
     expect(await store.delivery.list()).toMatchObject([{ id: "second", pendingRecords: 1 }]);
-    expect((await store.getRun("run"))?.delivery).toMatchObject({
+    expect((await store.status.getRun("run"))?.delivery).toMatchObject({
       totalRecords: 2,
       pendingRecords: 1,
       cancelledRecords: 1,
@@ -519,7 +519,7 @@ describe("iteration delivery and destination management", () => {
     const second = (await f.database.syncStore.delivery.claim(now()))!;
     expect(second.url).toBe("https://second.example.com/records");
     f.database.syncStore.delivery.complete({ lease: second, acknowledged: true, now: now() });
-    expect((await f.database.syncStore.getRun("run"))?.delivery).toMatchObject({
+    expect((await f.database.syncStore.status.getRun("run"))?.delivery).toMatchObject({
       state: "cancelled",
       deliveredRecords: 1,
       cancelledRecords: 1,

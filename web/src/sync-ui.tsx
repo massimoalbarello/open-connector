@@ -1,4 +1,4 @@
-import type { SyncRunStatus as SyncRun } from "../../src/sync/schedule-store.ts";
+import type { SyncRunStatus as SyncRun } from "../../src/sync/status-store.ts";
 import type { SyncResource } from "./sync-data";
 import type { ReactNode } from "react";
 

@@ -1,14 +1,5 @@
-import type { SyncReceiverStatus, SyncRunDelivery } from "./delivery-store.ts";
 import type { SyncDefinition } from "./sync-definition.ts";
-import type { JsonObject, SyncInstallation, SyncRun } from "./sync-store.ts";
-
-/** Administration status shared by the server and dashboard. */
-export interface SyncStatus extends SyncScheduleStatus {
-  definitions: readonly SyncDefinition[];
-  acquisitionRunning: boolean;
-  schedulerRunning: boolean;
-  receivers: SyncReceiverStatus[];
-}
+import type { JsonObject, SyncInstallation } from "./sync-store.ts";
 
 export interface SyncBindingCandidate {
   config?: JsonObject;
@@ -16,28 +7,6 @@ export interface SyncBindingCandidate {
   connectionName: string;
   credentialRevision: string;
   definitionId: string;
-}
-export interface SyncScheduleStatus {
-  installations: SyncInstallationStatus[];
-  runs: SyncRunStatus[];
-  bindingErrors: SyncBindingCandidateError[];
-}
-export interface SyncRunStatus extends SyncRun {
-  delivery: SyncRunDelivery;
-}
-export interface SyncInstallationStatus extends SyncInstallation {
-  connectionName?: string;
-  connectionStatus: "connected" | "missing" | "changed";
-  latestRun?: SyncRunStatus;
-  /** Distinct current records, including those whose acknowledged payload was purged. */
-  recordCount: number;
-  /** Record changes per webhook destination; updates and fan-out count separately. */
-  deliveredCount: number;
-  pendingCount: number;
-}
-export interface SyncBindingCandidateError extends SyncBindingCandidate {
-  errorCode: string;
-  nextAttemptAt: string;
 }
 export interface SyncScheduleResult {
   installationId: string;
@@ -77,5 +46,4 @@ export interface ISyncScheduleStore {
   configure(input: ConfigureSyncScheduleInput): void;
   remove(installationId: string): void;
   requestRun(installationId: string): void;
-  status(installationId?: string): Promise<SyncScheduleStatus>;
 }

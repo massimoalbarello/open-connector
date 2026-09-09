@@ -1,5 +1,5 @@
 import type { SyncDeliveryWorker } from "../../sync/delivery-worker.ts";
-import type { SyncStatus } from "../../sync/schedule-store.ts";
+import type { SyncStatus } from "../../sync/status-store.ts";
 import type { SyncRunner } from "../../sync/sync-runner.ts";
 import type { SyncScheduler } from "../../sync/sync-scheduler.ts";
 import type { ISyncStore, JsonObject } from "../../sync/sync-store.ts";
@@ -33,13 +33,13 @@ export function registerSyncRoutes(
     context.json<SyncStatus>({
       acquisitionRunning: runner.busy,
       schedulerRunning: scheduler?.running ?? false,
-      ...(await store.schedule.status()),
+      ...(await store.status.read()),
       receivers: await store.delivery.list(),
       definitions: runner.definitions(),
     }),
   );
   app.get("/api/sync/installations/:id/status", async (context) => {
-    const status = await store.schedule.status(context.req.param("id"));
+    const status = await store.status.read(context.req.param("id"));
     if (!status.installations.length)
       return jsonError(context, 404, "installation_not_found", "Sync installation not found.");
     return context.json<SyncStatus>({
@@ -152,8 +152,8 @@ export function registerSyncRoutes(
     }
   });
   app.get("/api/sync/definitions", (context) => context.json(runner.definitions()));
-  app.get("/api/sync/runs/:id", async (context) => {
-    const run = await store.getRun(context.req.param("id"));
+  app.get("/api/sync/runs/:id", (context) => {
+    const run = store.status.getRun(context.req.param("id"));
     return run ? context.json(run) : jsonError(context, 404, "run_not_found", "Sync run not found.");
   });
   app.post("/api/sync/definitions/:id/run", async (context) => {

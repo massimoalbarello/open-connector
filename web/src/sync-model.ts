@@ -1,4 +1,4 @@
-import type { SyncInstallationStatus } from "../../src/sync/schedule-store.ts";
+import type { SyncInstallationStatus } from "../../src/sync/status-store.ts";
 
 /** Paused or disconnected syncs must not appear healthy just because the last run succeeded. */
 export function syncHealth(sync: SyncInstallationStatus): string {

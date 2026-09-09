@@ -1,7 +1,6 @@
 import type { ISecretCodec } from "../server/secrets/secret-codec-core.ts";
 import type { RuntimeRow } from "../server/storage/runtime-sql.ts";
 import type { SyncDefinitionContract } from "./record-contract.ts";
-import type { SyncRunStatus } from "./schedule-store.ts";
 import type {
   CommitSyncPageInput,
   FinishSyncRunInput,
@@ -42,6 +41,7 @@ import { canonicalizeJsonValue } from "./record-hash.ts";
 import { SqliteSyncDeliveryStore } from "./sqlite-delivery-store.ts";
 import { SqliteSyncScheduleStore } from "./sqlite-schedule-store.ts";
 import { SqliteSyncSourceStore } from "./sqlite-source-store.ts";
+import { SqliteSyncStatusStore } from "./sqlite-status-store.ts";
 import { runSyncTransaction } from "./sqlite-sync-transaction.ts";
 import { SyncStoreError } from "./sync-store.ts";
 
@@ -111,6 +111,7 @@ export class SqliteSyncStore implements ISyncStore {
   readonly sources: SqliteSyncSourceStore;
   readonly delivery: SqliteSyncDeliveryStore;
   readonly schedule: SqliteSyncScheduleStore;
+  readonly status: SqliteSyncStatusStore;
   private readonly definitions: readonly SyncDefinitionContract[];
 
   constructor(
@@ -122,7 +123,11 @@ export class SqliteSyncStore implements ISyncStore {
     this.database = database;
     this.schedule = new SqliteSyncScheduleStore(database, {
       installation: (id) => this.readInstallation(id),
-      run: (id) => this.readRunStatus(id),
+    });
+    this.status = new SqliteSyncStatusStore(database, {
+      installation: (id) => this.readInstallation(id),
+      run: (id) => this.readRun(id),
+      runDelivery: (id) => this.delivery.runStatus(id),
     });
     this.definitions = structuredClone(definitions);
     const ids = new Set<string>();
@@ -259,8 +264,8 @@ export class SqliteSyncStore implements ISyncStore {
     return this.requireRun(id);
   }
 
-  async getRun(id: string): Promise<SyncRunStatus | undefined> {
-    return this.readRunStatus(requiredIdentifier(id, "run id"));
+  async getRun(id: string): Promise<SyncRun | undefined> {
+    return this.readRun(requiredIdentifier(id, "run id"));
   }
 
   async renewRunLease(input: RenewSyncRunLeaseInput): Promise<SyncRun> {
@@ -988,11 +993,6 @@ export class SqliteSyncStore implements ISyncStore {
       throw new SyncStoreError("run_not_found", `Sync run not found: ${id}.`);
     }
     return run;
-  }
-
-  private readRunStatus(id: string): SyncRunStatus | undefined {
-    const run = this.readRun(id);
-    return run ? { ...run, delivery: this.delivery.runStatus(id) } : undefined;
   }
 
   private readRun(id: string): SyncRun | undefined {
