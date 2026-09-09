@@ -15,6 +15,7 @@ import {
 } from "../core/request.ts";
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { executorModules } from "../providers/registry.generated.ts";
+import { syncRegistrations } from "../sync/sync-registry.ts";
 import { createRuntimeJwtVerifier } from "./api/runtime-jwt.ts";
 import { registerStaticRoutes } from "./api/static-routes.ts";
 import { createConnectApp } from "./connect-app.ts";
@@ -97,6 +98,7 @@ async function runServer(assets: Awaited<ReturnType<typeof prepareServerAssets>>
       })
     : await createNodeRuntimeDatabase({
         backend: "sqlite",
+        syncDefinitions: syncRegistrations.map((item) => item.definition),
         path: join(dataDir, "connect.sqlite"),
         migrationDirectory: assets.migrationDirectory,
         logger,
@@ -110,10 +112,11 @@ async function runServer(assets: Awaited<ReturnType<typeof prepareServerAssets>>
     await transitFiles.cleanupExpired();
     await cleanupStagedTransitFiles(transitFileTempDir, transitFileTtlSeconds * 1000);
 
-    const { app, runtimeAuthConfigured } = await createConnectApp({
+    const { app, runtimeAuthConfigured, syncRunner, syncDelivery, syncScheduler } = await createConnectApp({
       catalog,
       providerLoader: new ProviderLoader(executorModules),
       runtimeDatabase,
+      syncStore: runtimeDatabase.syncStore,
       transitFiles,
       uploadTransitFile: createNodeTransitFileUpload({ transitFiles, tempDir: transitFileTempDir }),
       publicOrigin,
@@ -156,31 +159,38 @@ async function runServer(assets: Awaited<ReturnType<typeof prepareServerAssets>>
       },
     );
 
-    await waitForShutdown(server);
+    if (process.env.OOMOL_CONNECT_SYNC_ENABLED !== "0") syncScheduler?.start();
+    await waitForShutdown(server, async () => {
+      if (syncScheduler) await syncScheduler.stop();
+      else await Promise.all([syncRunner?.stop(), syncDelivery?.stop()]);
+    });
   } finally {
     await runtimeDatabase.close();
   }
 }
 
-function waitForShutdown(server: ServerType): Promise<void> {
+function waitForShutdown(server: ServerType, stopWork: () => Promise<void>): Promise<void> {
   return new Promise((resolve, reject) => {
     let closing = false;
     const shutdown = (): void => {
-      if (closing) {
-        return;
-      }
+      if (closing) return;
       closing = true;
-      server.close((error) => {
-        process.removeListener("SIGINT", shutdown);
-        process.removeListener("SIGTERM", shutdown);
-        if (error) {
-          reject(error);
-        } else {
-          resolve();
-        }
-      });
+      const forced = setTimeout(() => {
+        if ("closeAllConnections" in server) server.closeAllConnections();
+        logger.error("sync server shutdown exceeded ten seconds; unfinished leases will recover on restart");
+        process.exit(1);
+      }, 10_000);
+      void Promise.all([
+        stopWork(),
+        new Promise<void>((done, fail) => server.close((error) => (error ? fail(error) : done()))),
+      ])
+        .then(() => resolve(), reject)
+        .finally(() => {
+          clearTimeout(forced);
+          process.removeListener("SIGINT", shutdown);
+          process.removeListener("SIGTERM", shutdown);
+        });
     };
-
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
   });
