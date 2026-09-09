@@ -10,6 +10,7 @@ import { startLoggingReceiver } from "../../examples/sync/receiver-server.ts";
 import { createCatalogStore } from "../catalog-store.ts";
 import { ConnectionService } from "../connection-service.ts";
 import { s } from "../core/json-schema.ts";
+import { createGitHubSyncProvider } from "../providers/github/sync-provider.ts";
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { createLocalAuthMiddleware } from "../server/api/auth.ts";
 import { registerSyncRoutes } from "../server/api/sync-routes.ts";
@@ -86,7 +87,7 @@ async function fixture(custom?: SyncDefinitionRuntime, contract: SyncDefinition 
       store: database.syncStore,
       connections,
       connectionStore: database.connectionStore,
-      registrations: [{ definition: contract, load: async () => runtime }],
+      registrations: [{ definition: contract, createProvider: createGitHubSyncProvider, load: async () => runtime }],
     });
     delivery = new SyncDeliveryWorker({ store: database.syncStore.delivery, fetcher });
     scheduler = new SyncScheduler({ store: database.syncStore, runner, delivery });

@@ -1,4 +1,5 @@
 import type { JsonSchema } from "../core/types.ts";
+import type { SyncProvider, SyncProviderContext } from "./provider-adapter.ts";
 import type { SyncDefinitionContract, SyncRecordInput } from "./record-contract.ts";
 import type { JsonObject, JsonValue, SyncRecordDeleteInput } from "./sync-store.ts";
 
@@ -9,10 +10,6 @@ export interface SyncDefinition extends SyncDefinitionContract {
   checkpointSchema: JsonSchema;
   initialCheckpoint: JsonValue;
   scheduleSeconds: number;
-}
-
-export interface SyncProvider {
-  graphql(query: string, variables?: JsonObject): Promise<JsonObject>;
 }
 
 export interface SyncContext {
@@ -42,6 +39,7 @@ export interface SyncDefinitionRuntime {
 }
 
 export interface SyncRegistration {
+  createProvider(context: SyncProviderContext): SyncProvider;
   definition: SyncDefinition;
   load(): Promise<SyncDefinitionRuntime>;
 }
