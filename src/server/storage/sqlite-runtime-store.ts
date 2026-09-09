@@ -110,7 +110,7 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
     this.runLogStore = new SqliteRunLogStore(this.database, options.runLimit ?? DEFAULT_RUN_LIMIT);
     this.idempotencyStore = new SqliteIdempotencyStore(this.database, this.secretCodec);
     this.marketplaceStore = new SqliteMarketplaceStore(this.database);
-    this.syncStore = new SqliteSyncStore(this.database, options.syncDefinitions);
+    this.syncStore = new SqliteSyncStore(this.database, options.syncDefinitions, this.secretCodec);
   }
 
   close(): void {
@@ -127,6 +127,10 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
     );
     const oauthStates = await readRotatedStateSecrets(this.database, this.secretCodec, nextSecretCodec);
     const idempotencyResponses = await readRotatedIdempotencySecrets(this.database, this.secretCodec, nextSecretCodec);
+    const destination = this.database.prepare("select bearer_secret from sync_destination where id = 1").get();
+    const destinationSecret = destination
+      ? await nextSecretCodec.encode(await this.secretCodec.decode(readString(destination, "bearer_secret")))
+      : undefined;
     const marketplaceConfig = await this.marketplaceStore.getConfig();
     const rotatedMarketplaceConfig = marketplaceConfig
       ? {
@@ -137,6 +141,8 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
         }
       : undefined;
     runInTransaction(this.database, () => {
+      if (destinationSecret !== undefined)
+        this.database.prepare("update sync_destination set bearer_secret = ? where id = 1").run(destinationSecret);
       writeRotatedConnectionSecrets(this.database, connections);
       writeRotatedServiceSecrets(this.database, "oauth_client_configs", oauthConfigs);
       writeRotatedStateSecrets(this.database, oauthStates);
@@ -152,7 +158,9 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
   resetRuntimeData(): void {
     this.database.exec(`
       delete from sync_outbox;
-      delete from sync_sinks;
+      delete from sync_delivery_attempts;
+      delete from sync_delivery_batches;
+      delete from sync_destination;
       delete from sync_snapshots;
       delete from sync_records;
       delete from sync_changes;

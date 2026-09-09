@@ -842,6 +842,11 @@ describe("SqliteRuntimeDatabase", () => {
       createdAt: "2026-06-30T00:00:00.000Z",
     });
     const syncStartedAt = new Date().toISOString();
+    await database.syncStore.delivery.configure({
+      url: "https://receiver.example.com",
+      bearerToken: "secret",
+      enabled: true,
+    });
     await database.syncStore.startRun({
       id: "sync-run-1",
       installationId: "github-prs",
@@ -930,6 +935,11 @@ describe("SqliteRuntimeDatabase", () => {
       expiresAt: claim.expiresAt,
     });
     await database.runLogStore.add(createRun("run-1", "2026-06-30T00:00:00.000Z"));
+    await database.syncStore.delivery.configure({
+      url: "https://receiver.example.com",
+      bearerToken: "destination-secret",
+      enabled: true,
+    });
     await database.rotateSecretCodec(new AesGcmSecretCodec("new-key"));
     database.close();
 
@@ -943,6 +953,10 @@ describe("SqliteRuntimeDatabase", () => {
     const withNewKey = new SqliteRuntimeDatabase(databasePath, {
       secretCodec: new AesGcmSecretCodec("new-key"),
     });
+    const raw = new DatabaseSync(databasePath);
+    const storedDestinationSecret = raw.prepare("select bearer_secret from sync_destination").get()!.bearer_secret;
+    raw.close();
+    expect(await new AesGcmSecretCodec("new-key").decode(String(storedDestinationSecret))).toBe("destination-secret");
     await expect(withNewKey.connectionStore.get("github", "default")).resolves.toMatchObject({
       credential: {
         authType: "api_key",

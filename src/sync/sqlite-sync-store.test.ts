@@ -55,6 +55,47 @@ afterEach(async () => {
 });
 
 describe("SQLite sync state", () => {
+  it("blocks snapshot completion and checkpoint-only pages after the destination is removed by another connection", async () => {
+    const fixture = await createFixture();
+    const store = fixture.database.syncStore;
+    await store.commitPage({
+      ...commitIdentity(fixture, 0, t1),
+      nextCheckpoint: { cursor: 1 },
+      upserts: [{ kind: "PullRequest", record: { id: "one", body: "Saved" } }],
+    });
+    await store.startSnapshot({
+      id: "snapshot",
+      installationId: "github-prs",
+      runId: "run-1",
+      kinds: ["PullRequest"],
+      lease: fixture.lease,
+      expectedCheckpointRevision: 1,
+      startedAt: t2,
+    });
+    const other = new SqliteRuntimeDatabase(fixture.databasePath, { syncDefinitions: definitions });
+    try {
+      other.syncStore.delivery.remove();
+    } finally {
+      other.close();
+    }
+    await expect(
+      store.commitPage({ ...commitIdentity(fixture, 1, t3), snapshotId: "snapshot", nextCheckpoint: { cursor: 2 } }),
+    ).rejects.toMatchObject({ code: "destination_required" });
+    await expect(
+      store.finishSnapshot({
+        ...commitIdentity(fixture, 1, t3),
+        snapshotId: "snapshot",
+        nextCheckpoint: { cursor: 2 },
+      }),
+    ).rejects.toMatchObject({ code: "destination_required" });
+    expect(await store.getRecord("github-prs", "PullRequest", "one")).toMatchObject({
+      content: { body: "Saved" },
+      deletedAt: undefined,
+    });
+    expect(await store.getCheckpoint("github-prs")).toMatchObject({ revision: 1, value: { cursor: 1 } });
+    expect(await store.listOutbox()).toHaveLength(1);
+  });
+
   it("atomically advances records, changes, outbox entries, and checkpoints", async () => {
     const fixture = await createFixture();
     const store = fixture.database.syncStore;
@@ -125,7 +166,7 @@ describe("SQLite sync state", () => {
         { operation: "deleted", recordRevision: 3 },
       ],
     });
-    await expect(store.listOutbox("consumer-http")).resolves.toMatchObject([
+    await expect(store.listOutbox()).resolves.toMatchObject([
       { changeSequence: 1, state: "pending" },
       { changeSequence: 2, state: "pending" },
       { changeSequence: 3, state: "pending" },
@@ -159,7 +200,7 @@ describe("SQLite sync state", () => {
     await expect(store.getCheckpoint("github-prs")).resolves.toBeUndefined();
     await expect(store.getRecord("github-prs", "PullRequest", "PR_1")).resolves.toBeUndefined();
     await expect(store.listChanges()).resolves.toEqual({ items: [], nextSequence: undefined });
-    await expect(store.listOutbox("consumer-http")).resolves.toEqual([]);
+    await expect(store.listOutbox()).resolves.toEqual([]);
     await expect(store.getRun("run-1")).resolves.toMatchObject({ pageCount: 0, changeCount: 0 });
 
     const repair = new DatabaseSync(fixture.databasePath);
@@ -370,7 +411,7 @@ describe("SQLite sync state", () => {
     ).rejects.toMatchObject({ code: "lease_lost" });
     await expect(store.getCheckpoint("github-prs")).resolves.toBeUndefined();
     await expect(store.listChanges()).resolves.toMatchObject({ items: [] });
-    await expect(store.listOutbox("consumer-http")).resolves.toEqual([]);
+    await expect(store.listOutbox()).resolves.toEqual([]);
   });
 
   it("rejects expired initial leases and renewals", async () => {
@@ -460,7 +501,7 @@ describe("SQLite sync state", () => {
         value: { cursor: "seed" },
       });
       await expect(reopened.listChanges()).resolves.toEqual(before);
-      await expect(reopened.listOutbox("consumer-http")).resolves.toHaveLength(1);
+      await expect(reopened.listOutbox()).resolves.toHaveLength(1);
       await expect(reopened.getRun("run-1")).resolves.toMatchObject({
         checkpointRevision: 1,
         pageCount: 1,
@@ -511,7 +552,7 @@ describe("SQLite sync state", () => {
       deletedAt: undefined,
     });
     await expect(reopened.listChanges()).resolves.toMatchObject({ items: [{ operation: "added" }] });
-    await expect(reopened.listOutbox("consumer-http")).resolves.toHaveLength(1);
+    await expect(reopened.listOutbox()).resolves.toHaveLength(1);
     await expect(reopened.getCheckpoint("github-prs")).resolves.toMatchObject({ revision: 1 });
     const repair = new DatabaseSync(fixture.databasePath);
     try {
@@ -526,11 +567,9 @@ describe("SQLite sync state", () => {
     });
   });
 
-  it("retains exact earlier change payloads and fans out only to enabled sinks", async () => {
+  it("retains exact earlier change payloads in one delivery queue", async () => {
     const fixture = await createFixture();
     const store = fixture.database.syncStore;
-    await store.registerSink({ id: "second", kind: "http", enabled: true, updatedAt: t0 });
-    await store.registerSink({ id: "disabled", kind: "http", enabled: false, updatedAt: t0 });
     const first = await store.commitPage({
       ...commitIdentity(fixture, 0, t1),
       nextCheckpoint: null,
@@ -542,8 +581,7 @@ describe("SQLite sync state", () => {
       upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "Second revision" } }],
     });
     expect((await store.listChanges()).items[0]).toEqual(first.changes[0]);
-    await expect(store.listOutbox("second")).resolves.toHaveLength(2);
-    await expect(store.listOutbox("disabled")).resolves.toEqual([]);
+    await expect(store.listOutbox()).resolves.toHaveLength(2);
   });
 
   it("keeps the current binding and record revision across in-place credential replacement", async () => {
@@ -818,11 +856,10 @@ async function createFixture(options: { createInstallation?: boolean } = {}): Pr
       config: { owner: "openai", repository: "openai-node" },
       createdAt: t0,
     });
-    await database.syncStore.registerSink({
-      id: "consumer-http",
-      kind: "http",
+    await database.syncStore.delivery.configure({
+      url: "https://receiver.example.com",
+      bearerToken: "secret",
       enabled: true,
-      updatedAt: t0,
     });
     await database.syncStore.startRun({
       id: "run-1",

@@ -1,3 +1,4 @@
+import type { SyncDeliveryWorker } from "../../sync/delivery-worker.ts";
 import type { SyncRunner } from "../../sync/sync-runner.ts";
 import type { ISyncStore, JsonObject } from "../../sync/sync-store.ts";
 import type { Hono } from "hono";
@@ -16,7 +17,37 @@ const runSchema = z.strictObject({
 });
 
 /** Registered behind the existing /api admin authentication middleware. */
-export function registerSyncRoutes(app: Hono, runner: SyncRunner, store: ISyncStore): void {
+export function registerSyncRoutes(
+  app: Hono,
+  runner: SyncRunner,
+  store: ISyncStore,
+  delivery?: SyncDeliveryWorker,
+): void {
+  if (delivery)
+    app.post("/api/sync/delivery/run", async (context) => context.json({ attempted: await delivery.tick() }));
+  app.get("/api/sync/destination", (context) => context.json(store.delivery.status()));
+  app.put("/api/sync/destination", async (context) => {
+    const schema = z.strictObject({
+      url: z.string().max(8192),
+      bearerToken: z.string().max(8192),
+      enabled: z.boolean().default(true),
+    });
+    const parsed = schema.safeParse(await readJsonBody(context, 64 * 1024));
+    if (!parsed.success) return jsonError(context, 400, "invalid_input", "Invalid receiver registration.");
+    try {
+      await store.delivery.configure(parsed.data);
+      runner.destinationChanged();
+      return context.json(store.delivery.status());
+    } catch (error) {
+      if (error instanceof SyncStoreError) return jsonError(context, 400, error.code, error.message);
+      throw error;
+    }
+  });
+  app.delete("/api/sync/destination", (context) => {
+    store.delivery.remove();
+    runner.destinationChanged();
+    return context.json(store.delivery.status());
+  });
   app.get("/api/sync/definitions", (context) => context.json(runner.definitions()));
   app.get("/api/sync/runs/:id", async (context) => {
     const run = await store.getRun(context.req.param("id"));
@@ -38,7 +69,10 @@ export function registerSyncRoutes(app: Hono, runner: SyncRunner, store: ISyncSt
       if (error instanceof SyncStoreError || error instanceof ConnectionError)
         return context.json(
           { error: { code: error.code, message: error.message } },
-          error.code === "run_busy" || error.code === "credential_changed" || error.code === "binding_conflict"
+          error.code === "destination_required" ||
+            error.code === "run_busy" ||
+            error.code === "credential_changed" ||
+            error.code === "binding_conflict"
             ? 409
             : 400,
         );

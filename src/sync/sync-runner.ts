@@ -4,6 +4,7 @@ import type { ISyncStore, JsonObject, JsonValue, SyncRun } from "./sync-store.ts
 
 import { normalizeConnectionName } from "../connection-service.ts";
 import { randomUUIDv7 } from "../core/uuid-v7.ts";
+import { maximumRecordBytes } from "./delivery-store.ts";
 import { createSyncProvider } from "./provider-adapter.ts";
 import { normalizeSyncRecord } from "./record-contract.ts";
 import { SyncSourceBindingService } from "./source-binding.ts";
@@ -42,6 +43,7 @@ export class SyncRunner {
   private readonly options: SyncRunnerOptions;
   private active?: AbortController;
   private pending?: Promise<RunSyncResult>;
+  private dryRun = false;
 
   constructor(options: SyncRunnerOptions) {
     this.options = options;
@@ -59,6 +61,7 @@ export class SyncRunner {
     if (this.active) return Promise.reject(new SyncStoreError("run_busy", "Another acquisition is already running."));
     const controller = new AbortController();
     this.active = controller;
+    this.dryRun = input.dryRun === true;
     const pending = this.execute(input, controller).finally(() => {
       this.active = undefined;
       this.pending = undefined;
@@ -70,6 +73,12 @@ export class SyncRunner {
   async stop(): Promise<void> {
     this.active?.abort(new Error("Sync runtime is stopping."));
     await this.pending?.catch(() => undefined);
+  }
+
+  /** Cancellation is prompt locally; transactional store checks protect other processes too. */
+  destinationChanged(): void {
+    if (!this.dryRun && !this.options.store.delivery.getDestination()?.enabled)
+      this.active?.abort(new SyncStoreError("destination_required", "Sync is waiting for an enabled destination."));
   }
 
   private async execute(input: RunSyncInput, controller: AbortController): Promise<RunSyncResult> {
@@ -91,6 +100,7 @@ export class SyncRunner {
       "Sync configuration",
     ) as JsonObject;
     const name = normalizeConnectionName(input.connectionName);
+    if (!input.dryRun) store.delivery.requireDestination();
     const startedAt = new Date().toISOString();
     const installation = input.dryRun
       ? undefined
@@ -161,6 +171,7 @@ export class SyncRunner {
       records: 0,
       preview: input.dryRun ? [] : undefined,
     };
+    let previewBytes = 2;
     try {
       const runtime = await registration.load();
       const provider = createSyncProvider({
@@ -168,6 +179,7 @@ export class SyncRunner {
         connections: connectionStore,
         createProvider: registration.createProvider,
         signal,
+        assertActive: installation ? () => store.delivery.requireDestination() : undefined,
       });
       for await (const page of runtime.run({
         provider,
@@ -182,26 +194,6 @@ export class SyncRunner {
         const records = page.records ?? [];
         if (typeof page.complete !== "boolean" || records.length + (page.deletes?.length ?? 0) > 1000)
           throw new SyncStoreError("invalid_input", "Invalid or oversized sync page.");
-        const identities = new Set<string>();
-        for (const item of [
-          ...records.map((item) => ({ kind: item.kind, id: item.record.id })),
-          ...(page.deletes ?? []),
-        ]) {
-          const key = JSON.stringify([item.kind, item.id]);
-          if (
-            !definition.kinds.some((kind) => kind.kind === item.kind) ||
-            typeof item.id !== "string" ||
-            !item.id.trim() ||
-            identities.has(key)
-          )
-            throw new SyncStoreError("invalid_input", "Invalid or duplicate sync record identity.");
-          identities.add(key);
-        }
-        const normalized = records.map((item) => {
-          const kind = definition.kinds.find((kind) => kind.kind === item.kind);
-          if (!kind) throw new SyncStoreError("invalid_input", "Sync emitted an undeclared kind.");
-          return { kind: item.kind, value: normalizeSyncRecord(item.record, kind) };
-        });
         if (installation) {
           await heartbeatWork;
           signal.throwIfAborted();
@@ -217,20 +209,44 @@ export class SyncRunner {
           });
           checkpointRevision = committed.checkpoint.revision;
         } else {
-          for (const record of normalized) {
-            if (result.preview!.length >= 100)
-              throw new SyncStoreError("invalid_input", "Dry-run preview exceeds 100 records; lower maxPages.");
-            result.preview!.push({
+          const identities = new Set<string>();
+          for (const item of [
+            ...records.map((item) => ({ kind: item.kind, id: item.record.id })),
+            ...(page.deletes ?? []),
+          ]) {
+            const key = JSON.stringify([item.kind, item.id]);
+            if (
+              !definition.kinds.some((kind) => kind.kind === item.kind) ||
+              typeof item.id !== "string" ||
+              !item.id.trim() ||
+              identities.has(key)
+            )
+              throw new SyncStoreError("invalid_input", "Invalid or duplicate sync record identity.");
+            identities.add(key);
+          }
+          if (result.preview!.length + records.length > 100)
+            throw new SyncStoreError("invalid_input", "Dry-run preview exceeds 100 records; lower maxPages.");
+          for (const item of records) {
+            const kind = definition.kinds.find((kind) => kind.kind === item.kind);
+            if (!kind) throw new SyncStoreError("invalid_input", "Sync emitted an undeclared kind.");
+            const value = normalizeSyncRecord(item.record, kind);
+            if (Buffer.byteLength(value.content.json) > maximumRecordBytes)
+              throw new SyncStoreError("invalid_input", "Record exceeds the 8 MiB delivery limit.");
+            const preview: JsonObject = {
               provider: definition.provider,
               sourceId: "dry-run",
-              kind: record.kind,
-              id: record.value.id,
-              content: record.value.content.value,
-            });
+              kind: item.kind,
+              id: value.id,
+              content: value.content.value,
+            };
+            previewBytes += Buffer.byteLength(JSON.stringify(preview)) + 1;
+            if (previewBytes > 16 * 1024 * 1024)
+              throw new SyncStoreError("invalid_input", "Dry-run preview exceeds 16 MiB; lower maxPages.");
+            result.preview!.push(preview);
           }
         }
         result.pages++;
-        result.records += normalized.length;
+        result.records += records.length;
         result.complete = page.complete;
         if (page.complete || result.pages >= maxPages) break;
       }
@@ -245,7 +261,9 @@ export class SyncRunner {
           completedAt: new Date().toISOString(),
         });
       return result;
-    } catch (error) {
+    } catch (cause) {
+      const error = signal.aborted ? signal.reason : cause;
+      const waiting = error instanceof SyncStoreError && error.code === "destination_required";
       if (heartbeat) clearInterval(heartbeat);
       await heartbeatWork;
       if (installation)
@@ -253,12 +271,14 @@ export class SyncRunner {
           .finishRun({
             runId,
             ...lease,
-            state: signal.aborted ? "cancelled" : "failed",
+            state: signal.aborted || waiting ? "cancelled" : "failed",
             completedAt: new Date().toISOString(),
             errorCode: error instanceof SyncStoreError ? error.code : "acquisition_failed",
-            errorMessage: signal.aborted
-              ? "Acquisition cancelled."
-              : "Acquisition failed; committed progress is retained.",
+            errorMessage: waiting
+              ? "Waiting for destination; committed progress is retained."
+              : signal.aborted
+                ? "Acquisition cancelled."
+                : "Acquisition failed; committed progress is retained.",
           })
           .catch(() => undefined);
       throw error;
