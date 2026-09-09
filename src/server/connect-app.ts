@@ -2,6 +2,7 @@ import type { CatalogStore } from "../catalog-store.ts";
 import type { ActionPolicyService } from "../core/action-policy.ts";
 import type { TransitFileUpload } from "../core/types.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
+import type { ISyncStore } from "../sync/sync-store.ts";
 import type { RuntimeJwtVerifier } from "./api/runtime-jwt.ts";
 import type { ITransitFileService } from "./files/transit-file-store.ts";
 import type { Logger } from "./logger.ts";
@@ -14,11 +15,14 @@ import { MarketplaceService } from "../marketplace/marketplace-service.ts";
 import { OAuthClientConfigService } from "../oauth/oauth-client-config-service.ts";
 import { OAuthCredentialRefreshService } from "../oauth/oauth-credential-refresh-service.ts";
 import { OAuthFlowService } from "../oauth/oauth-flow-service.ts";
+import { syncRegistrations } from "../sync/sync-registry.ts";
+import { SyncRunner } from "../sync/sync-runner.ts";
 import { ActionRunner } from "./actions/action-runner.ts";
 import { ConnectServer } from "./connect-server.ts";
 import { RuntimeTokenService } from "./storage/runtime-token-service.ts";
 
 export interface ConnectAppOptions {
+  syncStore?: ISyncStore;
   catalog: CatalogStore;
   providerLoader: IProviderLoader;
   runtimeDatabase: RuntimeDatabase;
@@ -40,6 +44,7 @@ export interface ConnectAppOptions {
 export interface ConnectApp {
   app: Hono;
   runtimeAuthConfigured: boolean;
+  syncRunner?: SyncRunner;
 }
 
 export async function createConnectApp(options: ConnectAppOptions): Promise<ConnectApp> {
@@ -78,8 +83,19 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
     marketplace,
   });
 
+  const syncRunner = options.syncStore
+    ? new SyncRunner({
+        store: options.syncStore,
+        connections,
+        connectionStore: options.runtimeDatabase.connectionStore,
+        registrations: syncRegistrations,
+      })
+    : undefined;
   return {
+    syncRunner,
     app: new ConnectServer({
+      syncRunner,
+      syncStore: options.syncStore,
       catalog: options.catalog,
       providerLoader: options.providerLoader,
       connections,

@@ -240,6 +240,8 @@ export type SyncStoreErrorCode =
   | "installation_not_found"
   | "invalid_input"
   | "lease_lost"
+  | "cursor_expired"
+  | "run_busy"
   | "run_not_found"
   | "snapshot_inactive"
   | "snapshot_not_found";
