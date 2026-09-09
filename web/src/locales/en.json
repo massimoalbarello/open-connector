@@ -640,7 +640,6 @@
     "nextAttempt": "Next delivery / retry",
     "stopped": "Scheduler stopped",
     "webhookDestinations": "Webhook destination",
-    "waitingDestination": "Syncs are waiting for an enabled destination. Pending records are retained.",
     "allSources": "Subscribed to all sources",
     "noDestinationsTitle": "No webhook destination configured",
     "noDestinationsDescription": "Configure a destination to resume polling and deliver retained records.",
@@ -663,7 +662,6 @@
     "seconds": "{{count}} s",
     "pages": "{{count}} pages",
     "states": {
-      "waitingDestination": "Waiting for destination",
       "running": "Running",
       "paused": "Paused",
       "disconnected": "Disconnected",
@@ -676,7 +674,8 @@
       "failed": "Failed",
       "lease_expired": "Interrupted",
       "succeeded": "Succeeded",
-      "enabled": "Enabled"
+      "enabled": "Enabled",
+      "waitingDestination": "Waiting for destination"
     },
     "connection": {
       "missing": "The source connection was removed. Reconnect the account to resume polling.",
@@ -689,6 +688,7 @@
       "retry": "Retry",
       "schedule": "Scheduled",
       "webhook": "Webhook"
-    }
+    },
+    "waitingDestination": "Syncs are waiting for an enabled destination. Pending records are retained."
   }
 }
