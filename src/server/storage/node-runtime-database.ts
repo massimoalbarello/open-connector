@@ -1,4 +1,5 @@
 import type { RuntimeLogger } from "../../core/types.ts";
+import type { SyncDefinitionContract } from "../../sync/record-contract.ts";
 import type { ISyncStore } from "../../sync/sync-store.ts";
 import type { ISecretCodec } from "../secrets/secret-codec-core.ts";
 import type { RuntimeDatabase } from "./runtime-database.ts";
@@ -21,6 +22,7 @@ interface CommonOptions {
 }
 
 interface SqliteOptions extends CommonOptions {
+  syncDefinitions?: readonly SyncDefinitionContract[];
   backend: "sqlite";
   path: string;
   migrationDirectory?: string | URL;

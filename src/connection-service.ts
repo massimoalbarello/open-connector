@@ -10,6 +10,7 @@ import type {
   ProviderDefinition,
   ResolvedCredential,
   RuntimeLogger,
+  VerifiedSourceIdentity,
 } from "./core/types.ts";
 import type { MarketplacePricing, MarketplaceService } from "./marketplace/marketplace-service.ts";
 import type { IOAuthCredentialRefresher } from "./oauth/oauth-credential-refresh-service.ts";
@@ -87,6 +88,14 @@ export interface IConnectionStore {
   updateCredential(input: StoredConnection): Promise<boolean>;
   delete(service: string, connectionName: string): Promise<void>;
   list(): Promise<StoredConnection[]>;
+}
+
+/** Fresh verification tied to the exact stored credential revision; contains no secrets. */
+export interface VerifiedSourceConnection {
+  id: string;
+  revision: string;
+  service: string;
+  identity: VerifiedSourceIdentity;
 }
 
 interface ServiceConnection {
@@ -261,6 +270,51 @@ export class ConnectionService {
       summary,
       getCredential: async (requestedService) => (requestedService === service ? credential : undefined),
     };
+  }
+
+  /** Verify source identity using existing refresh, validator and guarded egress machinery. */
+  async verifySourceConnection(
+    service: string,
+    connectionName?: string,
+    signal?: AbortSignal,
+  ): Promise<VerifiedSourceConnection> {
+    this.getProvider(service);
+    const name = normalizeConnectionName(connectionName);
+    let stored = await this.store.get(service, name);
+    if (!stored) throw new ConnectionError("connection_not_found", "Source binding requires a stored connection.");
+    if (stored.credential.authType === "oauth2") {
+      await this.resolveOAuthCredential(stored, stored.credential);
+      const refreshed = await this.store.get(service, name);
+      if (!refreshed || refreshed.id !== stored.id)
+        throw new ConnectionError("connection_changed", "Connection changed during refresh.");
+      stored = refreshed;
+    }
+    const credential = stored.credential;
+    let validation: CredentialValidationResult;
+    switch (credential.authType) {
+      case "api_key":
+        validation = await this.validateApiKeyCredential(
+          service,
+          { apiKey: credential.apiKey, values: credential.values },
+          signal,
+        );
+        break;
+      case "oauth2":
+        validation = await this.validateOAuthCredential(service, credential, signal);
+        break;
+      case "custom_credential":
+        validation = await this.validateCustomCredential(service, { values: credential.values }, signal);
+        break;
+      default:
+        throw new ConnectionError("source_identity_unverified", "This credential cannot verify a source account.");
+    }
+    if (!validation.sourceIdentity)
+      throw new ConnectionError(
+        "source_identity_unverified",
+        "The provider validator did not prove a stable source identity and authorization boundary.",
+      );
+    this.assertNotCancelled(signal);
+    return { id: stored.id, revision: stored.revision, service, identity: validation.sourceIdentity };
   }
 
   async getCredential(service: string, connectionName?: string): Promise<ResolvedCredential | undefined> {

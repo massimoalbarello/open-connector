@@ -797,7 +797,11 @@ describe("SqliteRuntimeDatabase", () => {
 
   it("resets runtime data", async () => {
     const databasePath = await createDatabasePath();
-    const database = new SqliteRuntimeDatabase(databasePath);
+    const database = new SqliteRuntimeDatabase(databasePath, {
+      syncDefinitions: [
+        { id: "github.pull-requests", version: "1.0.0", provider: "github", kinds: [{ kind: "PullRequest" }] },
+      ],
+    });
     const connection = await database.connectionStore.set("github", "default", {
       authType: "api_key",
       apiKey: "github-token",
@@ -822,12 +826,18 @@ describe("SqliteRuntimeDatabase", () => {
       now: "2026-06-30T00:00:00.000Z",
       expiresAt: "2026-07-01T00:00:00.000Z",
     });
-    await database.syncStore.createInstallation({
+    await database.syncStore.sources.bind({
+      expectedBindingRevision: database.syncStore.sources.getBindingRevision(),
+      verifiedConnection: {
+        id: connection.id,
+        revision: connection.revision,
+        service: "github",
+        identity: { accountId: "native-1", authorizationBoundary: "account" },
+      },
       id: "github-prs",
       definitionId: "github.pull-requests",
       definitionVersion: "1.0.0",
       provider: "github",
-      connectionId: connection.id,
       config: { owner: "openai", repository: "openai-node" },
       createdAt: "2026-06-30T00:00:00.000Z",
     });
@@ -847,7 +857,7 @@ describe("SqliteRuntimeDatabase", () => {
       lease: { owner: "worker-1", generation: 1 },
       expectedCheckpointRevision: 0,
       nextCheckpoint: { cursor: "page-1" },
-      upserts: [{ model: "PullRequest", id: "PR_1", payload: { number: 1 } }],
+      upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "# Pull request 1" } }],
       committedAt: syncStartedAt,
     });
 

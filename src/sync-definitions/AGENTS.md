@@ -13,8 +13,8 @@ The framework must not need provider-specific knowledge to store or deliver it.
 - A definition owns its stable ID, version, provider association, output kinds, required scopes,
   default cadence, optional configuration, checkpoint schema, discovery queries, hydration, and
   Markdown rendering. Each source/kind has one authoritative definition.
-- Use the shared record contract and schema owner. Do not create a different
-  universal schema for each provider. Use repository JSON-schema helpers for declared schemas.
+- Use the shared contract in `src/sync/record-contract.ts`. Do not create a different universal
+  schema for each provider. Use repository JSON-schema helpers for declared schemas.
 - The framework supplies provider/kind/source context, validated input, connection-bound provider
   requests, existing read-only Actions, the checkpoint, cancellation/deadlines, logging, and an
   atomic commit operation. Provider metadata remains owned by the provider catalog.
@@ -57,13 +57,16 @@ revisions, operations, and delivery envelopes. Do not duplicate those framework 
 - Important facts in participants or attributes must also be represented in Markdown. Structured
   fields support machine filtering; they must not hide content from Markdown-only consumers.
 - Participants use shared identities and roles such as author, sender, recipient, or attendee.
-  Deduplicate deterministically without treating display names as globally unique identities.
+  Supply identities as `{ namespace, id }`, roles as strings, and an optional name. Deduplicate
+  deterministically without treating display names as globally unique identities.
 - Custom attributes are compact and declared by the kind's schema. Never include raw responses,
   debug metadata, credentials, API navigation links, pagination tokens, or whole nested objects
-  merely because they were returned by the provider.
+  merely because they were returned by the provider. Attributes must declare closed object schemas
+  and are capped at 16 KiB; participants are capped at 1,000 with at most 16 identities and 32 roles each.
 - Optional source timestamps must be real, timezone-qualified RFC 3339 strings. Validate calendar
   values and normalize to UTC with deterministic precision through the shared record normalizer.
-  Reject ambiguous local times and invalid dates. Do not substitute fetch time for a missing
+  Preserve fractional precision. The normalizer rejects unknown `-00:00` offsets, leap seconds,
+  ambiguous local times, and invalid dates. Do not substitute fetch time for a missing
   source modification time. An event date is not automatically a modification timestamp.
 - Do not add attachment schemas, ingestion, downloads, blob storage,
   signed URLs, or a placeholder attachments field. Ordinary source links may appear in Markdown;

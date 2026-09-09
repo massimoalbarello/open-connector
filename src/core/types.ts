@@ -348,10 +348,17 @@ export interface RuntimeLogger {
   warn(fields: Record<string, unknown>, message: string): void;
 }
 
-/**
- * Optional metadata returned by provider credential validation.
- */
+/** Authoritative identity proven by a provider validator, never a display name or email. */
+export interface VerifiedSourceIdentity {
+  accountId: string;
+  /** Stable provider-native workspace/tenant or grant boundary; excludes token IDs and aliases. */
+  authorizationBoundary: string;
+}
+
+/** Optional metadata returned by provider credential validation. */
 export type CredentialValidationResult = {
+  /** Only return when both the native account and authorization boundary have been verified. */
+  sourceIdentity?: VerifiedSourceIdentity;
   /**
    * Provider-side account identity represented by this credential.
    *

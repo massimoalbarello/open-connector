@@ -8,6 +8,7 @@ import type {
 } from "../../marketplace/marketplace-service.ts";
 import type { IOAuthClientConfigStore, OAuthClientConfig } from "../../oauth/oauth-client-config-service.ts";
 import type { IOAuthStateStore, OAuthAuthorizationState } from "../../oauth/oauth-flow-service.ts";
+import type { SyncDefinitionContract } from "../../sync/record-contract.ts";
 import type { ISecretCodec } from "../secrets/secret-codec-core.ts";
 import type {
   CompleteIdempotencyInput,
@@ -41,6 +42,7 @@ type SecretJsonTable = "oauth_client_configs";
 const migrationDirectory = new URL("../../../migrations/", import.meta.url);
 
 export interface SqliteRuntimeDatabaseOptions {
+  syncDefinitions?: readonly SyncDefinitionContract[];
   logger?: RuntimeLogger;
   runLimit?: number;
   secretCodec?: ISecretCodec;
@@ -108,7 +110,7 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
     this.runLogStore = new SqliteRunLogStore(this.database, options.runLimit ?? DEFAULT_RUN_LIMIT);
     this.idempotencyStore = new SqliteIdempotencyStore(this.database, this.secretCodec);
     this.marketplaceStore = new SqliteMarketplaceStore(this.database);
-    this.syncStore = new SqliteSyncStore(this.database);
+    this.syncStore = new SqliteSyncStore(this.database, options.syncDefinitions);
   }
 
   close(): void {
@@ -156,7 +158,10 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
       delete from sync_changes;
       delete from sync_checkpoints;
       delete from sync_runs;
+      delete from sync_source_kinds;
       delete from sync_installations;
+      delete from sync_sources;
+      update sync_binding_state set revision = revision + 1;
       delete from connections;
       delete from oauth_client_configs;
       delete from oauth_states;

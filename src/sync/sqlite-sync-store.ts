@@ -1,7 +1,7 @@
 import type { RuntimeRow } from "../server/storage/runtime-sql.ts";
+import type { SyncDefinitionContract } from "./record-contract.ts";
 import type {
   CommitSyncPageInput,
-  CreateSyncInstallationInput,
   FinishSyncRunInput,
   FinishSyncSnapshotInput,
   ISyncStore,
@@ -33,7 +33,10 @@ import { z } from "zod";
 import { optionalRawString } from "../core/cast.ts";
 import { randomUUIDv7 } from "../core/uuid-v7.ts";
 import { parseJson, readString } from "../server/storage/runtime-sql.ts";
-import { canonicalizeJsonObject, canonicalizeJsonValue } from "./record-hash.ts";
+import { normalizeSyncRecord } from "./record-contract.ts";
+import { canonicalizeJsonValue } from "./record-hash.ts";
+import { SqliteSyncSourceStore } from "./sqlite-source-store.ts";
+import { runSyncTransaction } from "./sqlite-sync-transaction.ts";
 import { SyncStoreError } from "./sync-store.ts";
 
 const defaultChangeLimit = 100;
@@ -98,54 +101,23 @@ interface WriteCheckpointInput {
 export class SqliteSyncStore implements ISyncStore {
   private readonly database: DatabaseSync;
 
-  constructor(database: DatabaseSync) {
+  readonly sources: SqliteSyncSourceStore;
+  private readonly definitions: readonly SyncDefinitionContract[];
+
+  constructor(database: DatabaseSync, definitions: readonly SyncDefinitionContract[] = []) {
     this.database = database;
-  }
-
-  async createInstallation(input: CreateSyncInstallationInput): Promise<SyncInstallation> {
-    const id = requiredIdentifier(input.id, "installation id");
-    const definitionId = requiredIdentifier(input.definitionId, "definition id");
-    const definitionVersion = requiredIdentifier(input.definitionVersion, "definition version");
-    const provider = requiredIdentifier(input.provider, "provider");
-    const connectionId = requiredIdentifier(input.connectionId, "connection id");
-    const config = readCanonicalObject(input.config, "Sync configuration");
-    const state = input.state ?? "enabled";
-    assertInstallationState(state);
-    const scheduleSeconds = readScheduleSeconds(input.scheduleSeconds);
-    const createdAt = requiredTimestamp(input.createdAt, "createdAt");
-    const nextDueAt = input.nextDueAt === undefined ? undefined : requiredTimestamp(input.nextDueAt, "nextDueAt");
-
-    runInTransaction(this.database, () => {
-      const connection = this.database
-        .prepare("select id from connections where id = ? and service = ?")
-        .get(connectionId, provider);
-      if (!connection) {
-        throw invalidInput(`Connection ${connectionId} does not belong to provider ${provider}.`);
-      }
-      this.database
-        .prepare(
-          `
-          insert into sync_installations (
-            id, definition_id, definition_version, provider, connection_id, config_value,
-            state, schedule_seconds, next_due_at, created_at, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        )
-        .run(
-          id,
-          definitionId,
-          definitionVersion,
-          provider,
-          connectionId,
-          config.json,
-          state,
-          scheduleSeconds ?? null,
-          nextDueAt ?? null,
-          createdAt,
-          createdAt,
-        );
-    });
-    return this.requireInstallation(id);
+    this.definitions = structuredClone(definitions);
+    const ids = new Set<string>();
+    for (const definition of this.definitions) {
+      requiredIdentifier(definition.id, "definition id");
+      requiredIdentifier(definition.version, "definition version");
+      requiredIdentifier(definition.provider, "provider");
+      if (ids.has(definition.id) || !definition.kinds.length)
+        throw invalidInput("Definitions must have unique IDs and declare kinds.");
+      ids.add(definition.id);
+      normalizeModels(definition.kinds.map((kind) => kind.kind));
+    }
+    this.sources = new SqliteSyncSourceStore(database, this.definitions);
   }
 
   async getInstallation(id: string): Promise<SyncInstallation | undefined> {
@@ -186,8 +158,9 @@ export class SqliteSyncStore implements ISyncStore {
       throw invalidInput("leaseExpiresAt must be later than startedAt.");
     }
 
-    runInTransaction(this.database, () => {
+    runSyncTransaction(this.database, () => {
       const installation = this.requireInstallation(installationId);
+      this.assertSourceBinding(installation);
       if (installation.state !== "enabled") {
         throw invalidInput("A run cannot start for an installation that is not enabled.");
       }
@@ -205,11 +178,21 @@ export class SqliteSyncStore implements ISyncStore {
           `
           insert into sync_runs (
             id, installation_id, definition_version, reason, state, lease_owner,
-            lease_generation, lease_expires_at, checkpoint_revision, started_at
-          ) values (?, ?, ?, ?, 'running', ?, 1, ?, ?, ?)
+            lease_generation, lease_expires_at, checkpoint_revision, started_at, binding_revision
+          ) values (?, ?, ?, ?, 'running', ?, 1, ?, ?, ?, ?)
         `,
         )
-        .run(id, installationId, definitionVersion, reason, leaseOwner, leaseExpiresAt, checkpointRevision, startedAt);
+        .run(
+          id,
+          installationId,
+          definitionVersion,
+          reason,
+          leaseOwner,
+          leaseExpiresAt,
+          checkpointRevision,
+          startedAt,
+          installation.bindingRevision,
+        );
     });
     return this.requireRun(id);
   }
@@ -222,7 +205,7 @@ export class SqliteSyncStore implements ISyncStore {
     const runId = requiredIdentifier(input.runId, "run id");
     const lease = normalizeLease(input);
     const expiresAt = requiredTimestamp(input.expiresAt, "expiresAt");
-    runInTransaction(this.database, () => {
+    runSyncTransaction(this.database, () => {
       this.assertLease(runId, lease);
       if (Date.parse(expiresAt) <= Date.now()) {
         throw invalidInput("expiresAt must be in the future.");
@@ -252,7 +235,7 @@ export class SqliteSyncStore implements ISyncStore {
       throw invalidInput("A finished run must have a terminal state.");
     }
 
-    runInTransaction(this.database, () => {
+    runSyncTransaction(this.database, () => {
       const run = this.assertLease(runId, lease);
       const activeSnapshot = this.database
         .prepare("select id from sync_snapshots where run_id = ? and state = 'active'")
@@ -291,8 +274,9 @@ export class SqliteSyncStore implements ISyncStore {
   }
 
   async commitPage(input: CommitSyncPageInput): Promise<SyncCommitResult> {
-    const prepared = prepareCommit(input);
-    return runInTransaction(this.database, () => this.commitPreparedPage(prepared));
+    const installation = this.requireInstallation(input.installationId);
+    const prepared = prepareCommit(input, this.requireDefinition(installation));
+    return runSyncTransaction(this.database, () => this.commitPreparedPage(prepared));
   }
 
   async startSnapshot(input: StartSyncSnapshotInput): Promise<SyncSnapshot> {
@@ -302,12 +286,15 @@ export class SqliteSyncStore implements ISyncStore {
     const lease = normalizeLease(input.lease);
     const expectedCheckpointRevision = readRevision(input.expectedCheckpointRevision);
     const startedAt = requiredTimestamp(input.startedAt, "startedAt");
-    const models = normalizeModels(input.models);
+    const models = normalizeModels(input.kinds);
 
-    runInTransaction(this.database, () => {
+    runSyncTransaction(this.database, () => {
       const run = this.assertLease(runId, lease, installationId);
       this.assertDefinitionVersion(installationId, run);
       this.assertCheckpointRevision(installationId, expectedCheckpointRevision);
+      const definition = this.requireDefinition(this.requireInstallation(installationId));
+      if (models.some((model) => !definition.kinds.some((kind) => kind.kind === model)))
+        throw invalidInput("Snapshot contains an undeclared kind.");
       const baseline = this.database.prepare("select max(sequence) as value from sync_changes").get();
       this.database
         .prepare(
@@ -331,7 +318,7 @@ export class SqliteSyncStore implements ISyncStore {
     const committedAt = requiredTimestamp(input.committedAt, "committedAt");
     const checkpoint = readCanonicalValue(input.nextCheckpoint, "Sync checkpoint");
 
-    return runInTransaction(this.database, () => {
+    return runSyncTransaction(this.database, () => {
       const installation = this.requireInstallation(installationId);
       const run = this.assertLease(runId, lease, installationId);
       this.assertDefinitionVersion(installationId, run);
@@ -344,13 +331,13 @@ export class SqliteSyncStore implements ISyncStore {
       for (const record of candidates) {
         const change = this.insertChange({
           ...source,
-          model: record.model,
+          model: record.kind,
           recordId: record.id,
           operation: "deleted",
           recordRevision: record.revision + 1,
-          payload: record.payload,
-          payloadJson: JSON.stringify(record.payload),
-          payloadHash: record.payloadHash,
+          payload: record.content,
+          payloadJson: JSON.stringify(record.content),
+          payloadHash: record.contentHash,
           deletedAt: committedAt,
         });
         this.database
@@ -367,7 +354,7 @@ export class SqliteSyncStore implements ISyncStore {
             committedAt,
             committedAt,
             installationId,
-            record.model,
+            record.kind,
             record.id,
           );
         changes.push(change);
@@ -398,7 +385,9 @@ export class SqliteSyncStore implements ISyncStore {
     const row = this.database
       .prepare(
         `
-        select installation_id, model, record_id, payload, payload_hash, revision,
+        select (select source_id from sync_installations where id = installation_id) as source_id,
+          (select provider from sync_installations where id = installation_id) as provider,
+          installation_id, model, record_id, payload, payload_hash, revision,
           created_sequence, last_change_sequence, first_seen_at, last_changed_at,
           deleted_at, last_seen_snapshot_id
         from sync_records
@@ -431,7 +420,8 @@ export class SqliteSyncStore implements ISyncStore {
     const rows = this.database
       .prepare(
         `
-        select sequence, event_id, installation_id, provider, connection_id, definition_id,
+        select (select source_id from sync_installations where id = installation_id) as source_id,
+          sequence, event_id, installation_id, provider, connection_id, definition_id,
           definition_version, model, record_id, operation, record_revision, payload,
           payload_hash, deleted_at, run_id, committed_at
         from sync_changes
@@ -478,10 +468,10 @@ export class SqliteSyncStore implements ISyncStore {
       throw invalidInput("Page commits during an active snapshot must include its snapshotId.");
     }
     if (snapshot) {
-      const models = new Set(snapshot.models);
+      const models = new Set(snapshot.kinds);
       for (const record of [...input.upserts, ...input.deletes]) {
         if (!models.has(record.model)) {
-          throw invalidInput(`Model ${record.model} is not part of snapshot ${snapshot.id}.`);
+          throw invalidInput(`Kind ${record.model} is not part of snapshot ${snapshot.id}.`);
         }
       }
     }
@@ -527,7 +517,7 @@ export class SqliteSyncStore implements ISyncStore {
         continue;
       }
 
-      if (current.deletedAt || current.payloadHash !== upsert.payloadHash) {
+      if (current.deletedAt || current.contentHash !== upsert.payloadHash) {
         const change = this.insertChange({
           ...source,
           model: upsert.model,
@@ -578,13 +568,13 @@ export class SqliteSyncStore implements ISyncStore {
       }
       const change = this.insertChange({
         ...source,
-        model: current.model,
+        model: current.kind,
         recordId: current.id,
         operation: "deleted",
         recordRevision: current.revision + 1,
-        payload: current.payload,
-        payloadJson: JSON.stringify(current.payload),
-        payloadHash: current.payloadHash,
+        payload: current.content,
+        payloadJson: JSON.stringify(current.content),
+        payloadHash: current.contentHash,
         deletedAt: input.committedAt,
       });
       this.database
@@ -601,7 +591,7 @@ export class SqliteSyncStore implements ISyncStore {
           input.committedAt,
           input.committedAt,
           input.installationId,
-          current.model,
+          current.kind,
           current.id,
         );
       changes.push(change);
@@ -665,6 +655,7 @@ export class SqliteSyncStore implements ISyncStore {
       )
       .run(sequence, input.committedAt);
     return {
+      sourceId: input.installation.sourceId,
       sequence,
       eventId,
       installationId: input.installation.id,
@@ -672,12 +663,12 @@ export class SqliteSyncStore implements ISyncStore {
       connectionId: input.installation.connectionId,
       definitionId: input.installation.definitionId,
       definitionVersion: input.run.definitionVersion,
-      model: input.model,
+      kind: input.model,
       recordId: input.recordId,
       operation: input.operation,
       recordRevision: input.recordRevision,
-      payload: input.payload,
-      payloadHash: input.payloadHash,
+      content: input.payload,
+      contentHash: input.payloadHash,
       deletedAt: input.deletedAt,
       runId: input.run.id,
       committedAt: input.committedAt,
@@ -770,7 +761,42 @@ export class SqliteSyncStore implements ISyncStore {
     ) {
       throw leaseLost(runId);
     }
+    const installation = this.requireInstallation(run.installationId);
+    this.assertSourceBinding(installation);
+    const binding = this.database.prepare("select binding_revision from sync_runs where id = ?").get(runId);
+    if (binding?.binding_revision !== installation.bindingRevision) throw leaseLost(runId);
     return run;
+  }
+
+  private assertSourceBinding(installation: SyncInstallation): void {
+    const definition = this.requireDefinition(installation);
+    for (const kind of definition.kinds) {
+      const owner = this.database
+        .prepare("select installation_id from sync_source_kinds where source_id = ? and kind = ?")
+        .get(installation.sourceId, kind.kind);
+      if (owner?.installation_id !== installation.id)
+        throw new SyncStoreError(
+          "binding_conflict",
+          "Definition kinds changed; reverify source ownership before running.",
+        );
+    }
+    if (
+      !this.database
+        .prepare("select id from connections where id = ? and revision = ? and service = ?")
+        .get(installation.connectionId, installation.credentialRevision, installation.provider)
+    )
+      throw new SyncStoreError("credential_changed", "Verify and rebind the changed source credential before running.");
+  }
+
+  private requireDefinition(installation: SyncInstallation): SyncDefinitionContract {
+    const definition = this.definitions.find((item) => item.id === installation.definitionId);
+    if (
+      !definition ||
+      definition.provider !== installation.provider ||
+      definition.version !== installation.definitionVersion
+    )
+      throw invalidInput("Installation does not match a registered definition and version.");
+    return definition;
   }
 
   private assertDefinitionVersion(installationId: string, run: SyncRun): void {
@@ -788,11 +814,13 @@ export class SqliteSyncStore implements ISyncStore {
   }
 
   private readSnapshotDeleteCandidates(snapshot: SyncSnapshot): SyncRecord[] {
-    const placeholders = snapshot.models.map(() => "?").join(", ");
+    const placeholders = snapshot.kinds.map(() => "?").join(", ");
     return this.database
       .prepare(
         `
-        select installation_id, model, record_id, payload, payload_hash, revision,
+        select (select source_id from sync_installations where id = installation_id) as source_id,
+          (select provider from sync_installations where id = installation_id) as provider,
+          installation_id, model, record_id, payload, payload_hash, revision,
           created_sequence, last_change_sequence, first_seen_at, last_changed_at,
           deleted_at, last_seen_snapshot_id
         from sync_records
@@ -801,7 +829,7 @@ export class SqliteSyncStore implements ISyncStore {
         order by model, record_id
       `,
       )
-      .all(snapshot.installationId, ...snapshot.models, snapshot.id, snapshot.baselineSequence)
+      .all(snapshot.installationId, ...snapshot.kinds, snapshot.id, snapshot.baselineSequence)
       .map(readRecordRow);
   }
 
@@ -849,7 +877,7 @@ export class SqliteSyncStore implements ISyncStore {
     const row = this.database
       .prepare(
         `
-        select id, definition_id, definition_version, provider, connection_id, config_value,
+        select source_id, credential_revision, binding_revision, id, definition_id, definition_version, provider, connection_id, config_value,
           state, schedule_seconds, next_due_at, last_success_at, created_at, updated_at
         from sync_installations where id = ?
       `,
@@ -897,7 +925,9 @@ export class SqliteSyncStore implements ISyncStore {
     const row = this.database
       .prepare(
         `
-        select installation_id, model, record_id, payload, payload_hash, revision,
+        select (select source_id from sync_installations where id = installation_id) as source_id,
+          (select provider from sync_installations where id = installation_id) as provider,
+          installation_id, model, record_id, payload, payload_hash, revision,
           created_sequence, last_change_sequence, first_seen_at, last_changed_at,
           deleted_at, last_seen_snapshot_id
         from sync_records
@@ -909,7 +939,7 @@ export class SqliteSyncStore implements ISyncStore {
   }
 }
 
-function prepareCommit(input: CommitSyncPageInput): PreparedCommit {
+function prepareCommit(input: CommitSyncPageInput, definition: SyncDefinitionContract): PreparedCommit {
   const installationId = requiredIdentifier(input.installationId, "installation id");
   const runId = requiredIdentifier(input.runId, "run id");
   const lease = normalizeLease(input.lease);
@@ -919,10 +949,13 @@ function prepareCommit(input: CommitSyncPageInput): PreparedCommit {
   const snapshotId = input.snapshotId === undefined ? undefined : requiredIdentifier(input.snapshotId, "snapshot id");
   const keys = new Set<string>();
   const upserts = (input.upserts ?? []).map((record) => {
-    const model = requiredModel(record.model);
-    const id = requiredRecordId(record.id);
+    const model = requiredModel(record.kind);
+    const kind = definition.kinds.find((item) => item.kind === model);
+    if (!kind) throw invalidInput(`Undeclared kind: ${model}.`);
+    const normalized = normalizeSyncRecord(record.record, kind);
+    const id = normalized.id;
     assertUniqueRecord(keys, model, id);
-    const payload = readCanonicalObject(record.payload, `Sync record ${model}/${id}`);
+    const payload = normalized.content;
     return {
       model,
       id,
@@ -932,7 +965,8 @@ function prepareCommit(input: CommitSyncPageInput): PreparedCommit {
     };
   });
   const deletes = (input.deletes ?? []).map((record) => {
-    const model = requiredModel(record.model);
+    const model = requiredModel(record.kind);
+    if (!definition.kinds.some((item) => item.kind === model)) throw invalidInput(`Undeclared kind: ${model}.`);
     const id = requiredRecordId(record.id);
     assertUniqueRecord(keys, model, id);
     return { model, id };
@@ -955,6 +989,9 @@ function readInstallationRow(row: RuntimeRow): SyncInstallation {
   const state = readString(row, "state");
   assertInstallationState(state);
   return {
+    sourceId: readString(row, "source_id"),
+    credentialRevision: readString(row, "credential_revision"),
+    bindingRevision: readNumber(row, "binding_revision"),
     id: readString(row, "id"),
     definitionId: readString(row, "definition_id"),
     definitionVersion: readString(row, "definition_version"),
@@ -1010,11 +1047,13 @@ function readCheckpointRow(row: RuntimeRow): SyncCheckpoint {
 
 function readRecordRow(row: RuntimeRow): SyncRecord {
   return {
+    sourceId: readString(row, "source_id"),
+    provider: readString(row, "provider"),
     installationId: readString(row, "installation_id"),
-    model: readString(row, "model"),
+    kind: readString(row, "model"),
     id: readString(row, "record_id"),
-    payload: parseJson<JsonObject>(readString(row, "payload")),
-    payloadHash: readString(row, "payload_hash"),
+    content: parseJson<JsonObject>(readString(row, "payload")),
+    contentHash: readString(row, "payload_hash"),
     revision: readNumber(row, "revision"),
     createdSequence: readNumber(row, "created_sequence"),
     lastChangeSequence: readNumber(row, "last_change_sequence"),
@@ -1029,6 +1068,7 @@ function readChangeRow(row: RuntimeRow): SyncChange {
   const operation = readString(row, "operation");
   assertChangeOperation(operation);
   return {
+    sourceId: readString(row, "source_id"),
     sequence: readNumber(row, "sequence"),
     eventId: readString(row, "event_id"),
     installationId: readString(row, "installation_id"),
@@ -1036,12 +1076,12 @@ function readChangeRow(row: RuntimeRow): SyncChange {
     connectionId: readString(row, "connection_id"),
     definitionId: readString(row, "definition_id"),
     definitionVersion: readString(row, "definition_version"),
-    model: readString(row, "model"),
+    kind: readString(row, "model"),
     recordId: readString(row, "record_id"),
     operation,
     recordRevision: readNumber(row, "record_revision"),
-    payload: parseJson<JsonObject>(readString(row, "payload")),
-    payloadHash: readString(row, "payload_hash"),
+    content: parseJson<JsonObject>(readString(row, "payload")),
+    contentHash: readString(row, "payload_hash"),
     deletedAt: readOptionalString(row, "deleted_at"),
     runId: readString(row, "run_id"),
     committedAt: readString(row, "committed_at"),
@@ -1057,7 +1097,7 @@ function readSnapshotRow(row: RuntimeRow): SyncSnapshot {
     id: readString(row, "id"),
     installationId: readString(row, "installation_id"),
     runId: readString(row, "run_id"),
-    models: parseJson<string[]>(readString(row, "models_value")),
+    kinds: parseJson<string[]>(readString(row, "models_value")),
     baselineSequence: readNumber(row, "baseline_sequence"),
     state,
     startedAt: readString(row, "started_at"),
@@ -1084,14 +1124,6 @@ function readOutboxRow(row: RuntimeRow): SyncOutboxRecord {
   };
 }
 
-function readCanonicalObject(value: unknown, label: string): ReturnType<typeof canonicalizeJsonObject> {
-  try {
-    return canonicalizeJsonObject(value);
-  } catch (error) {
-    throw invalidInput(`${label} is invalid: ${error instanceof Error ? error.message : "unknown JSON error"}`);
-  }
-}
-
 function readCanonicalValue(value: unknown, label: string): ReturnType<typeof canonicalizeJsonValue> {
   try {
     return canonicalizeJsonValue(value);
@@ -1101,7 +1133,7 @@ function readCanonicalValue(value: unknown, label: string): ReturnType<typeof ca
 }
 
 function requiredIdentifier(value: string, label: string): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > maximumIdentifierLength) {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > maximumIdentifierLength) {
     throw invalidInput(`${label} must be a non-empty string no longer than ${maximumIdentifierLength} characters.`);
   }
   return value;
@@ -1131,16 +1163,6 @@ function requiredTimestamp(value: string, label: string): string {
 function readRevision(value: number): number {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw invalidInput("expectedCheckpointRevision must be a non-negative safe integer.");
-  }
-  return value;
-}
-
-function readScheduleSeconds(value: number | undefined): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw invalidInput("scheduleSeconds must be a positive safe integer.");
   }
   return value;
 }
@@ -1247,16 +1269,4 @@ function checkpointConflict(installationId: string, expected: number, actual?: n
     "checkpoint_conflict",
     `Expected checkpoint revision ${expected} for sync installation ${installationId}${suffix}.`,
   );
-}
-
-function runInTransaction<T>(database: DatabaseSync, work: () => T): T {
-  database.exec("begin immediate");
-  try {
-    const result = work();
-    database.exec("commit");
-    return result;
-  } catch (error) {
-    database.exec("rollback");
-    throw error;
-  }
 }
