@@ -57,10 +57,10 @@ export async function collectNodes(
     if (!page.cursor) break;
     if (cursors.has(page.cursor)) throw providerResponseError("GitHub pagination repeated a cursor.");
     cursors.add(page.cursor);
-    const data = await context.provider.graphql(
-      `query SyncRelated($id: ID!, $after: String) { node(id: $id) { ... on ${type} { ${field}(first: 50, after: $after) { nodes { ${selection} } ${pageSelection} } } } }`,
-      { id, after: page.cursor },
-    );
+    const data = await context.provider.request("graphql", {
+      query: `query SyncRelated($id: ID!, $after: String) { node(id: $id) { ... on ${type} { ${field}(first: 50, after: $after) { nodes { ${selection} } ${pageSelection} } } } }`,
+      variables: { id, after: page.cursor },
+    });
     page = readConnection(requiredResponseRecord(data.node, "GitHub parent")[field]);
   }
   if (nodes.length !== expected) throw providerResponseError("GitHub collection was truncated; retry the record.");

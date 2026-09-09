@@ -5,6 +5,7 @@ import { readBoundedResponseBytes } from "../../core/request.ts";
 import { SyncStoreError } from "../../sync/sync-store.ts";
 import {
   requiredResponseRecord,
+  requiredInputString,
   providerFetch,
   runProviderRequest,
   ProviderRequestError,
@@ -43,8 +44,12 @@ export function createGitHubSyncProvider({ connection, signal }: SyncProviderCon
     });
   };
   return {
-    async graphql(query, variables = {}) {
-      const envelope = requiredResponseRecord(await request(query, variables), "GitHub GraphQL");
+    async request(operation, input = {}) {
+      const query = requiredInputString(input.query, "query");
+      if (operation !== "graphql" || !/^\s*query\b/.test(query) || /\b(mutation|subscription)\b/.test(query))
+        throw new SyncStoreError("invalid_input", "Sync GraphQL accepts queries only.");
+      const variables = input.variables as JsonObject | undefined;
+      const envelope = requiredResponseRecord(await request(query, variables ?? {}), "GitHub GraphQL");
       if (
         Array.isArray(envelope.errors) &&
         envelope.errors.some((item) => {

@@ -1,5 +1,7 @@
 # GitHub pull request sync
 
+For Granola summaries and transcripts, see the [Granola MCP sync](../granola/README.md).
+
 The sync schema is still in development. Incompatible schema changes require a fresh development database; experimental sync state is not migrated.
 
 The Node/SQLite server includes the compiled `github.pull-requests` definition. Connect a GitHub OAuth user token or classic personal access token through the existing connection flow. The token must expose `X-OAuth-Scopes` during `/user` verification; tokens without that evidence (including fine-grained/app tokens) cannot establish a sync source yet. Include `repo` when private repositories are required. Records cover only what the grant can access.

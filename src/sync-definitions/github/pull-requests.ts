@@ -21,7 +21,7 @@ const hydrateQuery = `query SyncPullRequest($id: ID!) { node(id: $id) { ... on P
 
 async function hydrate(context: SyncContext, id: string): Promise<SyncRecordInput> {
   const pull = requiredResponseRecord(
-    (await context.provider.graphql(hydrateQuery, { id })).node,
+    (await context.provider.request("graphql", { query: hydrateQuery, variables: { id } })).node,
     "GitHub pull request",
   );
   if (pull.id !== id) throw providerResponseError("GitHub returned a different pull request identity.");
@@ -40,10 +40,10 @@ async function hydrate(context: SyncContext, id: string): Promise<SyncRecordInpu
     );
   const latest = requiredResponseRecord(
     (
-      await context.provider.graphql(
-        "query SyncVerifyPull($id: ID!) { node(id: $id) { ... on PullRequest { updatedAt headRefOid } } }",
-        { id },
-      )
+      await context.provider.request("graphql", {
+        query: "query SyncVerifyPull($id: ID!) { node(id: $id) { ... on PullRequest { updatedAt headRefOid } } }",
+        variables: { id },
+      })
     ).node,
     "GitHub pull request",
   );
@@ -87,10 +87,11 @@ async function* discover(context: SyncContext): AsyncGenerator<SyncPage> {
   while (true) {
     context.signal.throwIfAborted();
     if (accessible && !checkpoint.repositoryId) {
-      const data = await context.provider.graphql(
-        "query SyncRepositories($after: String) { viewer { repositories(first: 1, after: $after, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER], orderBy: {field: CREATED_AT, direction: ASC}) { edges { cursor node { id } } pageInfo { hasNextPage } } } }",
-        { after: checkpoint.repositoryCursor },
-      );
+      const data = await context.provider.request("graphql", {
+        query:
+          "query SyncRepositories($after: String) { viewer { repositories(first: 1, after: $after, affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER], orderBy: {field: CREATED_AT, direction: ASC}) { edges { cursor node { id } } pageInfo { hasNextPage } } } }",
+        variables: { after: checkpoint.repositoryCursor },
+      });
       const repositories = requiredResponseRecord(
         requiredResponseRecord(data.viewer, "GitHub viewer").repositories,
         "GitHub repositories",
@@ -119,7 +120,7 @@ async function* discover(context: SyncContext): AsyncGenerator<SyncPage> {
       : `query SyncDiscover($after: String) { viewer { ${collection} } }`;
     const variables: JsonObject = { after: checkpoint.cursor };
     if (accessible) variables.id = checkpoint.repositoryId;
-    const data = await context.provider.graphql(query, variables);
+    const data = await context.provider.request("graphql", { query, variables });
     const list = requiredResponseRecord(
       requiredResponseRecord(accessible ? data.node : data.viewer, "GitHub discovery parent").pullRequests,
       "GitHub discovery",
