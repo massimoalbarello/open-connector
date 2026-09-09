@@ -1,5 +1,5 @@
 import type { SyncDefinition } from "./sync-definition.ts";
-import type { JsonObject, SyncInstallation, SyncRun } from "./sync-store.ts";
+import type { JsonObject, SyncInstallation } from "./sync-store.ts";
 
 export interface SyncBindingCandidate {
   config?: JsonObject;
@@ -7,15 +7,6 @@ export interface SyncBindingCandidate {
   connectionName: string;
   credentialRevision: string;
   definitionId: string;
-}
-export interface SyncScheduleStatus {
-  installations: SyncInstallation[];
-  runs: SyncRun[];
-  bindingErrors: SyncBindingCandidateError[];
-}
-export interface SyncBindingCandidateError extends SyncBindingCandidate {
-  errorCode: string;
-  nextAttemptAt: string;
 }
 export interface SyncScheduleResult {
   installationId: string;
@@ -43,5 +34,4 @@ export interface ISyncScheduleStore {
   complete(input: SyncScheduleResult): void;
   recover(now: string): number;
   configure(input: ConfigureSyncScheduleInput): void;
-  status(): Promise<SyncScheduleStatus>;
 }

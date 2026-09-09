@@ -3,12 +3,10 @@ import type {
   ScheduledSyncInstallation,
   ISyncScheduleStore,
   SyncBindingCandidate,
-  SyncBindingCandidateError,
   SyncScheduleResult,
-  SyncScheduleStatus,
 } from "./schedule-store.ts";
 import type { SyncDefinition } from "./sync-definition.ts";
-import type { JsonObject, SyncInstallation, SyncRun } from "./sync-store.ts";
+import type { JsonObject, SyncInstallation } from "./sync-store.ts";
 import type { DatabaseSync } from "node:sqlite";
 
 import { parseJson, readString } from "../server/storage/runtime-sql.ts";
@@ -17,7 +15,6 @@ import { SyncStoreError } from "./sync-store.ts";
 
 interface ScheduleReaders {
   installation(id: string): SyncInstallation | undefined;
-  run(id: string): SyncRun | undefined;
 }
 
 /** Cadence belongs to the logical source; failed identity checks belong to a credential revision. */
@@ -227,31 +224,6 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
           .run(now, input.installationId);
       }
     });
-  }
-
-  async status(): Promise<SyncScheduleStatus> {
-    const installations = this.database
-      .prepare("select id from sync_installations order by created_at, id")
-      .all()
-      .map((row) => this.readers.installation(readString(row, "id"))!);
-    const runs = this.database
-      .prepare("select id from sync_runs order by started_at desc, id desc limit 100")
-      .all()
-      .map((row) => this.readers.run(readString(row, "id"))!);
-    const bindingErrors: SyncBindingCandidateError[] = this.database
-      .prepare(
-        `select b.*, c.connection_name from sync_binding_checks b join connections c on c.id = b.connection_id where b.last_error is not null and b.credential_revision = c.revision order by b.next_attempt_at`,
-      )
-      .all()
-      .map((row) => ({
-        connectionId: readString(row, "connection_id"),
-        connectionName: readString(row, "connection_name"),
-        credentialRevision: readString(row, "credential_revision"),
-        definitionId: readString(row, "definition_id"),
-        errorCode: readString(row, "last_error"),
-        nextAttemptAt: readString(row, "next_attempt_at"),
-      }));
-    return { installations, runs, bindingErrors };
   }
 }
 

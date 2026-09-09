@@ -41,6 +41,7 @@ import { canonicalizeJsonValue } from "./record-hash.ts";
 import { SqliteSyncDeliveryStore } from "./sqlite-delivery-store.ts";
 import { SqliteSyncScheduleStore } from "./sqlite-schedule-store.ts";
 import { SqliteSyncSourceStore } from "./sqlite-source-store.ts";
+import { SqliteSyncStatusStore } from "./sqlite-status-store.ts";
 import { runSyncTransaction } from "./sqlite-sync-transaction.ts";
 import { SyncStoreError } from "./sync-store.ts";
 
@@ -110,6 +111,7 @@ export class SqliteSyncStore implements ISyncStore {
   readonly sources: SqliteSyncSourceStore;
   readonly delivery: SqliteSyncDeliveryStore;
   readonly schedule: SqliteSyncScheduleStore;
+  readonly status: SqliteSyncStatusStore;
   private readonly definitions: readonly SyncDefinitionContract[];
 
   constructor(
@@ -120,6 +122,9 @@ export class SqliteSyncStore implements ISyncStore {
     this.delivery = new SqliteSyncDeliveryStore(database, codec);
     this.database = database;
     this.schedule = new SqliteSyncScheduleStore(database, {
+      installation: (id) => this.readInstallation(id),
+    });
+    this.status = new SqliteSyncStatusStore(database, {
       installation: (id) => this.readInstallation(id),
       run: (id) => this.readRun(id),
     });

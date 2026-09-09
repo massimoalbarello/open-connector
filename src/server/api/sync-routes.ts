@@ -29,7 +29,7 @@ export function registerSyncRoutes(
   app.get("/api/sync/status", async (context) =>
     context.json({
       acquisitionRunning: runner.busy,
-      ...(await store.schedule.status()),
+      ...(await store.status.read()),
       receivers: await store.delivery.list(),
     }),
   );

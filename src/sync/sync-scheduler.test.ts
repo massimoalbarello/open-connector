@@ -149,7 +149,7 @@ describe("embedded sync scheduler", () => {
     f.scheduler.tick();
     await vi.waitFor(() => expect(f.state.visits).toBe(1));
     await vi.waitFor(() => expect(f.runner.busy).toBe(false));
-    const first = (await f.database.syncStore.schedule.status()).installations[0]!;
+    const first = (await f.database.syncStore.status.read()).installations[0]!;
     expect(first.scheduleSeconds).toBe(60);
     expect(Date.parse(first.nextDueAt!) - Date.parse(first.lastSuccessAt!)).toBe(60_000);
     f.scheduler.tick();
@@ -163,7 +163,7 @@ describe("embedded sync scheduler", () => {
     f.scheduler.tick();
     await vi.waitFor(() => expect(f.state.visits).toBe(2));
     await vi.waitFor(() => expect(f.runner.busy).toBe(false));
-    const status = await f.database.syncStore.schedule.status();
+    const status = await f.database.syncStore.status.read();
     expect(status.runs).toHaveLength(2);
     expect(status.runs.every((run) => run.reason === "schedule")).toBe(true);
     expect((await f.database.syncStore.getRecord(first.id, "record", "0"))?.revision).toBe(2);
@@ -177,18 +177,18 @@ describe("embedded sync scheduler", () => {
     const f = await fixture();
     f.state.verifyFails = true;
     f.scheduler.tick();
-    await vi.waitFor(async () => expect((await f.database.syncStore.schedule.status()).bindingErrors).toHaveLength(1));
+    await vi.waitFor(async () => expect((await f.database.syncStore.status.read()).bindingErrors).toHaveLength(1));
     await f.restart();
     f.scheduler.tick();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(f.state.verifications).toBe(1);
-    expect(JSON.stringify(await f.database.syncStore.schedule.status())).not.toContain("private-secret");
+    expect(JSON.stringify(await f.database.syncStore.status.read())).not.toContain("private-secret");
     f.state.verifyFails = false;
     await f.database.connectionStore.set("github", "default", { ...f.credential, apiKey: "replacement" });
     f.scheduler.tick();
     await vi.waitFor(() => expect(f.state.visits).toBe(1));
     await vi.waitFor(() => expect(f.runner.busy).toBe(false));
-    expect((await f.database.syncStore.schedule.status()).bindingErrors).toHaveLength(0);
+    expect((await f.database.syncStore.status.read()).bindingErrors).toHaveLength(0);
   });
 
   it("continues a targeted backfill after restart without changing event IDs or revisions", async () => {
@@ -240,7 +240,7 @@ describe("embedded sync scheduler", () => {
     await vi.waitFor(() => expect(entered).toBe(true));
     const other = new SqliteRuntimeDatabase(f.path, { syncDefinitions: [definition] });
     try {
-      const installation = (await f.database.syncStore.schedule.status()).installations[0]!;
+      const installation = (await f.database.syncStore.status.read()).installations[0]!;
       await expect(
         other.syncStore.startRun({
           id: "other",
@@ -254,7 +254,7 @@ describe("embedded sync scheduler", () => {
       ).rejects.toMatchObject({ code: "run_busy" });
       await f.scheduler.stop();
       expect(await outcome).toBeInstanceOf(Error);
-      expect((await f.database.syncStore.schedule.status()).runs[0]?.state).toBe("cancelled");
+      expect((await f.database.syncStore.status.read()).runs[0]?.state).toBe("cancelled");
       await expect(f.runner.run({ definitionId: definition.id })).rejects.toThrow("stopping");
     } finally {
       other.close();
@@ -342,7 +342,7 @@ it("runs the compiled GitHub sync through the scheduler and real HTTP receiver, 
     enabled: true,
   });
   f.scheduler.tick();
-  await vi.waitFor(async () => expect((await f.database.syncStore.schedule.status()).runs[0]?.state).toBe("succeeded"));
+  await vi.waitFor(async () => expect((await f.database.syncStore.status.read()).runs[0]?.state).toBe("succeeded"));
   f.scheduler.tick();
   await vi.waitFor(() => expect(received).toHaveLength(1));
   expect(received[0]?.content?.body).toContain("Commit 300");
