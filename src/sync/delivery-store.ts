@@ -1,7 +1,9 @@
-import type { JsonObject, SyncChangeOperation } from "./sync-store.ts";
+import { recordDeliveryContract } from "./record-delivery-contract.generated.ts";
 
-export const maximumDeliveryBytes: number = 16 * 1024 * 1024;
-export const maximumRecordBytes: number = 8 * 1024 * 1024;
+export type { SyncDeliveryEnvelope, SyncDeliveryRecord } from "./record-delivery-contract.generated.ts";
+
+export const maximumDeliveryBytes: number = recordDeliveryContract.maximumDeliveryBytes;
+export const maximumRecordBytes: number = recordDeliveryContract.maximumRecordBytes;
 
 export interface SyncDestinationInput {
   url: string;
@@ -34,24 +36,6 @@ export interface SyncDeliveryStatus {
   attemptCount: number;
   lastError?: string;
   nextAttemptAt?: string;
-}
-/** Stable event and source identities let receivers deduplicate and reject stale revisions. */
-export interface SyncDeliveryRecord {
-  eventId: string;
-  provider: string;
-  sourceId: string;
-  kind: string;
-  id: string;
-  revision: number;
-  operation: SyncChangeOperation;
-  contentHash: string;
-  content?: JsonObject;
-  committedAt: string;
-}
-export interface SyncDeliveryEnvelope {
-  version: 1;
-  batchId: string;
-  records: SyncDeliveryRecord[];
 }
 export interface SyncDeliveryLease {
   id: string;

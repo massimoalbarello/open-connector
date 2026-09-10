@@ -1,10 +1,11 @@
 import type { SyncDeliveryEnvelope, SyncDeliveryRecord } from "../../src/sync/delivery-store.ts";
 
+import { Validator } from "@cfworker/json-schema";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
-import { z } from "zod";
 import { maximumDeliveryBytes } from "../../src/sync/delivery-store.ts";
+import { recordDeliveryEnvelopeSchema } from "../../src/sync/record-delivery-contract.generated.ts";
 
 interface LoggingReceiverOptions {
   databasePath: string;
@@ -16,27 +17,7 @@ interface LoggingReceiver {
   url: string;
   close(): Promise<void>;
 }
-const envelopeSchema = z.strictObject({
-  version: z.literal(1),
-  batchId: z.string().min(1),
-  records: z
-    .array(
-      z.strictObject({
-        eventId: z.string().min(1),
-        provider: z.string().min(1),
-        sourceId: z.string().min(1),
-        kind: z.string().min(1),
-        id: z.string().min(1),
-        revision: z.number().int().positive(),
-        operation: z.enum(["added", "updated", "deleted"]),
-        contentHash: z.string().min(1),
-        content: z.record(z.string(), z.json()).optional(),
-        committedAt: z.iso.datetime(),
-      }),
-    )
-    .min(1)
-    .max(50),
-});
+const envelopeValidator = new Validator(recordDeliveryEnvelopeSchema, "2020-12", false);
 
 /** A small durable logging receiver: persist/deduplicate a whole batch before returning 200. */
 export async function startLoggingReceiver(options: LoggingReceiverOptions): Promise<LoggingReceiver> {
@@ -71,7 +52,9 @@ export async function startLoggingReceiver(options: LoggingReceiverOptions): Pro
         chunks.push(chunk);
       }
       const body = Buffer.concat(chunks).toString("utf8");
-      const envelope = envelopeSchema.parse(JSON.parse(body)) as SyncDeliveryEnvelope;
+      const parsed: unknown = JSON.parse(body);
+      if (!envelopeValidator.validate(parsed).valid) throw new Error("Invalid record delivery envelope.");
+      const envelope = parsed as SyncDeliveryEnvelope;
       const hash = createHash("sha256").update(body).digest("hex");
       const receipt = database.prepare("select body_hash from receipts where batch_id = ?").get(envelope.batchId);
       if (receipt) {

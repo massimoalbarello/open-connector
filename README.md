@@ -276,6 +276,7 @@ Issues and pull requests are welcome.
 - [Gmail OAuth and SDK tutorial](docs/gmail-oauth-sdk.md)
 - [Instagram OAuth and Actions](docs/instagram-oauth.md)
 - [Runtime API and MCP](docs/runtime-api.md)
+- [Record delivery contract](docs/record-delivery.md)
 - [Fly.io deployment](docs/fly-io.md)
 - [Standalone binary and nibrun deployment](docs/single-binary.md)
 - [Cloudflare deployment](docs/cloudflare.md)

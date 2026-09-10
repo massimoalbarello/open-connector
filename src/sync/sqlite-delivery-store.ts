@@ -18,6 +18,7 @@ import { assertPublicHttpUrl } from "../core/request.ts";
 import { randomUUIDv7 } from "../core/uuid-v7.ts";
 import { parseJson, readString } from "../server/storage/runtime-sql.ts";
 import { maximumDeliveryBytes } from "./delivery-store.ts";
+import { recordDeliveryContract } from "./record-delivery-contract.generated.ts";
 import { runSyncTransaction } from "./sqlite-sync-transaction.ts";
 import { SyncStoreError } from "./sync-store.ts";
 
@@ -190,9 +191,13 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
         const rows = this.database
           .prepare(`select c.*, i.source_id from sync_outbox o join sync_changes c on c.sequence = o.change_sequence
           join sync_installations i on i.id = c.installation_id
-          where o.state = 'pending' and o.batch_id is null order by c.sequence limit 50`)
-          .iterate();
-        const envelope: SyncDeliveryEnvelope = { version: 1, batchId: id, records: [] };
+          where o.state = 'pending' and o.batch_id is null order by c.sequence limit ?`)
+          .iterate(recordDeliveryContract.maximumBatchRecords);
+        const envelope: SyncDeliveryEnvelope = {
+          version: recordDeliveryContract.version,
+          batchId: id,
+          records: [],
+        };
         const selected: number[] = [];
         for (const row of rows) {
           envelope.records.push(readDeliveryRecord(row));
@@ -241,7 +246,11 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
         .prepare(`select c.*, i.source_id from sync_outbox o join sync_changes c on c.sequence = o.change_sequence
         join sync_installations i on i.id = c.installation_id where o.batch_id = ? order by c.sequence`)
         .all(id);
-      const envelope: SyncDeliveryEnvelope = { version: 1, batchId: id, records: rows.map(readDeliveryRecord) };
+      const envelope: SyncDeliveryEnvelope = {
+        version: recordDeliveryContract.version,
+        batchId: id,
+        records: rows.map(readDeliveryRecord),
+      };
       return {
         id,
         owner,
@@ -315,19 +324,20 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
 
 function readDeliveryRecord(row: RuntimeRow): SyncDeliveryRecord {
   const operation = readString(row, "operation") as SyncDeliveryRecord["operation"];
-  const content = parseJson<SyncDeliveryRecord["content"]>(readString(row, "payload")) ?? undefined;
+  const content =
+    parseJson<Extract<SyncDeliveryRecord, { operation: "added" | "updated" }>["content"]>(readString(row, "payload")) ??
+    undefined;
   if (operation !== "deleted" && !content)
     throw new SyncStoreError("invalid_input", "Pending delivery payload is unavailable.");
-  return {
+  const common = {
     eventId: readString(row, "event_id"),
     provider: readString(row, "provider"),
     sourceId: readString(row, "source_id"),
     kind: readString(row, "model"),
     id: readString(row, "record_id"),
     revision: Number(row.record_revision),
-    operation,
     contentHash: readString(row, "payload_hash"),
-    content: operation === "deleted" ? undefined : content,
     committedAt: readString(row, "committed_at"),
   };
+  return operation === "deleted" ? { ...common, operation } : { ...common, operation, content: content! };
 }

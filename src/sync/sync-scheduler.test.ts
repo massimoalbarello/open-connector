@@ -541,8 +541,8 @@ it("runs the compiled GitHub sync through the scheduler and real HTTP receiver, 
   await vi.waitFor(async () => expect((await f.database.syncStore.status.read()).runs[0]?.state).toBe("succeeded"));
   f.scheduler.tick();
   await vi.waitFor(() => expect(received).toHaveLength(1));
-  expect(received[0]?.content?.body).toContain("Commit 300");
-  expect(received[0]?.content?.body).toContain("Thread 50");
+  expect(received[0]?.operation !== "deleted" ? received[0]?.content.body : undefined).toContain("Commit 300");
+  expect(received[0]?.operation !== "deleted" ? received[0]?.content.body : undefined).toContain("Thread 50");
   expect(received[0]?.revision).toBe(1);
   await vi.waitFor(async () => expect(f.database.syncStore.delivery.status().pendingRecords).toBe(0));
   await f.restart();
@@ -556,7 +556,9 @@ it("runs the compiled GitHub sync through the scheduler and real HTTP receiver, 
   expect(received[1]?.id).toBe(received[0]?.id);
   expect(received[1]?.sourceId).toBe(received[0]?.sourceId);
   expect(received[1]?.revision).toBe(2);
-  expect(received[1]?.content?.body).toContain("An old child comment was corrected");
+  expect(received[1]?.operation !== "deleted" ? received[1]?.content.body : undefined).toContain(
+    "An old child comment was corrected",
+  );
 });
 
 it("manages syncs through authenticated routes without losing committed progress", async () => {
