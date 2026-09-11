@@ -36,8 +36,10 @@ export function parseMeetings(text: string): GranolaMeeting[] {
   try {
     // Granola does not need DTDs. Do not expand provider-supplied custom entities.
     if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error("Unsupported XML declaration");
-    SyntaxValidator.validate(text);
-    document = requiredResponseRecord(xml.parse(text), "Granola meetings");
+    // MCP returns XML fragments: free-plan discovery includes an access_notice beside meetings_data.
+    const response = `<granola_response>${text}</granola_response>`;
+    SyntaxValidator.validate(response);
+    document = requiredResponseRecord(xml.parse(response).granola_response, "Granola meetings");
   } catch {
     throw providerResponseError("Granola returned malformed meeting XML.");
   }

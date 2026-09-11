@@ -56,7 +56,11 @@ function protocol() {
       const text = transcript
         ? JSON.stringify({ id: "meeting", transcript: "[00:01] Ada: Yes & thanks." })
         : `<meetings_data count="1"><meeting id="meeting" title="Planning" date="Sep 8, 2026"><known_participants>Ada &lt;ada@example.com&gt;</known_participants><summary>${state.summary}</summary></meeting></meetings_data>`;
-      result = { content: [{ type: "text", text }], isError: transcript && state.transcriptError };
+      const notice =
+        request.params.name === "list_meetings"
+          ? "<access_notice>Only recent personal notes are available on this plan.</access_notice>\n\n"
+          : "";
+      result = { content: [{ type: "text", text: notice + text }], isError: transcript && state.transcriptError };
     } else throw new Error(`Unexpected MCP method ${request.method}`);
     // Exercise the SDK's SSE framing, including a keepalive and a split data frame.
     const frame = `: keepalive\n\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n\n`;

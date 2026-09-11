@@ -140,6 +140,19 @@ describe("Granola meeting acquisition", () => {
     );
   });
 
+  it("accepts access notices beside meeting data without weakening fragment validation", () => {
+    const notice = "<access_notice>Only recent personal notes are available on this plan.</access_notice>";
+    const response = `${notice}\n\n${list(["a"])}`;
+    const meetings = parseMeetings(response);
+    expect(meetings).toEqual(parseMeetings(list(["a"])));
+    expect(renderMeeting(meetings[0]!).body).not.toContain("Only recent personal notes");
+    expect(() => parseMeetings(`<access_notice>Unclosed notice\n${list(["a"])}`)).toThrow("malformed");
+    expect(() => parseMeetings(`${notice}<meetings_data count="2">${details("a")}</meetings_data>`)).toThrow(
+      "truncated",
+    );
+    expect(() => parseMeetings(notice)).toThrow("meeting list");
+  });
+
   it("preserves identity and detects title changes while normalizing participant order", async () => {
     const meeting = parseMeetings(list(["a"]))[0]!;
     const record = renderMeeting(meeting, "Transcript");
