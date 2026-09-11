@@ -121,15 +121,7 @@ export function renderMeeting(meeting: GranolaMeeting, transcript?: string): Syn
   const body = [`# ${title}`, "", `- Granola: ${sourceUrl}`];
   if (meeting.date) body.push(`- Meeting date: ${meeting.date}`);
   if (labels.length) body.push(`- Attendees: ${[...new Set(labels)].join(", ")}`);
-  body.push(
-    "",
-    "## Summary",
-    "",
-    summary,
-    "",
-    "## Transcript",
-    "",
-    transcript ?? "Not included in this sync. Transcript access requires a paid Granola plan.",
-  );
+  body.push("", "## Summary", "", summary);
+  if (transcript) body.push("", "## Transcript", "", transcript);
   return { id: meeting.id, title, body: body.join("\n"), sourceUrl, participants };
 }

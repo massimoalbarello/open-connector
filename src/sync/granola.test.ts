@@ -127,7 +127,8 @@ describe("Granola MCP protocol and durable acquisition", () => {
     const first = await runner.run(input);
     const record = await database.syncStore.getRecord(first.installationId!, "meeting", "meeting");
     expect(record?.content?.body).toContain(state.summary);
-    expect(record?.content?.body).toContain("Not included in this sync");
+    expect(record?.content?.body).not.toContain("## Transcript");
+    expect(record?.content?.body).not.toContain("Not included in this sync");
     await runner.run(input);
     expect((await database.syncStore.listChanges()).items).toHaveLength(1);
     state.summary = "Summary revised before reprocessing.";

@@ -103,6 +103,7 @@ transcripts must succeed before a record is saved; a failed read keeps existing 
 resumes from the last committed meeting.
 
 Records contain a title, Markdown summary, source link, and available attendee identities.
+When no transcript is included, the Markdown omits the transcript section entirely.
 Private notes are omitted. Each completed scan starts a fresh discovery of the rolling window,
 so edits within it are picked up; older meetings and edits outside that window are not covered.
 Discovery is capped at 1,000 meetings and rejects reported truncation. Missing meetings never

@@ -44,7 +44,8 @@ describe("Granola meeting acquisition", () => {
       id: "a",
       content: { value: { title: "Roadmap & delivery" } },
     });
-    expect(record.body).toContain("Not included in this sync");
+    expect(record.body).not.toContain("## Transcript");
+    expect(record.body).not.toContain("Not included in this sync");
     expect(request.mock.calls.map(([name]) => name)).toEqual(["list_meetings", "get_meetings"]);
   });
   it("combines both endpoints into deterministic Markdown without inventing source timestamps", async () => {
