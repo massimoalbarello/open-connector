@@ -2,13 +2,13 @@ import type { Schema } from "@cfworker/json-schema";
 
 /** Generated from docs/record-delivery.openapi.yaml. Do not hand-edit. */
 export const recordDeliveryContract: {
-  readonly version: 2;
+  readonly version: 1;
   readonly maximumBatchRecords: 50;
   readonly maximumDeliveryBytes: 16777216;
   readonly maximumRecordBytes: 8388608;
   readonly maximumAttributesBytes: 16384;
 } = {
-  version: 2,
+  version: 1,
   maximumBatchRecords: 50,
   maximumDeliveryBytes: 16777216,
   maximumRecordBytes: 8388608,
@@ -25,7 +25,7 @@ export const recordDeliveryEnvelopeSchema: Schema = {
   "x-open-connector-maximum-record-bytes": 8388608,
   properties: {
     version: {
-      const: 2,
+      const: 1,
     },
     batchId: {
       type: "string",
@@ -262,7 +262,7 @@ export const recordDeliveryEnvelopeSchema: Schema = {
  * A durable batch delivered by OpenConnector to one configured destination.
  */
 export interface SyncDeliveryEnvelope {
-  version: 2;
+  version: 1;
   /**
    * Stable batch identity. Retries preserve this value and the exact request body.
    */

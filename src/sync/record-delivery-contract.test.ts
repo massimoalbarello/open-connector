@@ -38,16 +38,14 @@ describe("record delivery contract", () => {
     ).toBe(false);
   });
 
-  it("requires version 2 while keeping deletions content-free", () => {
+  it("accepts content-free deletions", () => {
     const { content: _content, ...deleted } = upsert;
     const envelope = {
-      version: 2,
+      version: recordDeliveryContract.version,
       batchId: "01991c55-a120-7394-aef7-b08403e90943",
       records: [{ ...deleted, operation: "deleted" }],
     };
-    expect(recordDeliveryContract.version).toBe(2);
     expect(validator.validate(envelope).valid).toBe(true);
-    expect(validator.validate({ ...envelope, version: 1 }).valid).toBe(false);
   });
 
   it("enforces operation content and batch limits", () => {

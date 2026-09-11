@@ -1,7 +1,7 @@
 openapi: 3.1.1
 info:
   title: OpenConnector record delivery contract
-  version: 2.0.0
+  version: 1.0.0
   description: The webhook contract implemented by every OpenConnector record destination.
 paths: {}
 webhooks:
@@ -52,7 +52,7 @@ components:
       x-open-connector-maximum-record-bytes: 8388608
       properties:
         version:
-          const: 2
+          const: 1
         batchId:
           type: string
           format: uuid
