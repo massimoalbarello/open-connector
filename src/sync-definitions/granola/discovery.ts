@@ -27,7 +27,7 @@ const discoveryBatchSize = 100;
 
 /**
  * Scan every accessible meeting. MCP has date filters but no meeting-page cursor. Inspect its
- * advertised schema each run: use the full ISO calendar through the next UTC date
+ * advertised schema each run: scan from Granola's founding year through the next UTC date
  * when custom ranges are supported, otherwise send no filters and accept the server's scope.
  * Never infer a subscription, ownership restriction, or rolling lookback from account metadata.
  *
@@ -125,7 +125,8 @@ async function startScan(context: SyncContext): Promise<MeetingScan> {
         ranges: custom
           ? [
               {
-                start: "0001-01-01",
+                // Granola began in early 2023, before its public launch: https://www.granola.ai/blog/series-a
+                start: "2023-01-01",
                 end: new Date(Date.parse(context.startedAt) + dayMilliseconds).toISOString().slice(0, 10),
               },
             ]

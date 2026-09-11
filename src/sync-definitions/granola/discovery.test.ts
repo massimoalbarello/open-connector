@@ -65,7 +65,7 @@ function fixture(meetings: Meeting[], custom = true) {
 describe("Granola history discovery", () => {
   it("covers all accessible history and accepts more than 1,000 meetings on one date", async () => {
     const meetings = [
-      { id: "historical", date: "2001-04-03" },
+      { id: "historical", date: "2023-01-01" },
       ...Array.from({ length: 1205 }, (_, index) => ({ id: `meeting-${index}`, date: "2026-09-08" })),
     ];
     const { context, request } = fixture(meetings);
@@ -75,7 +75,7 @@ describe("Granola history discovery", () => {
     );
     expect(request.mock.calls.find(([operation]) => operation === "list_meetings")?.[1]).toEqual({
       time_range: "custom",
-      custom_start: "0001-01-01",
+      custom_start: "2023-01-01",
       custom_end: "2026-09-10",
     });
     for (const batch of batches) {
@@ -108,13 +108,13 @@ describe("Granola history discovery", () => {
   it("resumes fixed ranges without moving their dates and reconciles IDs inserted behind the cursor next cycle", async () => {
     const meetings = Array.from({ length: 13 }, (_, index) => ({
       id: `meeting-${String(index).padStart(2, "0")}`,
-      date: "2001-04-03",
+      date: "2023-04-03",
     }));
     const { context, request } = fixture(meetings);
     const iterator = discover(context);
     const first = (await iterator.next()).value!;
     await iterator.return(undefined);
-    meetings.push({ id: "inserted-before-cursor", date: "2001-04-03" });
+    meetings.push({ id: "inserted-before-cursor", date: "2023-04-03" });
     request.mockClear();
     const resumed = await Array.fromAsync(
       discover({ ...context, checkpoint: first.checkpoint, startedAt: "2026-10-09T12:00:00.000Z" }),
@@ -122,7 +122,7 @@ describe("Granola history discovery", () => {
     expect(resumed.flatMap((batch) => batch.ids)).toEqual(["meeting-10", "meeting-11", "meeting-12"]);
     expect(request.mock.calls.find(([operation]) => operation === "list_meetings")?.[1]).toEqual({
       time_range: "custom",
-      custom_start: "0001-01-01",
+      custom_start: "2023-01-01",
       custom_end: "2026-09-10",
     });
     const nextCycle = await Array.fromAsync(discover({ ...context, checkpoint: resumed.at(-1)!.checkpoint }));
@@ -130,7 +130,7 @@ describe("Granola history discovery", () => {
   });
 
   it("uses server defaults when custom ranges are unavailable and picks up newly advertised history", async () => {
-    const { context, state, request } = fixture([{ id: "accessible", date: "2001-04-03" }], false);
+    const { context, state, request } = fixture([{ id: "accessible", date: "2023-04-03" }], false);
     const batches = await Array.fromAsync(discover(context));
     expect(batches.flatMap((batch) => batch.ids)).toEqual(["accessible"]);
     expect(request.mock.calls.find(([operation]) => operation === "list_meetings")?.[1]).toEqual({});
@@ -142,7 +142,7 @@ describe("Granola history discovery", () => {
     state.custom = false;
     const customSaved = {
       pendingIds: null,
-      scan: { ranges: [{ start: "2001-01-01", end: "2002-01-01" }], afterId: "z-last-committed" },
+      scan: { ranges: [{ start: "2023-01-01", end: "2024-01-01" }], afterId: "z-last-committed" },
     };
     expect(
       (await Array.fromAsync(discover({ ...context, checkpoint: customSaved }))).flatMap((batch) => batch.ids),
@@ -150,7 +150,7 @@ describe("Granola history discovery", () => {
   });
 
   it("finishes a legacy ID queue and then starts full history without changing the definition version", async () => {
-    const { context } = fixture([{ id: "historical", date: "2001-04-03" }]);
+    const { context } = fixture([{ id: "historical", date: "2023-04-03" }]);
     const checkpoint = { pendingIds: ["unfinished"] };
     validateSyncValue(checkpoint, granolaMeetings.checkpointSchema, "Legacy checkpoint");
     const batches = await Array.fromAsync(discover({ ...context, checkpoint }));
