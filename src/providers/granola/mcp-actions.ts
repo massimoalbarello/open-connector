@@ -3,46 +3,52 @@ import type { ActionDefinition } from "../../core/types.ts";
 import { s } from "../../core/json-schema.ts";
 import { defineProviderAction } from "../../core/provider-definition.ts";
 
+const meetingSchema = s.requiredObject("A Granola meeting returned through MCP.", {
+  id: s.nonEmptyString("Native Granola meeting ID."),
+  title: s.string("Meeting title."),
+  date: s.string("Meeting date as displayed by Granola, not a creation or update timestamp."),
+  attendees: s.string("Participant names and email addresses as supplied by Granola."),
+  summary: s.optional(s.string("Meeting summary, preserving its original Markdown when present.")),
+});
+
 export const granolaMcpActions: ActionDefinition[] = [
   defineProviderAction("granola", {
-    name: "mcp_list_tools",
+    name: "list_meetings",
     description:
-      "Discover Granola MCP tools and their current input schemas. Requires OAuth. Available tools depend on your Granola plan.",
+      "List accessible Granola meetings from the last 30 days through MCP. Requires OAuth and supports the free plan.",
     requiredScopes: [],
-    followUpActions: ["granola.mcp_call_tool"],
-    inputSchema: s.object({
-      cursor: s.optional(s.nonEmptyString("Continue from the nextCursor returned by a previous tool listing.")),
-    }),
-    outputSchema: s.requiredObject("A page of available Granola MCP tools.", {
-      tools: s.array(
-        s.looseRequiredObject("A tool offered by Granola.", {
-          name: s.nonEmptyString("Tool name to pass to mcp_call_tool."),
-          description: s.optional(s.string("Description supplied by Granola.")),
-          inputSchema: s.looseObject("JSON Schema for this tool's arguments."),
-        }),
-      ),
-      nextCursor: s.optional(s.string("Cursor for the next page of tools.")),
+    followUpActions: ["granola.get_meetings"],
+    inputSchema: s.object({}),
+    outputSchema: s.requiredObject("Meetings in the last 30 days.", {
+      meetings: s.array(meetingSchema),
     }),
   }),
   defineProviderAction("granola", {
-    name: "mcp_call_tool",
+    name: "get_meetings",
     description:
-      "Call a Granola MCP tool discovered with mcp_list_tools, such as list_meetings, get_meetings, query_granola_meetings, or get_meeting_transcript. Requires OAuth. Free plans cover personal notes from the last 30 days; some tools require a paid plan.",
+      "Read Granola meeting details and summaries by ID through MCP. Requires OAuth. Free plans cover personal notes from the last 30 days.",
     requiredScopes: [],
-    inputSchema: s.requiredObject("Granola MCP tool and arguments.", {
-      toolName: s.nonEmptyString("Exact tool name returned by mcp_list_tools."),
-      arguments: s.optional(s.looseObject("Arguments matching the discovered tool's inputSchema.")),
-    }),
-    outputSchema: s.requiredObject("Successful Granola MCP tool result.", {
-      result: s.looseRequiredObject("Original MCP content blocks and any structured output.", {
-        content: s.array(
-          s.looseRequiredObject("An MCP content block.", {
-            type: s.nonEmptyString("Content kind, such as text or resource."),
-          }),
-        ),
-        structuredContent: s.optional(s.looseObject("Structured tool output when supplied by Granola.")),
-        isError: s.optional(s.boolean("Whether the tool reported a failure.")),
+    inputSchema: s.requiredObject("Meetings to retrieve.", {
+      meeting_ids: s.array(s.nonEmptyString("Meeting ID returned by list_meetings."), {
+        minItems: 1,
+        maxItems: 10,
+        uniqueItems: true,
       }),
+    }),
+    outputSchema: s.requiredObject("Requested meetings in input order.", {
+      meetings: s.array(meetingSchema),
+    }),
+  }),
+  defineProviderAction("granola", {
+    name: "get_meeting_transcript",
+    description: "Read a Granola meeting transcript through MCP. Requires OAuth and a paid Granola plan.",
+    requiredScopes: [],
+    inputSchema: s.requiredObject("Meeting whose transcript to retrieve.", {
+      meeting_id: s.nonEmptyString("Native Granola meeting ID."),
+    }),
+    outputSchema: s.requiredObject("Original transcript text for the requested meeting.", {
+      meeting_id: s.nonEmptyString("Native Granola meeting ID."),
+      transcript: s.nonEmptyString("Transcript text, preserving speaker labels, timestamps, and whitespace."),
     }),
   }),
 ];

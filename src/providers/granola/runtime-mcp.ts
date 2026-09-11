@@ -3,9 +3,16 @@ import type { OAuthProviderContext, ProviderActionHandlerSubset, ProviderRuntime
 import type { Client } from "@modelcontextprotocol/client";
 
 import { SdkHttpError, UnauthorizedError } from "@modelcontextprotocol/client";
-import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import {
+  objectArray,
+  optionalString,
+  requiredRawString,
+  requiredString,
+  requiredStringArray,
+} from "../../core/cast.ts";
 import { withMcpClient } from "../mcp-client.ts";
 import {
+  providerInputError,
   providerResponseError,
   ProviderRequestError,
   readProviderJsonBody,
@@ -14,25 +21,47 @@ import {
   runProviderRequest,
 } from "../provider-runtime.ts";
 import { granolaMcpEndpoint, granolaOAuthIssuer } from "./endpoints.ts";
+import { parseGranolaMeetings, parseGranolaTranscript } from "./mcp-response.ts";
 
 export const granolaMcpActionHandlers: ProviderActionHandlerSubset<
   "granola",
   ProviderRuntimeHandler<OAuthProviderContext>
 > = {
-  mcp_list_tools: (input, context) =>
-    withGranolaClient(context, (client, signal) =>
-      client.listTools({ cursor: optionalString(input.cursor) }, { signal }),
-    ),
-  mcp_call_tool: (input, context) =>
-    withGranolaClient(context, async (client, signal) => {
-      const name = requiredInputString(input.toolName, "toolName");
-      const result = await client.callTool({ name, arguments: optionalRecord(input.arguments) ?? {} }, { signal });
-      if (result.isError) {
-        throw new ProviderRequestError(502, `Granola MCP tool ${name} failed.`, result);
-      }
-      return { result };
-    }),
+  async list_meetings(_input, context) {
+    const text = await callGranolaTool(context, "list_meetings", { time_range: "last_30_days" });
+    return { meetings: parseGranolaMeetings(text) };
+  },
+  async get_meetings(input, context) {
+    const ids = requiredStringArray(input.meeting_ids, "meeting_ids", providerInputError);
+    const text = await callGranolaTool(context, "get_meetings", { meeting_ids: ids });
+    const meetings = parseGranolaMeetings(text);
+    const byId = new Map(meetings.map((meeting) => [meeting.id, meeting]));
+    if (meetings.length !== ids.length || ids.some((id) => !byId.has(id))) {
+      throw providerResponseError("Granola did not return every requested meeting.");
+    }
+    return { meetings: ids.map((id) => byId.get(id)!) };
+  },
+  async get_meeting_transcript(input, context) {
+    const meetingId = requiredInputString(input.meeting_id, "meeting_id");
+    const text = await callGranolaTool(context, "get_meeting_transcript", { meeting_id: meetingId });
+    return { meeting_id: meetingId, transcript: parseGranolaTranscript(text, meetingId) };
+  },
 };
+
+function callGranolaTool(context: OAuthProviderContext, name: string, input: Record<string, unknown>): Promise<string> {
+  return withGranolaClient(context, async (client, signal) => {
+    const result = await client.callTool({ name, arguments: input }, { signal });
+    if (result.isError) throw new ProviderRequestError(502, `Granola MCP tool ${name} failed.`, result);
+    const content = objectArray(result.content, "Granola MCP content", providerResponseError);
+    if (content.length === 0) throw providerResponseError("Granola MCP returned no meeting content.");
+    return content
+      .map((block) => {
+        if (block.type !== "text") throw providerResponseError("Granola MCP returned unsupported meeting content.");
+        return requiredRawString(block.text, "Granola meeting text", providerResponseError);
+      })
+      .join("\n");
+  });
+}
 
 function withGranolaClient<T>(
   context: OAuthProviderContext,
@@ -47,7 +76,6 @@ function withGranolaClient<T>(
         headers: { authorization: `Bearer ${context.accessToken}` },
         redirect: "manual",
         signal,
-        maxResponseBytes: 16 * 1024 * 1024,
         mapError(error) {
           if (error instanceof UnauthorizedError)
             return new ProviderRequestError(401, "Granola OAuth authorization expired.");

@@ -2,6 +2,13 @@ import type { ResolvedCredential } from "../../core/types.ts";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { executors, credentialValidators } from "./executors.ts";
+import { parseGranolaMeetings, parseGranolaTranscript } from "./mcp-response.ts";
+
+const summary = "    indented code\n\nKeep **Markdown** & code `a < b`.";
+const meetingXml = (id: string) =>
+  `<meeting id="${id}" title="Roadmap &amp; delivery" date="Sep 8, 2026 2:30 PM"><known_participants>Ada &lt;ada@example.com&gt;</known_participants><summary><![CDATA[${summary}]]></summary><private_notes>private sentinel</private_notes></meeting>`;
+const meetingsXml = (ids: string[]) =>
+  `<meetings_data count="${ids.length}">${ids.map(meetingXml).join("")}</meetings_data>`;
 
 const oauth: ResolvedCredential = {
   authType: "oauth2",
@@ -45,13 +52,15 @@ function stubMcp(options: McpFixtureOptions = {}): typeof fetch {
         serverInfo: { name: "Granola fixture", version: "1" },
       };
     } else if (request.method === "tools/list") {
-      result = { tools: [{ name: "list_meetings", inputSchema: { type: "object" } }], nextCursor: "next-page" };
+      result = { tools: [{ name: "list_meetings", inputSchema: { type: "object" } }] };
       options.onCall?.(request.params);
     } else if (request.method === "tools/call") {
       options.onCall?.(request.params);
       result = options.result ?? {
-        content: [{ type: "text", text: "Meeting summary" }],
-        structuredContent: { meeting_id: "meeting-1" },
+        content: [
+          { type: "text", text: "<access_notice>Only recent personal notes are available.</access_notice>" },
+          { type: "text", text: meetingsXml(["meeting-1"]) },
+        ],
       };
     } else throw new Error(`Unexpected MCP request: ${request.method}`);
     const message = { jsonrpc: "2.0", id: request.id, result };
@@ -72,36 +81,65 @@ async function execute(name: string, input: Record<string, unknown>, credential 
 describe("Granola REST and MCP execution", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it.each([false, true])("preserves MCP text and structured content over JSON/SSE (SSE: %s)", async (sse) => {
+  it.each([false, true])("lists recent meetings with normalized output over JSON/SSE (SSE: %s)", async (sse) => {
     const onCall = vi.fn();
     stubMcp({ sse, onCall });
-    await expect(
-      execute("mcp_call_tool", { toolName: "get_meetings", arguments: { meeting_ids: ["meeting-1"] } }),
-    ).resolves.toMatchObject({
+    const result = await execute("list_meetings", {});
+    expect(result).toMatchObject({
       ok: true,
       output: {
-        result: {
-          content: [{ type: "text", text: "Meeting summary" }],
-          structuredContent: { meeting_id: "meeting-1" },
-        },
+        meetings: [
+          {
+            id: "meeting-1",
+            title: "Roadmap & delivery",
+            date: "Sep 8, 2026 2:30 PM",
+            attendees: "Ada <ada@example.com>",
+            summary,
+          },
+        ],
       },
     });
-    expect(onCall).toHaveBeenCalledWith({ name: "get_meetings", arguments: { meeting_ids: ["meeting-1"] } });
+    expect(JSON.stringify(result)).not.toMatch(/private sentinel|access_notice|Only recent personal notes/);
+    expect(onCall).toHaveBeenCalledWith({ name: "list_meetings", arguments: { time_range: "last_30_days" } });
   });
 
-  it("forwards discovery cursors and returns the live tool schemas", async () => {
+  it("retrieves the requested meetings and restores input order", async () => {
     const onCall = vi.fn();
-    stubMcp({ onCall });
-    await expect(execute("mcp_list_tools", { cursor: "previous-page" })).resolves.toMatchObject({
+    stubMcp({ onCall, result: { content: [{ type: "text", text: meetingsXml(["b", "a"]) }] } });
+    await expect(execute("get_meetings", { meeting_ids: ["a", "b"] })).resolves.toMatchObject({
       ok: true,
-      output: { tools: [{ name: "list_meetings", inputSchema: { type: "object" } }], nextCursor: "next-page" },
+      output: {
+        meetings: [
+          { id: "a", summary },
+          { id: "b", summary },
+        ],
+      },
     });
-    expect(onCall).toHaveBeenCalledWith({ cursor: "previous-page" });
+    expect(onCall).toHaveBeenCalledWith({ name: "get_meetings", arguments: { meeting_ids: ["a", "b"] } });
+  });
+
+  it.each([["a"], ["a", "other"]])("rejects missing or unexpected meeting details (%j)", async (...ids) => {
+    stubMcp({ result: { content: [{ type: "text", text: meetingsXml(ids) }] } });
+    await expect(execute("get_meetings", { meeting_ids: ["a", "b"] })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "provider_error", message: "Granola did not return every requested meeting." },
+    });
+  });
+
+  it("returns original transcript text for the requested meeting", async () => {
+    const onCall = vi.fn();
+    const transcript = "  [00:10] Ada: A & B < C.\n";
+    stubMcp({ onCall, result: { content: [{ type: "text", text: JSON.stringify({ id: "a", transcript }) }] } });
+    await expect(execute("get_meeting_transcript", { meeting_id: "a" })).resolves.toMatchObject({
+      ok: true,
+      output: { meeting_id: "a", transcript },
+    });
+    expect(onCall).toHaveBeenCalledWith({ name: "get_meeting_transcript", arguments: { meeting_id: "a" } });
   });
 
   it("does not mistake a failed tool result for meeting content", async () => {
     stubMcp({ result: { isError: true, content: [{ type: "text", text: "Requires a paid plan" }] } });
-    await expect(execute("mcp_call_tool", { toolName: "get_meeting_transcript" })).resolves.toMatchObject({
+    await expect(execute("get_meeting_transcript", { meeting_id: "a" })).resolves.toMatchObject({
       ok: false,
       error: { code: "provider_error", details: { status: 502 } },
     });
@@ -113,7 +151,7 @@ describe("Granola REST and MCP execution", () => {
     [429, "rate_limited"],
   ])("preserves actionable HTTP failures (%s)", async (status, code) => {
     stubMcp({ status: Number(status) });
-    await expect(execute("mcp_list_tools", {})).resolves.toMatchObject({ ok: false, error: { code } });
+    await expect(execute("list_meetings", {})).resolves.toMatchObject({ ok: false, error: { code } });
   });
 
   it("validates an OAuth account without invoking paid meeting tools", async () => {
@@ -133,7 +171,7 @@ describe("Granola REST and MCP execution", () => {
   it("rejects credentials for the other transport before any egress", async () => {
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
-    await expect(execute("mcp_list_tools", {}, apiKey)).resolves.toMatchObject({
+    await expect(execute("list_meetings", {}, apiKey)).resolves.toMatchObject({
       ok: false,
       error: { code: "authorization_failed" },
     });
@@ -157,5 +195,51 @@ describe("Granola REST and MCP execution", () => {
       ok: true,
       output: { notes: [{ id: "note-1" }], hasMore: true, nextCursor: "page-2" },
     });
+  });
+});
+
+describe("Granola MCP response parsing", () => {
+  it("accepts an empty meeting list and preserves identifiers and optional fields", () => {
+    expect(parseGranolaMeetings('<meetings_data count="0"/>')).toEqual([]);
+    expect(parseGranolaMeetings("<meetings_data/>")).toEqual([]);
+    expect(parseGranolaMeetings('<meetings_data><meeting id="0001" title="" date=""/></meetings_data>')).toEqual([
+      { id: "0001", title: "", date: "", attendees: "", summary: undefined },
+    ]);
+  });
+
+  it.each([
+    "not XML",
+    "<access_notice>Only recent personal notes are available.</access_notice>",
+    `<access_notice>Unclosed notice${meetingsXml(["a"])}`,
+    '<!DOCTYPE x [<!ENTITY x "expanded">]><meetings_data/>',
+    `<meetings_data count="2">${meetingXml("a")}</meetings_data>`,
+    `<meetings_data has_more="true">${meetingXml("a")}</meetings_data>`,
+    `<meetings_data next_cursor="next">${meetingXml("a")}</meetings_data>`,
+    meetingsXml(["a", "a"]),
+    '<meetings_data><meeting title="Missing identity" date=""/></meetings_data>',
+  ])("rejects malformed or incomplete meeting data (%#)", (text) => {
+    expect(() => parseGranolaMeetings(text)).toThrow();
+  });
+
+  it("preserves transcript text across JSON, XML, and plain-text responses", () => {
+    const transcript = "  [00:10] Ada: A & B < C.\n";
+    expect(parseGranolaTranscript(JSON.stringify({ id: "a", transcript }), "a")).toBe(transcript);
+    expect(parseGranolaTranscript(`<transcript meeting_id="a"><![CDATA[${transcript}]]></transcript>`, "a")).toBe(
+      transcript,
+    );
+    expect(parseGranolaTranscript(transcript, "a")).toBe(transcript);
+  });
+
+  it.each([
+    '{"id":"other","transcript":"Wrong meeting"}',
+    '<transcript meeting_id="other">Wrong meeting</transcript>',
+    '{"id":"a","transcript":',
+    '<transcript meeting_id="a">Unclosed transcript',
+    '<!DOCTYPE x [<!ENTITY x "expanded">]><transcript meeting_id="a">&x;</transcript>',
+    "<access_notice>Upgrade to read transcripts.</access_notice>",
+    "No transcript available",
+    "   ",
+  ])("rejects mismatched, malformed, or unavailable transcripts (%#)", (text) => {
+    expect(() => parseGranolaTranscript(text, "a")).toThrow();
   });
 });
