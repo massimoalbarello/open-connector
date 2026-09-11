@@ -8,8 +8,14 @@ import { parseMeetings, parseTranscript, renderMeeting } from "./render.ts";
  * Rehydrate the last 30 days of accessible meetings in the active Granola workspace every hour.
  * This is a rolling scan, not a historical backfill or an incremental change feed. Rehydration
  * catches summary/transcript edits inside that window; older edits are outside its coverage.
- * Persist only remaining IDs, after each complete record is committed. A restart re-fetches
- * unfinished records. IDs are account-scoped native meeting IDs and survive token refresh.
+ * Version 1 checkpoint: { pendingIds: null } starts list_meetings(time_range: "last_30_days").
+ * Discovery must be complete and at most 1,000 meetings, an implementation guard that bounds
+ * checkpoint size, not a provider quota. Oversized or explicitly truncated lists fail the scan.
+ * Sort discovered IDs once, then fetch get_meetings(meeting_ids: pendingIds.slice(0, 10)).
+ * Each yielded record and the remaining IDs commit atomically. A restart skips discovery and
+ * re-fetches unfinished IDs; failures before the first commit repeat discovery. The final record
+ * resets pendingIds to null so the next cycle scans the window again. This is continuation state,
+ * not an incremental watermark. IDs are account-scoped native meeting IDs and survive token refresh.
  * Missing details/summaries or requested transcripts fail without overwriting earlier content.
  * Transcripts are explicitly opt-in so free-plan notes can sync. An explicit reprocess restarts
  * discovery and updates changed records in place; absence or permission loss never emits deletions.

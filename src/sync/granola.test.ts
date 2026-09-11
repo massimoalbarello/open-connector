@@ -11,7 +11,7 @@ import { withMcpClient } from "../providers/mcp-client.ts";
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite-runtime-store.ts";
 import { granolaMeetings } from "../sync-definitions/granola/definition.ts";
-import { syncRegistrations } from "./sync-registry.ts";
+import { syncRegistrations } from "../sync-definitions/sync-registry.ts";
 import { SyncRunner } from "./sync-runner.ts";
 
 const { fetcher } = vi.hoisted(() => ({ fetcher: vi.fn<typeof fetch>() }));

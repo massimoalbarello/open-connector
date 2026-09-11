@@ -38,7 +38,7 @@ describe("sync provider capability", () => {
           },
         }),
       });
-      await expect(provider.request("graphql", { query: "query { record }" })).rejects.toMatchObject({
+      await expect(provider.request("scan", { continuation: "opaque-provider-cursor" })).rejects.toMatchObject({
         code: "credential_changed",
       });
     } finally {

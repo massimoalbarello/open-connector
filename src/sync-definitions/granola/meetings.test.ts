@@ -3,6 +3,7 @@ import type { JsonObject } from "../../sync/sync-store.ts";
 
 import { describe, expect, it, vi } from "vitest";
 import { normalizeSyncRecord } from "../../sync/record-contract.ts";
+import { validateSyncValue } from "../../sync/sync-validation.ts";
 import { granolaMeetings } from "./definition.ts";
 import { run } from "./meetings.ts";
 import { parseMeetings, parseTranscript, renderMeeting } from "./render.ts";
@@ -78,6 +79,20 @@ describe("Granola meeting acquisition", () => {
     );
     expect(request.mock.calls.some(([operation]) => operation === "list_meetings")).toBe(false);
     expect(resumed.at(-1)?.complete).toBe(true);
+  });
+
+  it("accepts 1,000 discovered IDs but rejects a larger scan before hydrating or advancing progress", async () => {
+    const ids = Array.from({ length: 1000 }, (_, index) => `meeting-${index}`);
+    const accepted = fixture(ids);
+    const iterator = run({ ...accepted.context, config: granolaMeetings.defaultConfig });
+    const page = (await iterator.next()).value!;
+    await iterator.return(undefined);
+    expect(page).toMatchObject({ complete: false, checkpoint: { pendingIds: ids.sort().slice(1) } });
+    expect(validateSyncValue(page.checkpoint, granolaMeetings.checkpointSchema, "Checkpoint")).toEqual(page.checkpoint);
+
+    const oversized = fixture([...ids, "one-too-many"]);
+    await expect(run(oversized.context).next()).rejects.toThrow();
+    expect(oversized.request.mock.calls.map(([operation]) => operation)).toEqual(["list_meetings"]);
   });
 
   it("rehydrates old meetings still inside the window and never infers deletion from an empty scan", async () => {
