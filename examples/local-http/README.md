@@ -55,18 +55,3 @@ http://localhost:3000/oauth/callback
 
 Open the printed authorization URL in a browser, finish consent, then execute Gmail actions through
 the local API.
-
-Connect Granola MCP through browser OAuth. Follow Granola's OAuth client setup steps in the console
-to register your runtime's callback URL, then set `GRANOLA_CLIENT_ID` to the returned `client_id`.
-Leave Client Secret empty; the runtime uses PKCE.
-
-```bash
-GRANOLA_CLIENT_ID=... node examples/local-http/granola.ts connect
-# Complete consent, then discover the available tools:
-node examples/local-http/granola.ts tools
-node examples/local-http/granola.ts meetings
-```
-
-Granola's free plan covers personal notes from the last 30 days through MCP; some tools require a
-paid plan. See [Granola's MCP documentation](https://docs.granola.ai/help-center/sharing/integrations/mcp).
-For Business or Enterprise REST access, use `GRANOLA_API_KEY=... node examples/local-http/granola.ts api`.
