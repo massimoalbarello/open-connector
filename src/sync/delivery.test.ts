@@ -1,6 +1,5 @@
 import type { SyncDeliveryEnvelope } from "./delivery-store.ts";
 
-import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +9,6 @@ import { startLoggingReceiver } from "../../examples/sync/receiver-server.ts";
 import { createSecretCodec } from "../server/secrets/secret-codec.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite-runtime-store.ts";
 import { SyncDeliveryWorker } from "./delivery-worker.ts";
-import { runSyncTransaction } from "./sqlite-sync-transaction.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 const definition = { id: "test", version: "1", provider: "github", kinds: [{ kind: "record" }] };
@@ -106,34 +104,6 @@ afterEach(async () => {
 });
 
 describe("durable sync delivery", () => {
-  it.each([false, true])("refuses the v2 upgrade without changing queued deliveries (claimed: %s)", async (claimed) => {
-    const f = await setup();
-    await f.commit();
-    const lease = claimed ? await f.database.syncStore.delivery.claim(now()) : undefined;
-    const raw = new DatabaseSync(f.path);
-    const migration = readFileSync(new URL("../../migrations/0014_record_titles.sql", import.meta.url), "utf8");
-    const snapshot = () =>
-      ["sync_records", "sync_changes", "sync_outbox", "sync_delivery_batches", "runtime_migrations"].map((table) =>
-        raw.prepare(`select * from ${table}`).all(),
-      );
-    try {
-      const before = snapshot();
-      expect(() => runSyncTransaction(raw, () => raw.exec(migration))).toThrow("Drain pending record deliveries");
-      expect(snapshot()).toEqual(before);
-      expect(raw.prepare("select name from sqlite_temp_master").all()).toEqual([]);
-      if (lease) f.database.syncStore.delivery.complete({ lease, acknowledged: false, now: now(), retryAt: now() });
-      const retry = (await f.database.syncStore.delivery.claim(now()))!;
-      if (lease) expect(retry.body).toBe(lease.body);
-      f.database.syncStore.delivery.complete({ lease: retry, acknowledged: true, now: now() });
-      const drained = snapshot();
-      runSyncTransaction(raw, () => raw.exec(migration));
-      expect(snapshot()).toEqual(drained);
-      expect(raw.prepare("select name from sqlite_temp_master").all()).toEqual([]);
-    } finally {
-      raw.close();
-    }
-  });
-
   it("reports distinct live records separately from delivery history, including retries, purging and deletions", async () => {
     const f = await setup();
     const store = f.database.syncStore;

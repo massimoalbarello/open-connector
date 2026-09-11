@@ -30,19 +30,5 @@ Markdown or substitute opaque IDs. GitHub uses the same title in its Markdown he
 `sourceUpdatedAt` describe source timestamps when available; `committedAt` is the connector commit
 time. Missing source timestamps stay absent rather than being replaced with fetch or commit time.
 
-## Upgrading from version 1
-
-Version 1 receivers reject the new field. Pause acquisition, drain all pending deliveries using the
-old binary and receiver, and stop the old binary. Back up the SQLite database, upgrade the receiver
-to version 2, then start the version 2 sender and resume acquisition. The upgrade migration refuses
-to run while any outbox entry is unacknowledged; it leaves the queue and migration state untouched.
-If it refuses, restart the old binary and finish draining before retrying. Do not run the old and new
-binaries concurrently against the same database.
-
-Existing source identities, revisions, and checkpoints are retained. Titles arrive as records are
-reacquired; GitHub's regular full reconciliation also revisits old records. No old payloads or
-hashes are rewritten. To roll back after v2 acquisition, stop the sender and restore the pre-upgrade
-database together with the old sender and receiver; do not send v2 queue contents through a v1 sender.
-
 Changes incompatible with existing destinations require a new envelope `version` and OpenAPI
 contract version.
