@@ -275,7 +275,6 @@ Issues and pull requests are welcome.
 - [Developer tools](docs/sdk-cli.md)
 - [Gmail OAuth and SDK tutorial](docs/gmail-oauth-sdk.md)
 - [Instagram OAuth and Actions](docs/instagram-oauth.md)
-- [Granola API and MCP OAuth](docs/granola.md)
 - [Runtime API and MCP](docs/runtime-api.md)
 - [Record delivery contract](docs/record-delivery.md)
 - [Fly.io deployment](docs/fly-io.md)

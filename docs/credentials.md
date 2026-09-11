@@ -126,7 +126,7 @@ The accepted keys come from the provider's `auth[].fields`.
 ## OAuth2 Connections
 
 Most OAuth2 providers require your own provider OAuth app. Providers declaring
-`auth.clientRegistrationUrl`, such as [Granola MCP](granola.md), register a public client automatically
+`auth.clientRegistrationUrl`, such as Granola MCP, register a public client automatically
 when you start authorization without a saved client config. No client ID or secret is needed. The
 registered client stays with that connection for token refresh, including when other connections
 are added or deployment client settings change. Registration uses PKCE and the runtime callback URL.
