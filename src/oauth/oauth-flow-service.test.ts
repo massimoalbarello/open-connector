@@ -6,6 +6,7 @@ import type { IOAuthClientConfigStore, OAuthClientConfig } from "./oauth-client-
 import type { IOAuthStateStore, OAuthAuthorizationState } from "./oauth-flow-service.ts";
 import type { ProviderOAuthRuntime } from "./oauth-token.ts";
 
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../catalog-store.ts";
 import { ConnectionService } from "../connection-service.ts";
@@ -13,6 +14,7 @@ import { provider as slackProvider } from "../providers/slack/definition.ts";
 import { provider as slackbotProvider } from "../providers/slackbot/definition.ts";
 import { AesGcmSecretCodec } from "../server/secrets/secret-codec.ts";
 import { OAuthClientConfigService } from "./oauth-client-config-service.ts";
+import { OAuthCredentialRefreshService } from "./oauth-credential-refresh-service.ts";
 import { OAuthFlowService } from "./oauth-flow-service.ts";
 
 const oauthProvider: ProviderDefinition = {
@@ -40,6 +42,96 @@ const oauthProvider: ProviderDefinition = {
   ],
   actions: [],
 };
+
+const dynamicProvider: ProviderDefinition = {
+  ...oauthProvider,
+  service: "dynamic",
+  auth: [
+    {
+      type: "oauth2",
+      authorizationUrl: "https://example.com/authorize",
+      tokenUrl: "https://example.com/token",
+      clientRegistrationUrl: "https://example.com/register",
+      resource: "https://example.com/mcp",
+      tokenEndpointAuthMethod: "none",
+      pkce: { method: "S256" },
+      scopes: ["offline_access"],
+    },
+  ],
+};
+
+describe("automatically registered OAuth clients", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("pins each registration through concurrent consent, code exchange, and refresh", async () => {
+    const services = createServices([dynamicProvider]);
+    let registrations = 0;
+    const grants: URLSearchParams[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        if (String(url).endsWith("/register")) {
+          const body = JSON.parse(String(init?.body));
+          expect(body).toMatchObject({
+            redirect_uris: ["http://localhost:3000/oauth/callback"],
+            token_endpoint_auth_method: "none",
+            grant_types: ["authorization_code", "refresh_token"],
+          });
+          return Response.json({ ...body, client_id: `registered-${++registrations}` });
+        }
+        const fields = new URLSearchParams(String(init?.body));
+        grants.push(fields);
+        expect(fields.get("resource")).toBe("https://example.com/mcp");
+        expect(fields.has("client_secret")).toBe(false);
+        expect(new Headers(init?.headers).has("authorization")).toBe(false);
+        return Response.json({
+          access_token: "access-token",
+          refresh_token: "rotated-refresh-token",
+          expires_in: 3600,
+        });
+      }),
+    );
+
+    const first = await services.flow.startAuthorization({ service: "dynamic", connectionName: "first" });
+    const second = await services.flow.startAuthorization({ service: "dynamic", connectionName: "second" });
+    const authorization = new URL(first.authorizationUrl);
+    expect(authorization.searchParams.get("resource")).toBe("https://example.com/mcp");
+    expect(authorization.searchParams.get("client_id")).toBe("registered-1");
+    expect(authorization.searchParams.get("scope")).toBe("offline_access");
+    expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
+    await expect(services.clientConfigs.getConfig("dynamic")).resolves.toBeUndefined();
+
+    // Changing deployment config while consent is open cannot change the registered client.
+    await services.clientConfigs.upsertConfig({ service: "dynamic", clientId: "replacement", clientSecret: "" });
+    await services.flow.completeAuthorization({ state: second.state, code: "second-code" });
+    await services.flow.completeAuthorization({ state: first.state, code: "first-code" });
+    expect(grants.map((grant) => grant.get("client_id"))).toEqual(["registered-2", "registered-1"]);
+    expect(createHash("sha256").update(grants[1]!.get("code_verifier")!).digest("base64url")).toBe(
+      authorization.searchParams.get("code_challenge"),
+    );
+    await expect(services.flow.completeAuthorization({ state: first.state, code: "replay" })).rejects.toMatchObject({
+      code: "invalid_oauth_state",
+    });
+
+    const credential = await services.connections.getCredential("dynamic", "first");
+    if (credential?.authType !== "oauth2") throw new Error("Missing OAuth connection");
+    const refreshed = await new OAuthCredentialRefreshService(services.clientConfigs).refresh("dynamic", credential);
+    expect(refreshed.metadata.oauthClientConfig).toMatchObject({ clientId: "registered-1", clientSecret: "" });
+    expect(grants[2]!.get("client_id")).toBe("registered-1");
+    expect(grants[2]!.get("grant_type")).toBe("refresh_token");
+    expect(grants[2]!.has("code_verifier")).toBe(false);
+  });
+
+  it("uses an existing configured client without registering another one", async () => {
+    const services = createServices([dynamicProvider]);
+    await services.clientConfigs.upsertConfig({ service: "dynamic", clientId: "existing", clientSecret: "" });
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    const start = await services.flow.startAuthorization({ service: "dynamic" });
+    expect(new URL(start.authorizationUrl).searchParams.get("client_id")).toBe("existing");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});
 
 const pkceOAuthProvider: ProviderDefinition = {
   ...oauthProvider,

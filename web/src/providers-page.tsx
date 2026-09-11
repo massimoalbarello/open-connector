@@ -1092,7 +1092,7 @@ export function shouldEnableConnectionSubmit(
     return true;
   }
   if (!manualValues) {
-    return oauthConfig?.configured ?? false;
+    return Boolean(auth.clientRegistrationUrl || oauthConfig?.configured);
   }
   if (!manualValues.clientId.trim()) {
     return false;
@@ -1394,7 +1394,9 @@ function ConnectionForm(props: ConnectionFormProps): ReactNode {
     extraValues: manualExtraValues,
   };
   const needsOAuthClient =
-    props.auth.type === "oauth2" && props.oauthClientMode === "configured" && !props.oauthConfig?.configured;
+    props.auth.type === "oauth2" &&
+    props.oauthClientMode === "configured" &&
+    !shouldEnableConnectionSubmit(props.auth, props.oauthConfig);
   const canSubmit =
     props.connectionName.length > 0 &&
     props.connectionNameValid &&
@@ -1615,7 +1617,9 @@ function ConnectionForm(props: ConnectionFormProps): ReactNode {
                 {props.auth.type === "oauth2" ? <ExternalLink size={16} /> : <Check size={16} />}
                 {submitLabel}
               </Button>
-              {props.auth.type === "oauth2" && props.oauthClientMode === "configured" ? (
+              {props.auth.type === "oauth2" &&
+              props.oauthClientMode === "configured" &&
+              !props.auth.clientRegistrationUrl ? (
                 <Button variant="outline" type="button" onClick={props.onConfigureOAuthClient}>
                   <Settings size={16} />
                   {t("providers.buttons.editOAuthClient")}

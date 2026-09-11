@@ -12,6 +12,7 @@ export type AuthDefinition =
       type: "oauth2";
       scopes: string[];
       tokenEndpointAuthMethod?: "client_secret_basic" | "client_secret_post" | "none";
+      clientRegistrationUrl?: string;
       clientConfigFields?: CredentialField[];
       clientSetup?: OAuthClientSetup;
     };
@@ -380,6 +381,7 @@ function isUsableCredentialConnection(connection: ConnectionRecord | undefined):
 }
 
 function providerRequiresOAuth(provider: ProviderDefinition): boolean {
+  if (provider.auth.some((auth) => auth.type === "oauth2" && auth.clientRegistrationUrl)) return false;
   const authTypes = provider.auth.length > 0 ? provider.auth.map((auth) => auth.type) : provider.authTypes;
   return authTypes.includes("oauth2") && authTypes.every((authType) => authType === "oauth2");
 }

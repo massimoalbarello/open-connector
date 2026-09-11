@@ -10,6 +10,7 @@ import type { OAuthTokenResult } from "./oauth-token.ts";
 
 import { createHash, randomBytes } from "node:crypto";
 import { providerFetch } from "../providers/provider-runtime.ts";
+import { registerOAuthClient } from "./oauth-client-registration.ts";
 import { requestAuthorizationCodeToken } from "./oauth-token.ts";
 
 /**
@@ -24,6 +25,7 @@ export interface OAuthAuthorizationStartInput {
   service: string;
   connectionName?: string;
   clientConfig?: OAuthClientConfigInput;
+  signal?: AbortSignal;
 }
 
 export interface OAuthAuthorizationCompleteInput {
@@ -91,9 +93,21 @@ export class OAuthFlowService {
     const { service, connectionName } = input;
     this.connections.assertProviderAvailable(service);
     const auth = this.clientConfigs.getOAuthDefinition(service);
-    const config = input.clientConfig
+    let config = input.clientConfig
       ? this.resolveCustomClientConfig(service, input.clientConfig)
       : await this.clientConfigs.getConfig(service);
+    let connectionClientConfig = input.clientConfig ? config : undefined;
+    if (!config && auth.clientRegistrationUrl) {
+      config = this.clientConfigs.normalizeConfig(
+        service,
+        await registerOAuthClient({
+          auth,
+          redirectUri: this.clientConfigs.expectedRedirectUri(service),
+          signal: input.signal,
+        }),
+      );
+      connectionClientConfig = config;
+    }
     if (!config) {
       throw new OAuthFlowError("oauth_client_config_required", `Configure an OAuth client for ${service} first.`);
     }
@@ -108,13 +122,14 @@ export class OAuthFlowService {
       state,
       createdAt: now.toISOString(),
       pkceCodeVerifier,
-      clientConfig: input.clientConfig ? config : undefined,
+      clientConfig: connectionClientConfig,
     });
 
     const authorizationUrl = new URL(this.clientConfigs.resolveEndpointUrl(service, auth.authorizationUrl, config));
     for (const [key, value] of Object.entries(auth.authorizationParams ?? {})) {
       authorizationUrl.searchParams.set(key, value);
     }
+    if (auth.resource) authorizationUrl.searchParams.set("resource", auth.resource);
     setAuthorizationParam(authorizationUrl, auth.authorizationRequestFields?.clientId, "client_id", config.clientId);
     setAuthorizationParam(
       authorizationUrl,
@@ -187,7 +202,12 @@ export class OAuthFlowService {
         tokenEndpointAuthMethod: auth.tokenEndpointAuthMethod,
         tokenRequestFormat: auth.tokenRequestFormat,
         tokenUrl,
-        extraFields: createTokenExtraFields(pending, auth.tokenRequestCallbackParameters, input.callbackParameters),
+        extraFields: createTokenExtraFields(
+          pending,
+          auth.tokenRequestCallbackParameters,
+          input.callbackParameters,
+          auth.resource,
+        ),
         signal: input.signal,
         createError,
       });
@@ -251,9 +271,11 @@ function createTokenExtraFields(
   state: OAuthAuthorizationState,
   parameterNames: readonly string[] | undefined,
   callbackParameters: Record<string, string> | undefined,
+  resource: string | undefined,
 ): Record<string, string> | undefined {
   const fields = readCallbackParameters(parameterNames, callbackParameters);
   if (state.pkceCodeVerifier) fields.code_verifier = state.pkceCodeVerifier;
+  if (resource) fields.resource = resource;
   return Object.keys(fields).length > 0 ? fields : undefined;
 }
 
