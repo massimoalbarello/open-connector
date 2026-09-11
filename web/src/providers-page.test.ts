@@ -66,6 +66,18 @@ describe("connectionSubmitLabel", () => {
 });
 
 describe("shouldEnableConnectionSubmit", () => {
+  it("allows automatic OAuth registration without a manually configured client", () => {
+    const auth: AuthDefinition = {
+      type: "oauth2",
+      scopes: [],
+      tokenEndpointAuthMethod: "none",
+      clientRegistrationUrl: "https://example.com/register",
+    };
+    expect(shouldEnableConnectionSubmit(auth, undefined)).toBe(true);
+    expect(shouldEnableConnectionSubmit(auth, undefined, { clientId: "", clientSecret: "", extraValues: {} })).toBe(
+      false,
+    );
+  });
   it("disables OAuth start until an OAuth client is configured", () => {
     expect(shouldEnableConnectionSubmit({ type: "oauth2", scopes: [] }, undefined)).toBe(false);
   });
@@ -219,6 +231,26 @@ describe("splitClientConfigFieldValues", () => {
 });
 
 describe("ProvidersPage OAuth client settings", () => {
+  it("offers browser consent immediately for automatic registration", () => {
+    const provider: ProviderDefinition = {
+      ...oauthProvider,
+      auth: [
+        {
+          type: "oauth2",
+          scopes: [],
+          tokenEndpointAuthMethod: "none",
+          clientRegistrationUrl: "https://example.com/register",
+        },
+      ],
+    };
+    const markup = renderProvidersPage(
+      { ...providerData, providers: [provider], oauthConfigs: [] },
+      "/providers/gmail",
+    );
+    expect(markup).toContain("Connect Gmail");
+    expect(markup).not.toContain("Configure Default App");
+    expect(markup).not.toContain("Edit Default App");
+  });
   it("shows an edit action for a configured OAuth app", () => {
     const markup = renderProvidersPage(providerData, "/providers/gmail");
 

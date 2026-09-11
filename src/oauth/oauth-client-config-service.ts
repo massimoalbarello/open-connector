@@ -61,9 +61,7 @@ export interface IOAuthClientConfigStore {
 
 /**
  * Manages user-provided OAuth app client configuration.
- *
- * The open-source runtime intentionally requires users to bring their own
- * OAuth app. Managed OAuth clients are intentionally outside this local runtime.
+ * Automatically registered clients are scoped to their authorization and connection instead.
  */
 export class OAuthClientConfigService {
   private static readonly callbackPath = "/oauth/callback";

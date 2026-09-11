@@ -17,7 +17,7 @@ PostgreSQL database instead; see [configuration](configuration.md#runtime-databa
 
 - `no_auth` providers are available as virtual connections and do not store secrets.
 - `api_key` and `custom_credential` providers store their local secrets in the selected runtime database.
-- `oauth2` providers use user-provided OAuth client configuration and a runtime callback URL.
+- `oauth2` providers use user-provided OAuth clients or automatic public client registration, with a runtime callback URL.
 
 ## Encryption
 
@@ -125,7 +125,13 @@ The accepted keys come from the provider's `auth[].fields`.
 
 ## OAuth2 Connections
 
-OAuth2 providers require your own provider OAuth app. List OAuth-capable providers and copy the
+Most OAuth2 providers require your own provider OAuth app. Providers declaring
+`auth.clientRegistrationUrl`, such as Granola MCP, register a public client automatically
+when you start authorization without a saved client config. No client ID or secret is needed. The
+registered client stays with that connection for token refresh, including when other connections
+are added or deployment client settings change. Registration uses PKCE and the runtime callback URL.
+
+For providers requiring your own app, list OAuth-capable providers and copy the
 `expectedRedirectUri` for the service:
 
 ```bash

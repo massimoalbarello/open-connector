@@ -43,3 +43,14 @@ http://localhost:3000/oauth/callback
 
 Open the printed authorization URL in a browser, finish consent, then execute Gmail actions through
 the local API.
+
+Connect Granola MCP through browser OAuth without a client ID or secret:
+
+```bash
+node examples/local-http/granola.ts connect
+# Complete consent, then discover the available tools:
+node examples/local-http/granola.ts tools
+node examples/local-http/granola.ts meetings
+```
+
+For paid-plan REST access, use `GRANOLA_API_KEY=... node examples/local-http/granola.ts api`.
