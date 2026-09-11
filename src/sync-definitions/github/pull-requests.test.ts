@@ -1,30 +1,28 @@
 import type { JsonObject } from "../../sync/sync-store.ts";
 
+import { fromMarkdown } from "mdast-util-from-markdown";
 import { describe, expect, it } from "vitest";
+import { normalizeSyncRecord } from "../../sync/record-contract.ts";
 import { githubPullRequests } from "./definition.ts";
 import { githubPullRequestFixture as fixture } from "./pull-requests.test-fixture.ts";
 import { run } from "./pull-requests.ts";
 
 describe("GitHub pull request sync", () => {
-  it("hydrates every independent related page including more than 250 commits", async () => {
+  it("hydrates all discussion pages without fetching commits", async () => {
     const { context, graphql } = fixture();
     const pages = await Array.fromAsync(run(context));
     const record = pages[0]!.records![0]!.record;
     expect(record.id).toBe("PR_native");
-    for (const text of [
-      "Author Markdown",
-      "Comment 100",
-      "Review 50",
-      "Commit 300",
-      "Thread 50",
-      "src/file.ts:7",
-      "State: MERGED",
-    ])
+    expect(record.title).toBe("a/b #1: Complete PR");
+    expect(record.body.startsWith(`# ${record.title}\n`)).toBe(true);
+    expect(record.body).not.toContain("## Commits");
+    expect(graphql.mock.calls.some(([query]) => query.includes("commits("))).toBe(false);
+    for (const text of ["Author Markdown", "Comment 100", "Review 50", "Thread 50", "src/file.ts:7", "State: MERGED"])
       expect(record.body).toContain(text);
     expect(record.participants).toEqual([
       {
         identities: [{ namespace: "github", id: "U_1" }],
-        roles: ["author", "commenter", "committer", "reviewer"],
+        roles: ["author", "commenter", "reviewer"],
         name: "octocat",
       },
     ]);
@@ -33,8 +31,47 @@ describe("GitHub pull request sync", () => {
       complete: true,
       checkpoint: { phase: "updates", cursor: null, watermark: context.startedAt },
     });
-    expect(graphql.mock.calls.filter(([query]) => query.includes("SyncRelated")).length).toBeGreaterThan(5);
     expect((await Array.fromAsync(run(context)))[0]!.records![0]!.record).toEqual(record);
+  });
+
+  it("contains authored headings and code within the description and omits empty activity sections", async () => {
+    const { context, pull } = fixture();
+    const description = "# Why\n\nOriginal text\n\nHow\n---\n\n```md\n## Code, not a section\n```\n\n> Existing quote";
+    pull.body = description;
+    for (const field of ["comments", "reviews", "reviewThreads"])
+      pull[field] = { nodes: [], totalCount: 0, pageInfo: { hasNextPage: false, endCursor: null } };
+    const record = (await Array.fromAsync(run(context)))[0]!.records![0]!.record;
+    const markdown = fromMarkdown(record.body);
+    expect(markdown.children.filter((node) => node.type === "heading")).toMatchObject([
+      { depth: 1, children: [{ value: "a/b #1: Complete PR" }] },
+      { depth: 2, children: [{ value: "Description" }] },
+    ]);
+    const quote = markdown.children.find((node) => node.type === "blockquote");
+    expect(quote?.children).toEqual(
+      fromMarkdown(description).children.map((node) =>
+        expect.objectContaining({
+          type: node.type,
+        }),
+      ),
+    );
+    expect(quote?.children.find((node) => node.type === "code")).toMatchObject({
+      lang: "md",
+      value: "## Code, not a section",
+    });
+    expect(record.body).not.toMatch(/^## (Comments|Reviews|Review discussions|Commits)$/m);
+    expect(normalizeSyncRecord(record, githubPullRequests.kinds[0]!).id).toBe("PR_native");
+  });
+
+  it.each([
+    ["comments", "Comments"],
+    ["reviews", "Reviews"],
+    ["reviewThreads", "Review discussions"],
+  ])("omits only the empty %s section", async (field, heading) => {
+    const { context, pull } = fixture();
+    pull[field] = { nodes: [], totalCount: 0, pageInfo: { hasNextPage: false, endCursor: null } };
+    const record = (await Array.fromAsync(run(context)))[0]!.records![0]!.record;
+    for (const section of ["Comments", "Reviews", "Review discussions"])
+      expect(record.body.includes(`\n\n## ${section}\n\n`)).toBe(section !== heading);
   });
 
   it("fails before emitting a record when a required related page fails", async () => {

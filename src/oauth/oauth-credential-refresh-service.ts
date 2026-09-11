@@ -16,7 +16,7 @@ export interface IOAuthCredentialRefresher {
 }
 
 /**
- * Refreshes stored OAuth credentials using the user-provided local OAuth app.
+ * Refreshes OAuth credentials with their connection-scoped or deployment OAuth client.
  */
 export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher {
   private readonly clientConfigs: OAuthClientConfigService;
@@ -41,6 +41,8 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
     const refreshToken = credential.refreshToken ?? "";
     const createError = (message: string): ConnectionError =>
       new ConnectionError("oauth_token_refresh_failed", message);
+    const extraFields = readOAuthRefreshParameters(credential.providerSecret) ?? {};
+    if (auth.resource) extraFields.resource = auth.resource;
     const providerOAuth = await this.providerLoader?.loadProviderOAuthRuntime?.(service);
     let refreshed: OAuthTokenResult;
     if (providerOAuth?.refreshAccessToken) {
@@ -56,7 +58,7 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
         clientSecret: config.clientSecret,
         responseEnvelope: auth.tokenResponseEnvelope,
         refreshToken,
-        extraFields: readOAuthRefreshParameters(credential.providerSecret),
+        extraFields,
         tokenRequestFields: auth.tokenRequestFields,
         tokenEndpointAuthMethod: auth.tokenEndpointAuthMethod,
         tokenRequestFormat: auth.tokenRequestFormat,

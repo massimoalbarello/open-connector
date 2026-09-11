@@ -124,7 +124,7 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
     if (this.database.prepare("select 1 from sync_runs where state = 'running'").get()) return undefined;
     const row = this.database
       .prepare(`select i.id, c.connection_name from sync_installations i join connections c on c.id = i.connection_id and c.revision = i.credential_revision
-      where i.state = 'enabled' and i.requires_backfill = 0 and i.next_due_at <= ? order by i.next_due_at, i.id limit 1`)
+      where i.state = 'enabled' and i.next_due_at <= ? order by i.next_due_at, i.id limit 1`)
       .get(now);
     return row
       ? {
@@ -152,7 +152,7 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
         : retryTime(input.now, failures);
     this.database
       .prepare(
-        `update sync_installations set consecutive_failures = ?, last_error = case when requires_backfill = 1 then 'snapshot_interrupted' else ? end, next_due_at = ? where id = ? and binding_revision = ?`,
+        `update sync_installations set consecutive_failures = ?, last_error = case when requires_backfill = 1 and state = 'needs_attention' then 'snapshot_interrupted' else ? end, next_due_at = ? where id = ? and binding_revision = ?`,
       )
       .run(failures, waiting ? null : (input.errorCode ?? null), next, input.installationId, input.bindingRevision);
   }
@@ -284,17 +284,29 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
     }
   }
 
-  requestRun(installationId: string): void {
-    const installation = this.readers.installation(installationId);
-    if (!installation || installation.removedAt)
-      throw new SyncStoreError("installation_not_found", "Sync installation not found.");
-    if (
-      this.database
-        .prepare("select 1 from sync_runs where installation_id = ? and state = 'running'")
-        .get(installationId)
-    )
-      throw new SyncStoreError("run_busy", "This sync is already running.");
-    this.configure({ installationId, enabled: true });
+  requestRun(installationId: string, backfill = false): void {
+    runSyncTransaction(this.database, () => {
+      const installation = this.readers.installation(installationId);
+      if (!installation || installation.removedAt)
+        throw new SyncStoreError("installation_not_found", "Sync installation not found.");
+      if (
+        this.database
+          .prepare("select 1 from sync_runs where installation_id = ? and state = 'running'")
+          .get(installationId)
+      )
+        throw new SyncStoreError("run_busy", "This sync is already running.");
+      const now = new Date().toISOString();
+      if (backfill) {
+        // Enabled + requires_backfill is an explicit request; interrupted snapshots stay needs_attention.
+        // startRun consumes the request atomically with the checkpoint reset, preserving record revisions.
+        this.database
+          .prepare(`update sync_installations set state = 'enabled', requires_backfill = 1,
+          next_due_at = ?, updated_at = ?, last_error = null, consecutive_failures = 0 where id = ?`)
+          .run(now, now, installationId);
+      } else {
+        this.updateSchedule({ installationId, enabled: true }, now);
+      }
+    });
   }
 }
 

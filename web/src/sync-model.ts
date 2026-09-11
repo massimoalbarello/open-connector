@@ -7,7 +7,8 @@ export function syncHealth(sync: SyncInstallationStatus, destinationReady: boole
   if (sync.latestRun?.state === "running") return "running";
   if (sync.connectionStatus === "missing") return "disconnected";
   if (sync.connectionStatus === "changed") return "verifying";
-  if (sync.requiresBackfill || sync.state === "needs_attention") return "needsAttention";
+  if (sync.state === "needs_attention") return "needsAttention";
+  if (sync.requiresBackfill && !sync.lastError) return "waiting";
   if (sync.lastError || sync.consecutiveFailures > 0) return "retrying";
   return sync.latestRun ? "scheduled" : "waiting";
 }

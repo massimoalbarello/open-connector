@@ -1,7 +1,7 @@
 import type { SyncRegistration } from "./sync-definition.ts";
 
 import { createGitHubSyncProvider } from "../providers/github/sync-provider.ts";
-import { createGranolaSyncProvider } from "../providers/granola_mcp/sync-provider.ts";
+import { createGranolaSyncProvider } from "../providers/granola/sync-provider.ts";
 import { githubPullRequests } from "../sync-definitions/github/definition.ts";
 import { granolaMeetings } from "../sync-definitions/granola/definition.ts";
 

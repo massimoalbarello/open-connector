@@ -91,7 +91,7 @@ export function parseTranscript(text: string, meetingId: string): string {
 }
 
 /** One complete Markdown record; meeting dates are display context, not invented creation/update times. */
-export function renderMeeting(meeting: GranolaMeeting, transcript: string): SyncRecordInput {
+export function renderMeeting(meeting: GranolaMeeting, transcript?: string): SyncRecordInput {
   const summary = requiredRawString(meeting.summary, "Granola meeting summary", providerResponseError);
   if (!summary.trim() || /^no summary\b/i.test(summary.trim()))
     throw providerResponseError("Granola meeting summary is not available yet.");
@@ -115,9 +115,19 @@ export function renderMeeting(meeting: GranolaMeeting, transcript: string): Sync
     });
   }
   const sourceUrl = `https://notes.granola.ai/d/${encodeURIComponent(meeting.id)}`;
-  const body = [`# ${meeting.title || "Untitled meeting"}`, "", `- Granola: ${sourceUrl}`];
+  const title = meeting.title.trim() || "Untitled meeting";
+  const body = [`# ${title}`, "", `- Granola: ${sourceUrl}`];
   if (meeting.date) body.push(`- Meeting date: ${meeting.date}`);
   if (labels.length) body.push(`- Attendees: ${[...new Set(labels)].join(", ")}`);
-  body.push("", "## Summary", "", summary, "", "## Transcript", "", transcript);
-  return { id: meeting.id, body: body.join("\n"), sourceUrl, participants };
+  body.push(
+    "",
+    "## Summary",
+    "",
+    summary,
+    "",
+    "## Transcript",
+    "",
+    transcript ?? "Not included in this sync. Transcript access requires a paid Granola plan.",
+  );
+  return { id: meeting.id, title, body: body.join("\n"), sourceUrl, participants };
 }

@@ -38,15 +38,6 @@ const reviewResponse = z.object({
   state: z.string(),
   author: actorSchema,
 });
-const commitResponse = z.object({
-  commit: z.object({
-    oid: z.string(),
-    message: z.string(),
-    url: z.url(),
-    committedDate: date,
-    author: z.object({ user: actorSchema }).nullable(),
-  }),
-});
 const threadResponse = z.object({
   id: z.string(),
   path: z.string(),
@@ -60,7 +51,6 @@ interface PullRequestContent {
   pull: Record<string, unknown>;
   comments: Record<string, unknown>[];
   reviews: Record<string, unknown>[];
-  commits: Record<string, unknown>[];
   threads: Record<string, unknown>[];
 }
 
@@ -69,8 +59,9 @@ export function renderPullRequest(input: PullRequestContent): SyncRecordInput {
   const pull = pullResponse.parse(input.pull);
   const comments = input.comments.map((item) => commentResponse.parse(item));
   const reviews = input.reviews.map((item) => reviewResponse.parse(item));
-  const commits = input.commits.map((item) => commitResponse.parse(item));
-  const threads = input.threads.map((item) => threadResponse.parse(item));
+  const threads = input.threads
+    .map((item) => threadResponse.parse(item))
+    .filter((thread) => thread.comments.length > 0);
   const repository = pull.repository;
   const participants = new Map<string, SyncParticipant>();
   const actor = (person: z.infer<typeof actorSchema> | undefined, role: string): string => {
@@ -84,31 +75,33 @@ export function renderPullRequest(input: PullRequestContent): SyncRecordInput {
     }
     return name;
   };
+  const title = `${repository.nameWithOwner} #${pull.number}: ${pull.title}`;
   const lines = [
-    `# ${repository.nameWithOwner} #${pull.number}: ${pull.title}`,
+    `# ${title}`,
     pull.url,
     `State: ${pull.state}${pull.isDraft ? " (draft)" : ""}`,
     `Author: ${actor(pull.author, "author")}`,
     `Branch: ${pull.headRefName} → ${pull.baseRefName}`,
     `Created: ${pull.createdAt} | Updated: ${pull.updatedAt}`,
     `Merged: ${pull.mergedAt || "No"} | Closed: ${pull.closedAt || "No"}`,
-    pull.body,
-    "## Comments",
+    "## Description",
+    quoteMarkdown(pull.body),
   ];
+  if (comments.length) lines.push("## Comments");
   for (const comment of sort(comments, (item) => `${item.createdAt}\0${item.id}`))
     lines.push(
       `### ${actor(comment.author, "commenter")} — ${comment.createdAt}`,
       `Updated: ${comment.updatedAt} | ${comment.url}`,
-      comment.body,
+      quoteMarkdown(comment.body),
     );
-  lines.push("## Reviews");
+  if (reviews.length) lines.push("## Reviews");
   for (const review of sort(reviews, (item) => `${item.submittedAt ?? ""}\0${item.id}`))
     lines.push(
       `### ${actor(review.author, "reviewer")} — ${review.state}`,
       `${review.submittedAt ?? "Pending"} | ${review.url}`,
-      review.body,
+      quoteMarkdown(review.body),
     );
-  lines.push("## Review discussions");
+  if (threads.length) lines.push("## Review discussions");
   for (const thread of [...threads].sort((a, b) => a.id.localeCompare(b.id, "en"))) {
     lines.push(
       `### ${thread.path}:${thread.line ?? ""} (${thread.isResolved ? "resolved" : "unresolved"}${thread.isOutdated ? ", outdated" : ""})`,
@@ -117,21 +110,12 @@ export function renderPullRequest(input: PullRequestContent): SyncRecordInput {
       lines.push(
         `#### ${actor(comment.author, "reviewer")} — ${comment.createdAt}`,
         `Updated: ${comment.updatedAt} | ${comment.url}`,
-        comment.body,
+        quoteMarkdown(comment.body),
       );
-  }
-  lines.push("## Commits");
-  for (const item of commits) {
-    const commit = item.commit;
-    const author = commit.author;
-    lines.push(
-      `### ${commit.oid} — ${actor(author?.user, "committer")}`,
-      `${commit.committedDate} | ${commit.url}`,
-      commit.message,
-    );
   }
   return {
     id: pull.id,
+    title,
     body: lines.join("\n\n"),
     sourceUrl: pull.url,
     sourceCreatedAt: pull.createdAt,
@@ -152,4 +136,12 @@ function sort<T>(items: T[], key: (item: T) => string): T[] {
       right = key(b);
     return left < right ? -1 : left > right ? 1 : 0;
   });
+}
+
+/** Keep authored headings and fenced code inside their own Markdown container. */
+function quoteMarkdown(value: string): string {
+  return value
+    .split(/\r\n|\r|\n/)
+    .map((line) => `> ${line}`)
+    .join("\n");
 }

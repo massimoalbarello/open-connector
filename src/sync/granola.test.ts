@@ -3,14 +3,15 @@ import type { ResolvedCredential } from "../core/types.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../catalog-store.ts";
 import { ConnectionService } from "../connection-service.ts";
-import { provider } from "../providers/granola_mcp/definition.ts";
-import { credentialValidators, executors } from "../providers/granola_mcp/executors.ts";
-import { callGranolaTool, verifyGranolaAccount } from "../providers/granola_mcp/runtime.ts";
-import { createGranolaSyncProvider } from "../providers/granola_mcp/sync-provider.ts";
+import { provider } from "../providers/granola/definition.ts";
+import { credentialValidators, executors } from "../providers/granola/executors.ts";
+import { validateGranolaOAuthCredential } from "../providers/granola/runtime-mcp.ts";
+import { createGranolaSyncProvider } from "../providers/granola/sync-provider.ts";
 import { withMcpClient } from "../providers/mcp-client.ts";
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite-runtime-store.ts";
 import { granolaMeetings } from "../sync-definitions/granola/definition.ts";
+import { syncRegistrations } from "./sync-registry.ts";
 import { SyncRunner } from "./sync-runner.ts";
 
 const { fetcher } = vi.hoisted(() => ({ fetcher: vi.fn<typeof fetch>() }));
@@ -82,35 +83,76 @@ const credential: Extract<ResolvedCredential, { authType: "oauth2" }> = {
   profile: { accountId: "unverified-label", displayName: "Label", grantedScopes: [] },
 };
 
+async function fixture() {
+  const state = protocol();
+  const database = new SqliteRuntimeDatabase(":memory:", { syncDefinitions: [granolaMeetings] });
+  databases.push(database);
+  const connections = new ConnectionService({
+    catalog: createCatalogStore([provider], { executableActionIds: provider.actions.map((action) => action.id) }),
+    store: database.connectionStore,
+    providerLoader: new ProviderLoader({ granola: async () => ({ credentialValidators, executors }) }),
+  });
+  await connections.setOAuthCredential("granola", credential);
+  const runner = new SyncRunner({
+    store: database.syncStore,
+    connectionStore: database.connectionStore,
+    connections,
+    registrations: syncRegistrations,
+  });
+  return { state, database, connections, runner };
+}
+
+const destination = {
+  url: "https://receiver.example.com/records",
+  bearerToken: "receiver-token",
+  enabled: true,
+};
+
 describe("Granola MCP protocol and durable acquisition", () => {
+  it("previews free-plan summaries without a destination, then persists and reprocesses the same identities", async () => {
+    const { state, database, runner } = await fixture();
+    state.transcriptError = true;
+    const input = { definitionId: granolaMeetings.id };
+    const preview = await runner.run({ ...input, dryRun: true });
+    expect(preview.preview).toMatchObject([{ provider: "granola", id: "meeting", content: { title: "Planning" } }]);
+    expect(preview.installationId).toBeUndefined();
+    expect(database.syncStore.sources.getBindingRevision()).toBe(0);
+    expect((await database.syncStore.listChanges()).items).toEqual([]);
+    expect((await database.syncStore.status.read()).installations).toEqual([]);
+    await database.syncStore.delivery.configure(destination);
+    const first = await runner.run(input);
+    const record = await database.syncStore.getRecord(first.installationId!, "meeting", "meeting");
+    expect(record?.content?.body).toContain(state.summary);
+    expect(record?.content?.body).toContain("Not included in this sync");
+    await runner.run(input);
+    expect((await database.syncStore.listChanges()).items).toHaveLength(1);
+    state.summary = "Summary revised before reprocessing.";
+    database.syncStore.schedule.requestRun(first.installationId!, true);
+    const replay = await runner.run({ ...input, backfill: true });
+    expect(replay.installationId).toBe(first.installationId);
+    const changes = (await database.syncStore.listChanges()).items;
+    expect(changes).toHaveLength(2);
+    expect(changes[1]).toMatchObject({
+      sourceId: changes[0]!.sourceId,
+      recordId: changes[0]!.recordId,
+      recordRevision: 2,
+    });
+    const updated = await database.syncStore.getRecord(first.installationId!, "meeting", "meeting");
+    expect(updated?.revision).toBe(2);
+    expect(updated?.content?.body).toContain(state.summary);
+    const toolNames = fetcher.mock.calls.flatMap(([, init]) => {
+      if (!init?.body) return [];
+      const request = JSON.parse(String(init.body));
+      return request.method === "tools/call" ? [request.params.name] : [];
+    });
+    expect(toolNames).not.toContain("get_meeting_transcript");
+  });
+
   it("commits complete records, preserves them through transcript failure, and deduplicates reauthorization", async () => {
-    const state = protocol();
-    const database = new SqliteRuntimeDatabase(":memory:", { syncDefinitions: [granolaMeetings] });
-    databases.push(database);
-    await database.syncStore.delivery.configure({
-      url: "https://receiver.example.com/records",
-      bearerToken: "receiver-token",
-      enabled: true,
-    });
-    const connections = new ConnectionService({
-      catalog: createCatalogStore([provider], { executableActionIds: provider.actions.map((action) => action.id) }),
-      store: database.connectionStore,
-      providerLoader: new ProviderLoader({ granola_mcp: async () => ({ credentialValidators, executors }) }),
-    });
-    await connections.setOAuthCredential("granola_mcp", credential);
-    const runner = new SyncRunner({
-      store: database.syncStore,
-      connectionStore: database.connectionStore,
-      connections,
-      registrations: [
-        {
-          definition: granolaMeetings,
-          createProvider: createGranolaSyncProvider,
-          load: () => import("../sync-definitions/granola/meetings.ts"),
-        },
-      ],
-    });
-    const first = await runner.run({ definitionId: granolaMeetings.id });
+    const { state, database, connections, runner } = await fixture();
+    await database.syncStore.delivery.configure(destination);
+    const input = { definitionId: granolaMeetings.id, config: { includeTranscript: true } };
+    const first = await runner.run(input);
     expect(first.complete).toBe(true);
     const before = await database.syncStore.getRecord(first.installationId!, "meeting", "meeting");
     expect(JSON.stringify(before)).toContain("## Transcript");
@@ -118,30 +160,33 @@ describe("Granola MCP protocol and durable acquisition", () => {
     const checkpoint = await database.syncStore.getCheckpoint(first.installationId!);
     state.summary = "A changed summary.";
     state.transcriptError = true;
-    await expect(runner.run({ definitionId: granolaMeetings.id })).rejects.toThrow("failed");
+    await expect(runner.run(input)).rejects.toThrow("failed");
     expect(await database.syncStore.getRecord(first.installationId!, "meeting", "meeting")).toEqual(before);
     expect(await database.syncStore.getCheckpoint(first.installationId!)).toEqual(checkpoint);
     expect((await database.syncStore.status.read()).runs[0]?.state).toBe("failed");
     state.transcriptError = false;
-    await connections.setOAuthCredential("granola_mcp", { ...credential, accessToken: "replacement-token" });
-    const updated = await runner.run({ definitionId: granolaMeetings.id });
+    await connections.setOAuthCredential("granola", { ...credential, accessToken: "replacement-token" });
+    const updated = await runner.run(input);
     expect(updated.installationId).toBe(first.installationId);
-    await runner.run({ definitionId: granolaMeetings.id });
+    await runner.run(input);
     expect((await database.syncStore.listChanges()).items).toHaveLength(2);
     state.account = "another-native-account";
-    const different = await runner.run({ definitionId: granolaMeetings.id });
+    const different = await runner.run(input);
     expect(different.installationId).not.toBe(first.installationId);
   });
 
   it("refuses an email-only principal, write operations, and HTTP errors", async () => {
     const state = protocol();
     state.principalMissing = true;
-    await expect(verifyGranolaAccount(credential, { fetcher })).rejects.toThrow("account ID");
-    const context = { accessToken: "token", fetcher };
-    await expect(callGranolaTool(context, "delete_meeting", {})).rejects.toThrow("Unsupported");
-    await expect(callGranolaTool(context, "toString", {})).rejects.toThrow("Unsupported");
+    await expect(validateGranolaOAuthCredential(credential, { fetcher })).rejects.toThrow("account ID");
+    const adapter = createGranolaSyncProvider({
+      connection: { id: "connection", revision: "revision", service: "granola", connectionName: "default", credential },
+      signal: new AbortController().signal,
+    });
+    await expect(adapter.request("delete_meeting")).rejects.toThrow("Unsupported");
+    await expect(adapter.request("toString")).rejects.toThrow("Unsupported");
     fetcher.mockResolvedValue(new Response(null, { status: 429 }));
-    await expect(callGranolaTool(context, "list_meetings", {})).rejects.toMatchObject({ status: 429 });
+    await expect(adapter.request("list_meetings")).rejects.toMatchObject({ status: 429 });
   });
 
   it("bounds streaming MCP responses before the SDK accumulates an oversized result", async () => {
@@ -157,6 +202,6 @@ describe("Granola MCP protocol and durable acquisition", () => {
         },
         async (client) => client.listTools(),
       ),
-    ).rejects.toThrow("byte limit");
+    ).rejects.toThrow("size limit");
   });
 });

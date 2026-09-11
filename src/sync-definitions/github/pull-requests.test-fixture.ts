@@ -30,15 +30,6 @@ const review = (id: number) => ({
   url: `https://github.com/a/b/pull/1#review-${id}`,
   author: actor,
 });
-const commit = (id: number) => ({
-  commit: {
-    oid: `sha-${id}`,
-    message: `Commit ${id}`,
-    committedDate: timestamp,
-    url: `https://github.com/a/b/commit/sha-${id}`,
-    author: { user: actor },
-  },
-});
 const page = (nodes: unknown[], offset = 0) => ({
   totalCount: nodes.length,
   nodes: nodes.slice(offset, offset + 50),
@@ -48,7 +39,6 @@ const page = (nodes: unknown[], offset = 0) => ({
 export function githubPullRequestFixture(): GitHubPullRequestFixture {
   const comments = Array.from({ length: 101 }, (_, index) => comment(index));
   const reviews = Array.from({ length: 51 }, (_, index) => review(index));
-  const commits = Array.from({ length: 301 }, (_, index) => commit(index));
   const threadComments = Array.from({ length: 51 }, (_, index) => ({ ...comment(index), body: `Thread ${index}` }));
   const threads = [
     {
@@ -79,7 +69,6 @@ export function githubPullRequestFixture(): GitHubPullRequestFixture {
     author: actor,
     comments: page(comments),
     reviews: page(reviews),
-    commits: page(commits),
     reviewThreads: page(threads),
   };
   const graphql = vi.fn<(query: string, variables?: JsonObject) => Promise<JsonObject>>(
@@ -102,7 +91,6 @@ export function githubPullRequestFixture(): GitHubPullRequestFixture {
       if (variables.id === "thread-1") return { node: { comments: page(threadComments, offset) } } as JsonObject;
       if (query.includes("comments(first:")) return { node: { comments: page(comments, offset) } } as JsonObject;
       if (query.includes("reviews(first:")) return { node: { reviews: page(reviews, offset) } } as JsonObject;
-      if (query.includes("commits(first:")) return { node: { commits: page(commits, offset) } } as JsonObject;
       throw new Error("Unexpected query");
     },
   );

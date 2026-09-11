@@ -116,8 +116,8 @@ export type CustomCredentialAuthDefinition = {
 /**
  * OAuth client configuration required by the local runtime.
  *
- * Open source users provide their own provider OAuth app and configure its
- * callback URL to this local runtime.
+ * Users supply a provider OAuth app, or the runtime registers a public client
+ * when the provider supports dynamic client registration.
  */
 export type OAuth2AuthDefinition = {
   /** Auth discriminator used by catalog clients and connection routes. */
@@ -126,6 +126,10 @@ export type OAuth2AuthDefinition = {
   authorizationUrl: string;
   /** Provider token endpoint used to exchange an authorization code. */
   tokenUrl: string;
+  /** Register a public OAuth client automatically when no client is configured. Requires PKCE and auth method none. */
+  clientRegistrationUrl?: string;
+  /** RFC 8707 resource indicator sent during authorization, code exchange, and refresh. */
+  resource?: string;
   /** Provider token endpoint used to refresh an access token. Defaults to tokenUrl. */
   refreshTokenUrl?: string;
   /** OAuth scopes joined with spaces into the authorization URL `scope` parameter. */

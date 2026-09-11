@@ -22,41 +22,21 @@ export interface McpClientOptions {
   signal?: AbortSignal;
   protocolVersion?: McpProtocolVersion;
   mapError?: (error: unknown) => unknown;
-  /** Bound each transport response without buffering or interrupting normal SSE framing. */
+  /** Bound each response while retaining streaming JSON/SSE protocol framing. */
   maxResponseBytes?: number;
 }
 
 export async function withMcpClient<T>(options: McpClientOptions, run: (client: Client) => Promise<T>): Promise<T> {
-  const fetcher = options.fetcher ?? providerFetch;
   let responseSizeError: Error | undefined;
   const transportOptions = {
     fetch:
       options.maxResponseBytes === undefined
-        ? fetcher
-        : async (input: RequestInfo | URL, init?: RequestInit) => {
-            const response = await fetcher(input, init);
-            if (!response.body) return response;
-            let bytes = 0;
-            const body = response.body.pipeThrough(
-              new TransformStream<Uint8Array, Uint8Array>({
-                transform(chunk, controller) {
-                  bytes += chunk.byteLength;
-                  if (bytes > options.maxResponseBytes!) {
-                    responseSizeError = providerResponseError("MCP response exceeds the configured byte limit.");
-                    // An SSE read error alone does not reject the SDK's pending RPC. Close it to unblock callers.
-                    void client.close().catch(() => undefined);
-                    throw responseSizeError;
-                  }
-                  controller.enqueue(chunk);
-                },
-              }),
-            );
-            return new Response(body, {
-              status: response.status,
-              statusText: response.statusText,
-              headers: response.headers,
-            });
-          },
+        ? options.fetcher
+        : limitMcpResponseBytes(options.fetcher ?? providerFetch, options.maxResponseBytes, (error) => {
+            responseSizeError = error;
+            // An SSE read error alone does not reject pending RPCs. Closing the client unblocks them.
+            void client.close().catch(() => undefined);
+          }),
     requestInit: {
       headers: options.headers,
       redirect: options.redirect,
@@ -84,6 +64,28 @@ export async function withMcpClient<T>(options: McpClientOptions, run: (client: 
   } finally {
     await client.close().catch(() => undefined);
   }
+}
+
+function limitMcpResponseBytes(fetcher: typeof fetch, maxBytes: number, onLimit: (error: Error) => void): typeof fetch {
+  return async (input, init) => {
+    const response = await fetcher(input, init);
+    if (!response.body) return response;
+    let size = 0;
+    const body = response.body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          size += chunk.byteLength;
+          if (size > maxBytes) {
+            const error = providerResponseError("MCP response exceeds the size limit.");
+            onLimit(error);
+            throw error;
+          }
+          controller.enqueue(chunk);
+        },
+      }),
+    );
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+  };
 }
 
 function resolveVersionNegotiationMode(protocolVersion: McpProtocolVersion | undefined): VersionNegotiationMode {

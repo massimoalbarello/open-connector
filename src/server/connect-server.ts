@@ -950,6 +950,7 @@ export class ConnectServer {
         service,
         connectionName,
         clientConfig: readOAuthClientConfigInput(body),
+        signal: context.req.raw.signal,
       });
       const authorizationUrl = new URL(authorization.authorizationUrl);
       this.options.logger?.info(

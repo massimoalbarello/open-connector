@@ -26,7 +26,7 @@ function fixture(ids = ["a", "b"]) {
   });
   const context: SyncContext = {
     provider: { request },
-    config: {},
+    config: { includeTranscript: true },
     checkpoint: granolaMeetings.initialCheckpoint,
     sourceId: "account",
     signal: new AbortController().signal,
@@ -36,6 +36,17 @@ function fixture(ids = ["a", "b"]) {
 }
 
 describe("Granola meeting acquisition", () => {
+  it("syncs summaries with the free-plan default without requesting transcripts", async () => {
+    const { context, request } = fixture(["a"]);
+    const pages = await Array.fromAsync(run({ ...context, config: granolaMeetings.defaultConfig }));
+    const record = pages[0]!.records![0]!.record;
+    expect(normalizeSyncRecord(record, granolaMeetings.kinds[0]!)).toMatchObject({
+      id: "a",
+      content: { value: { title: "Roadmap & delivery" } },
+    });
+    expect(record.body).toContain("Not included in this sync");
+    expect(request.mock.calls.map(([name]) => name)).toEqual(["list_meetings", "get_meetings"]);
+  });
   it("combines both endpoints into deterministic Markdown without inventing source timestamps", async () => {
     const { context } = fixture(["a"]);
     const pages = await Array.fromAsync(run(context));
@@ -43,7 +54,7 @@ describe("Granola meeting acquisition", () => {
     expect(pages[0]).toMatchObject({ complete: true, checkpoint: { pendingIds: null } });
     const record = pages[0]!.records![0]!.record;
     const normalized = normalizeSyncRecord(record, granolaMeetings.kinds[0]!);
-    expect(record).toMatchObject({ id: "a", sourceUrl: "https://notes.granola.ai/d/a" });
+    expect(record).toMatchObject({ id: "a", title: "Roadmap & delivery", sourceUrl: "https://notes.granola.ai/d/a" });
     expect(record.body).toContain("# Roadmap & delivery");
     expect(record.body).toContain("## Summary\n\n## Decisions\n\n- Keep authored **Markdown** & code `a < b`.");
     expect(record.body).toContain("## Transcript\n\n[00:10] Me: Preserve what was said. Them: Yes & thank you.");
@@ -122,5 +133,37 @@ describe("Granola meeting acquisition", () => {
     );
     expect(authored.body).toContain("## Summary\n\n    indented code");
     expect(authored.body).toContain("## Transcript\n\n  A speaker's words.");
+    expect(renderMeeting({ ...meeting, title: "   ", summary: "Summary" }).title).toBe("Untitled meeting");
+    expect(() => parseMeetings(`<meetings_data has_more="true">${details("a")}</meetings_data>`)).toThrow("truncated");
+    expect(() => parseMeetings(`<meetings_data next_cursor="next">${details("a")}</meetings_data>`)).toThrow(
+      "truncated",
+    );
+  });
+
+  it("preserves identity and detects title changes while normalizing participant order", async () => {
+    const meeting = parseMeetings(list(["a"]))[0]!;
+    const record = renderMeeting(meeting, "Transcript");
+    const reordered = renderMeeting(
+      { ...meeting, attendees: "Max (note creator) <max@example.com>, Ada <ada@example.com>" },
+      "Transcript",
+    );
+    expect(normalizeSyncRecord(reordered, granolaMeetings.kinds[0]!)).toEqual(
+      normalizeSyncRecord(record, granolaMeetings.kinds[0]!),
+    );
+    const retitled = renderMeeting({ ...meeting, title: "Updated title" }, "Transcript");
+    expect(retitled.id).toBe(record.id);
+    expect(normalizeSyncRecord(retitled, granolaMeetings.kinds[0]!)).not.toEqual(
+      normalizeSyncRecord(record, granolaMeetings.kinds[0]!),
+    );
+  });
+
+  it("stops cancelled acquisition before hydrating a saved checkpoint", async () => {
+    const { context, request } = fixture();
+    await expect(
+      Array.fromAsync(
+        run({ ...context, checkpoint: { pendingIds: ["a"] }, signal: AbortSignal.abort(new Error("Cancelled")) }),
+      ),
+    ).rejects.toThrow("Cancelled");
+    expect(request).not.toHaveBeenCalled();
   });
 });

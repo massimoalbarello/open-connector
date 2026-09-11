@@ -76,7 +76,21 @@ export function registerSyncRoutes(
       return jsonError(context, 503, "scheduler_stopped", "Automatic polling is stopped on this runtime.");
     try {
       store.delivery.requireDestination();
-      store.schedule.requestRun(context.req.param("id"));
+      const parsed = z.strictObject({ backfill: z.boolean().optional() }).safeParse(await readJsonBody(context, 1024));
+      if (!parsed.success) return jsonError(context, 400, "invalid_input", "Invalid sync run request.");
+      const installation = await store.getInstallation(context.req.param("id"));
+      if (!installation || installation.removedAt)
+        return jsonError(context, 404, "installation_not_found", "Sync installation not found.");
+      if (
+        !runner
+          .definitions()
+          .some(
+            (definition) =>
+              definition.id === installation.definitionId && definition.version === installation.definitionVersion,
+          )
+      )
+        return jsonError(context, 400, "invalid_input", "Sync definition is unavailable or requires migration.");
+      store.schedule.requestRun(installation.id, parsed.data.backfill);
       scheduler.tick();
       return context.json({ queued: true }, 202);
     } catch (error) {

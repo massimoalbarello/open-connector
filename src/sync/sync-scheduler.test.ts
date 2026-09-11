@@ -54,7 +54,7 @@ async function fixture(custom?: SyncDefinitionRuntime, contract: SyncDefinition 
       const cursor = Number((context.checkpoint as { cursor: number }).cursor);
       for (let index = cursor; index < 2; index++)
         yield {
-          records: [{ kind: "record", record: { id: String(index), body: state.body } }],
+          records: [{ kind: "record", record: { id: String(index), title: "Record title", body: state.body } }],
           checkpoint: { cursor: index + 1 },
           complete: false,
         };
@@ -150,7 +150,7 @@ describe("embedded sync scheduler", () => {
         const cursor = Number((context.checkpoint as { cursor: number }).cursor);
         cursors.push(cursor);
         yield {
-          records: [{ kind: "record", record: { id: String(cursor), body: "Saved" } }],
+          records: [{ kind: "record", record: { id: String(cursor), title: "Record title", body: "Saved" } }],
           checkpoint: { cursor: cursor + 1 },
           complete: cursor > 0,
         };
@@ -236,6 +236,146 @@ describe("embedded sync scheduler", () => {
     expect(Date.parse(status.installations[0]!.nextDueAt!) - Date.parse(status.installations[0]!.lastSuccessAt!)).toBe(
       60_000,
     );
+  });
+
+  it("queues a durable backfill through the API and resumes after failure without replacing record identities", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    let body = "Original";
+    let fail = false;
+    const cursors: number[] = [];
+    const f = await fixture({
+      async *run(context) {
+        const cursor = Number((context.checkpoint as { cursor: number }).cursor);
+        cursors.push(cursor);
+        for (let index = cursor; index < 3; index++) {
+          yield {
+            records: [{ kind: "record", record: { id: String(index), title: `Record ${index}`, body } }],
+            checkpoint: { cursor: index + 1 },
+            complete: false,
+          };
+          if (fail) {
+            fail = false;
+            throw new Error("Interrupted reprocessing");
+          }
+        }
+        yield { checkpoint: { cursor: 3 }, complete: true };
+      },
+    });
+    const first = await f.runner.run({ definitionId: definition.id });
+    const id = first.installationId!;
+    const original = (await f.database.syncStore.listChanges()).items;
+    const checkpoint = await f.database.syncStore.getCheckpoint(id);
+    body = "New Markdown";
+    fail = true;
+    const tick = vi.spyOn(f.scheduler, "tick").mockImplementation(() => {});
+    f.scheduler.start();
+    const app = new Hono();
+    app.use("/api/*", createLocalAuthMiddleware({ adminToken: "admin" }));
+    registerSyncRoutes(app, f.runner, f.database.syncStore, f.delivery, f.scheduler);
+    const path = `/api/sync/installations/${id}/run`;
+    const request = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ backfill: true }),
+    };
+    expect((await app.request(path, request)).status).toBe(401);
+    expect(
+      (
+        await app.request(path, {
+          ...request,
+          headers: { ...request.headers, authorization: "Bearer admin" },
+          body: JSON.stringify({ backfill: "yes" }),
+        })
+      ).status,
+    ).toBe(400);
+    const response = await app.request(path, {
+      ...request,
+      headers: { ...request.headers, authorization: "Bearer admin" },
+    });
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ queued: true });
+    expect(await f.database.syncStore.getCheckpoint(id)).toEqual(checkpoint);
+    expect(await f.database.syncStore.getInstallation(id)).toMatchObject({ state: "enabled", requiresBackfill: true });
+    tick.mockRestore();
+    await f.restart();
+    f.scheduler.tick();
+    await vi.waitFor(async () => expect((await f.database.syncStore.status.read()).runs).toHaveLength(2));
+    await vi.waitFor(() => expect(f.runner.busy).toBe(false));
+    expect((await f.database.syncStore.status.read()).runs[0]).toMatchObject({
+      reason: "backfill",
+      state: "failed",
+      pageCount: 1,
+    });
+    expect(await f.database.syncStore.getCheckpoint(id)).toMatchObject({ value: { cursor: 1 } });
+    const interrupted = (await f.database.syncStore.getInstallation(id))!;
+    expect(interrupted.requiresBackfill).toBe(false);
+    await f.restart();
+    vi.setSystemTime(interrupted.nextDueAt!);
+    f.scheduler.tick();
+    await vi.waitFor(() => expect(cursors).toEqual([0, 0, 1]));
+    await vi.waitFor(() => expect(f.runner.busy).toBe(false));
+    const changes = (await f.database.syncStore.listChanges()).items;
+    expect(changes).toHaveLength(6);
+    expect(changes.slice(3)).toEqual(
+      original.map((record) =>
+        expect.objectContaining({
+          sourceId: record.sourceId,
+          kind: record.kind,
+          recordId: record.recordId,
+          operation: "updated",
+          recordRevision: 2,
+        }),
+      ),
+    );
+    expect((await f.database.syncStore.status.read()).installations[0]?.recordCount).toBe(3);
+    expect(await f.database.syncStore.getCheckpoint(id)).toMatchObject({ value: { cursor: 3 } });
+  });
+
+  it("rejects resetting an active sync and preserves a queued reset when stopped", async () => {
+    const f = await fixture();
+    const first = await f.runner.run({ definitionId: definition.id });
+    const id = first.installationId!;
+    const store = f.database.syncStore;
+    const checkpoint = await store.getCheckpoint(id);
+    const running = await store.startRun({
+      id: "active",
+      installationId: id,
+      definitionVersion: "1",
+      reason: "manual",
+      leaseOwner: "worker",
+      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      startedAt: now(),
+    });
+    expect(() => store.schedule.requestRun(id, true)).toThrow("already running");
+    expect(await store.getCheckpoint(id)).toEqual(checkpoint);
+    await store.finishRun({
+      runId: running.id,
+      owner: "worker",
+      generation: 1,
+      state: "succeeded",
+      completedAt: now(),
+    });
+    store.schedule.requestRun(id, true);
+    store.schedule.configure({ installationId: id, enabled: false });
+    expect(store.schedule.due(now())).toBeUndefined();
+    await expect(
+      store.startRun({
+        id: "stopped-backfill",
+        installationId: id,
+        definitionVersion: "1",
+        reason: "backfill",
+        resetCheckpoint: definition.initialCheckpoint,
+        leaseOwner: "worker",
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        startedAt: now(),
+      }),
+    ).rejects.toThrow("not enabled");
+    expect(await store.getCheckpoint(id)).toEqual(checkpoint);
+    store.schedule.requestRun(id, true);
+    expect(store.schedule.due(now())?.installation).toMatchObject({ id, requiresBackfill: true });
+    store.schedule.remove(id);
+    expect(() => store.schedule.requestRun(id, true)).toThrow("not found");
+    expect(() => store.schedule.requestRun("missing", true)).toThrow("not found");
   });
 
   it("backs off failed source verification durably and retries a replaced credential immediately", async () => {
@@ -472,8 +612,11 @@ describe("embedded sync scheduler", () => {
     expect((await store.getInstallation(seeded.installationId!))?.requiresBackfill).toBe(true);
     expect(store.schedule.due(now())).toBeUndefined();
     await expect(f.runner.run({ definitionId: definition.id })).rejects.toThrow("explicit backfill");
-    const recovered = await f.runner.run({ definitionId: definition.id, backfill: true });
-    expect(recovered.complete).toBe(true);
+    store.schedule.requestRun(seeded.installationId!, true);
+    f.scheduler.tick();
+    await vi.waitFor(async () => expect((await store.status.read()).runs).toHaveLength(3));
+    await vi.waitFor(() => expect(f.runner.busy).toBe(false));
+    expect((await store.status.read()).runs[0]).toMatchObject({ reason: "backfill", state: "succeeded" });
     expect((await store.getInstallation(seeded.installationId!))?.requiresBackfill).toBe(false);
     expect((await store.getCheckpoint(seeded.installationId!))!.revision).toBeGreaterThan(checkpoint.revision);
     expect((await store.getRecord(seeded.installationId!, "record", "0"))?.revision).toBe(1);
@@ -541,8 +684,8 @@ it("runs the compiled GitHub sync through the scheduler and real HTTP receiver, 
   await vi.waitFor(async () => expect((await f.database.syncStore.status.read()).runs[0]?.state).toBe("succeeded"));
   f.scheduler.tick();
   await vi.waitFor(() => expect(received).toHaveLength(1));
-  expect(received[0]?.content?.body).toContain("Commit 300");
-  expect(received[0]?.content?.body).toContain("Thread 50");
+  expect(received[0]?.operation !== "deleted" ? received[0]?.content.body : undefined).not.toContain("## Commits");
+  expect(received[0]?.operation !== "deleted" ? received[0]?.content.body : undefined).toContain("Thread 50");
   expect(received[0]?.revision).toBe(1);
   await vi.waitFor(async () => expect(f.database.syncStore.delivery.status().pendingRecords).toBe(0));
   await f.restart();
@@ -556,7 +699,9 @@ it("runs the compiled GitHub sync through the scheduler and real HTTP receiver, 
   expect(received[1]?.id).toBe(received[0]?.id);
   expect(received[1]?.sourceId).toBe(received[0]?.sourceId);
   expect(received[1]?.revision).toBe(2);
-  expect(received[1]?.content?.body).toContain("An old child comment was corrected");
+  expect(received[1]?.operation !== "deleted" ? received[1]?.content.body : undefined).toContain(
+    "An old child comment was corrected",
+  );
 });
 
 it("manages syncs through authenticated routes without losing committed progress", async () => {
@@ -566,7 +711,7 @@ it("manages syncs through authenticated routes without losing committed progress
       const cursor = Number((context.checkpoint as { cursor: number }).cursor);
       cursors.push(cursor);
       yield {
-        records: [{ kind: "record", record: { id: String(cursor), body: "Saved" } }],
+        records: [{ kind: "record", record: { id: String(cursor), title: "Record title", body: "Saved" } }],
         checkpoint: { cursor: cursor + 1 },
         complete: cursor > 0,
       };
