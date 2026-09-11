@@ -1,11 +1,19 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 
-import { defineApiKeyProviderExecutors, defineProviderProxy } from "../provider-runtime.ts";
+import {
+  defineApiKeyProviderExecutors,
+  defineOAuthProviderExecutors,
+  defineProviderProxy,
+} from "../provider-runtime.ts";
+import { granolaMcpActionHandlers, validateGranolaOAuthCredential } from "./runtime-mcp.ts";
 import { granolaActionHandlers, granolaApiBaseUrl, validateGranolaCredential } from "./runtime.ts";
 
 const service = "granola";
 
-export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, granolaActionHandlers);
+export const executors: ProviderExecutors = {
+  ...defineApiKeyProviderExecutors(service, granolaActionHandlers),
+  ...defineOAuthProviderExecutors(service, granolaMcpActionHandlers, { skipDnsValidation: true }),
+};
 
 export const proxy: ProviderProxyExecutor = defineProviderProxy({
   service,
@@ -18,6 +26,7 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
 });
 
 export const credentialValidators: CredentialValidators = {
+  oauth2: validateGranolaOAuthCredential,
   apiKey(input, { fetcher, signal }) {
     return validateGranolaCredential(input.apiKey, fetcher, signal);
   },
