@@ -27,15 +27,9 @@ The platform-owned `NIBRUN_HTTP_PORT`, `NIBRUN_DATA_DIR`, and `NIBRUN_HOSTNAME` 
 without deployment-specific wrappers. Explicit `PORT`, `HOST`, `OOMOL_CONNECT_DATA_DIR`, and
 `OOMOL_CONNECT_ORIGIN` values continue to override the corresponding defaults.
 
-The README deploy button uses this fork's latest successful `main` build and asks for those secrets
-before creating an app. CI builds and smoke-tests the Linux binary, then creates or updates the
-[`nibrun-latest` prerelease](https://github.com/massimoalbarello/open-connector/releases/tag/nibrun-latest)
-with `open-connector-linux-x64`. It replaces the asset in the same rolling prerelease after each
-successful push to `main`, keeping the button's download URL stable. You can import a local `.env`
-containing the three secrets with **Load a .env file** in the deployment form.
-
-To build and deploy from a checkout instead, install and authenticate the CLI, then export secrets
-for the first deployment:
+The README deploy button uses the latest successful `main` build and asks for those secrets before
+creating an app. To build and deploy from a checkout instead, install and authenticate the CLI,
+then export secrets for the first deployment:
 
 ```bash
 curl -fsSL https://nibrun.com/install.sh | sh
