@@ -35,6 +35,8 @@ export interface SyncParticipant {
 /** Author-owned content. Important structured facts must also appear in body. */
 export interface SyncRecordInput {
   id: string;
+  /** Descriptive plain text chosen by the sync for display and search. */
+  title: string;
   body: string;
   sourceUrl?: string;
   sourceCreatedAt?: string;
@@ -65,6 +67,7 @@ const participantSchema = s.object(
 export function syncRecordSchema(kind: SyncKindContract): JsonSchema {
   const properties: Record<string, JsonSchema> = {
     id: s.nonWhitespaceString("Opaque provider-native ID.", { maxLength: 1024 }),
+    title: s.nonWhitespaceString("Descriptive plain-text title chosen by the sync for display and search."),
     body: nonempty,
     sourceUrl: s.url("Link to the source record."),
     sourceCreatedAt: s.string(),
@@ -76,7 +79,7 @@ export function syncRecordSchema(kind: SyncKindContract): JsonSchema {
       throw new SyncStoreError("invalid_input", "Attributes must declare a closed object schema.");
     properties.attributes = kind.attributesSchema;
   }
-  return s.object(properties, { required: ["id", "body"] });
+  return s.object(properties, { required: ["id", "title", "body"] });
 }
 
 /** Normalize without trimming Markdown or converting opaque IDs to numbers. Hash content only. */

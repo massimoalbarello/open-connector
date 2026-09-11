@@ -11,6 +11,8 @@ describe("GitHub pull request sync", () => {
     const pages = await Array.fromAsync(run(context));
     const record = pages[0]!.records![0]!.record;
     expect(record.id).toBe("PR_native");
+    expect(record.title).toBe("a/b #1: Complete PR");
+    expect(record.body.startsWith(`# ${record.title}\n`)).toBe(true);
     for (const text of [
       "Author Markdown",
       "Comment 100",

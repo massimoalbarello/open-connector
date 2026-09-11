@@ -3,7 +3,11 @@ import { s } from "../core/json-schema.ts";
 import { normalizeSourceTimestamp, normalizeSyncRecord } from "./record-contract.ts";
 
 const kind = { kind: "pull-request", attributesSchema: s.object({ status: s.string(), count: s.number() }) };
-const base = { id: "90071992547409931234567890", body: "# Pull request\n\n  Preserve Markdown.\n" };
+const base = {
+  id: "90071992547409931234567890",
+  title: "owner/repo #42: Preserve Markdown",
+  body: "# Pull request\n\n  Preserve Markdown.\n",
+};
 
 describe("shared Markdown record contract", () => {
   it("hashes normalized content and excludes record identity and framework envelopes", () => {
@@ -17,6 +21,7 @@ describe("shared Markdown record contract", () => {
     );
     expect(first.id).toBe(base.id);
     expect(first.content.value.body).toBe(base.body);
+    expect(first.content.value.title).toBe(base.title);
     expect(first.content.sha256).toBe(again.content.sha256);
     const changed = normalizeSyncRecord(
       { ...base, sourceUpdatedAt: "2024-02-29T12:00:00.1Z", attributes: { count: 3, status: "open" } },
@@ -24,6 +29,16 @@ describe("shared Markdown record contract", () => {
     );
     expect(changed.content.sha256).not.toBe(first.content.sha256);
     expect(first.content.value).not.toHaveProperty("id");
+  });
+
+  it("hashes title-only corrections without changing identity or Markdown", () => {
+    const first = normalizeSyncRecord(base, kind);
+    const updated = normalizeSyncRecord({ ...base, title: "owner/repo #42: Fix Unicode résumé 🐛" }, kind);
+    expect(updated.id).toBe(first.id);
+    expect(updated.content.value.body).toBe(first.content.value.body);
+    expect(updated.content.value.title).toBe("owner/repo #42: Fix Unicode résumé 🐛");
+    expect(updated.content.sha256).not.toBe(first.content.sha256);
+    expect(normalizeSyncRecord({ ...base, title: updated.content.value.title }, kind)).toEqual(updated);
   });
 
   it("normalizes set ordering without using participant display names as identities", () => {
@@ -46,11 +61,13 @@ describe("shared Markdown record contract", () => {
   });
 
   it.each([
-    { id: "", body: "text" },
-    { id: "  ", body: "text" },
-    { id: 9007199254740992, body: "text" },
-    { id: "1", body: " \n " },
-    { id: "1" },
+    { ...base, id: "", body: "text" },
+    { ...base, id: "  ", body: "text" },
+    { ...base, id: 9007199254740992, body: "text" },
+    { ...base, id: "1", body: " \n " },
+    { id: "1", title: "Missing body" },
+    { id: "1", body: "Missing title" },
+    ...["", " \n \t", null, 42].map((title) => ({ ...base, title })),
     { ...base, body: null },
     ...["provider", "kind", "sourceId", "revision", "eventId", "observedAt", "attachments", "raw"].map((field) => ({
       ...base,

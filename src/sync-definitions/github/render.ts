@@ -84,8 +84,9 @@ export function renderPullRequest(input: PullRequestContent): SyncRecordInput {
     }
     return name;
   };
+  const title = `${repository.nameWithOwner} #${pull.number}: ${pull.title}`;
   const lines = [
-    `# ${repository.nameWithOwner} #${pull.number}: ${pull.title}`,
+    `# ${title}`,
     pull.url,
     `State: ${pull.state}${pull.isDraft ? " (draft)" : ""}`,
     `Author: ${actor(pull.author, "author")}`,
@@ -132,6 +133,7 @@ export function renderPullRequest(input: PullRequestContent): SyncRecordInput {
   }
   return {
     id: pull.id,
+    title,
     body: lines.join("\n\n"),
     sourceUrl: pull.url,
     sourceCreatedAt: pull.createdAt,

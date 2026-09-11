@@ -12,14 +12,37 @@ A `2xx` response acknowledges the complete batch. Destinations should respond on
 record is durably accepted; any other response may cause OpenConnector to retry the exact body and
 idempotency key. A destination can return `Retry-After` to request a delay.
 
-Each batch contains at most 50 records and is at most 16 MiB. Upserts contain Markdown `body` plus
-optional source metadata; deletions are tombstones without content. Receivers should deduplicate
+Each batch contains at most 50 records and is at most 16 MiB. Version 2 upserts contain a non-blank plain-text `title`,
+Markdown `body`, and optional source metadata; deletions are tombstones without content. Receivers should deduplicate
 events by `eventId`, use `(sourceId, kind, id)` as the record identity, and ignore revisions older
 than the latest accepted revision. All field constraints are defined in the OpenAPI schema.
 
 `contentHash` is the lowercase SHA-256 of content encoded as UTF-8 canonical JSON: object keys are
 sorted recursively, array order is preserved, non-finite numbers are rejected, and negative zero is
 normalized to zero. A deletion carries the hash of the last content.
+
+The sync chooses a meaningful title with enough source context to distinguish the record in a list
+(for example, `owner/repository #42: Fix pagination`). It is content, not identity: title-only edits
+change the content hash and advance the record revision. The framework does not infer titles from
+Markdown or substitute opaque IDs. GitHub uses the same title in its Markdown heading.
+
+`provider` and `kind` identify the record's origin and data kind. `sourceCreatedAt` and
+`sourceUpdatedAt` describe source timestamps when available; `committedAt` is the connector commit
+time. Missing source timestamps stay absent rather than being replaced with fetch or commit time.
+
+## Upgrading from version 1
+
+Version 1 receivers reject the new field. Pause acquisition, drain all pending deliveries using the
+old binary and receiver, and stop the old binary. Back up the SQLite database, upgrade the receiver
+to version 2, then start the version 2 sender and resume acquisition. The upgrade migration refuses
+to run while any outbox entry is unacknowledged; it leaves the queue and migration state untouched.
+If it refuses, restart the old binary and finish draining before retrying. Do not run the old and new
+binaries concurrently against the same database.
+
+Existing source identities, revisions, and checkpoints are retained. Titles arrive as records are
+reacquired; GitHub's regular full reconciliation also revisits old records. No old payloads or
+hashes are rewritten. To roll back after v2 acquisition, stop the sender and restore the pre-upgrade
+database together with the old sender and receiver; do not send v2 queue contents through a v1 sender.
 
 Changes incompatible with existing destinations require a new envelope `version` and OpenAPI
 contract version.

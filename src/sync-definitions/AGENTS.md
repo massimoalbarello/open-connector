@@ -45,7 +45,7 @@ The framework must not need provider-specific knowledge to store or deliver it.
 
 ## Markdown-first record contract
 
-Sync authors supply required `id` and non-empty `body` (Markdown). Optional fields are `sourceUrl`,
+Sync authors supply required `id`, non-empty `title` (plain text), and non-empty `body` (Markdown). Optional fields are `sourceUrl`,
 `sourceCreatedAt`, `sourceUpdatedAt`, `participants`, and schema-declared `attributes`. The framework
 adds `provider`, `kind`, and the source namespace; it owns observation/commit times, hashes,
 revisions, operations, and delivery envelopes. Do not duplicate those framework fields in output.
@@ -73,7 +73,7 @@ revisions, operations, and delivery envelopes. Do not duplicate those framework 
 
 ## Deterministic changes
 
-Leave normalization, hashing, and revision assignment to the framework. Content includes the body,
+Leave normalization, hashing, and revision assignment to the framework. Content includes the title, body,
 source URL/timestamps, participants, and attributes; a structured-field change matters even when
 the Markdown is unchanged. Do not add content hashes or operational metadata to a record.
 

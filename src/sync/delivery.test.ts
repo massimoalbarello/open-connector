@@ -1,5 +1,6 @@
 import type { SyncDeliveryEnvelope } from "./delivery-store.ts";
 
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import { startLoggingReceiver } from "../../examples/sync/receiver-server.ts";
 import { createSecretCodec } from "../server/secrets/secret-codec.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite-runtime-store.ts";
 import { SyncDeliveryWorker } from "./delivery-worker.ts";
+import { runSyncTransaction } from "./sqlite-sync-transaction.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 const definition = { id: "test", version: "1", provider: "github", kinds: [{ kind: "record" }] };
@@ -66,7 +68,7 @@ async function setup() {
       enabled: true,
     });
   const commit = async (
-    records = [{ kind: "record", record: { id: "one", body: "# Complete record" } }],
+    records = [{ kind: "record", record: { id: "one", title: "Record title", body: "# Complete record" } }],
     deletes?: { kind: string; id: string }[],
   ) => {
     const result = await database.syncStore.commitPage({
@@ -104,13 +106,41 @@ afterEach(async () => {
 });
 
 describe("durable sync delivery", () => {
+  it.each([false, true])("refuses the v2 upgrade without changing queued deliveries (claimed: %s)", async (claimed) => {
+    const f = await setup();
+    await f.commit();
+    const lease = claimed ? await f.database.syncStore.delivery.claim(now()) : undefined;
+    const raw = new DatabaseSync(f.path);
+    const migration = readFileSync(new URL("../../migrations/0014_record_titles.sql", import.meta.url), "utf8");
+    const snapshot = () =>
+      ["sync_records", "sync_changes", "sync_outbox", "sync_delivery_batches", "runtime_migrations"].map((table) =>
+        raw.prepare(`select * from ${table}`).all(),
+      );
+    try {
+      const before = snapshot();
+      expect(() => runSyncTransaction(raw, () => raw.exec(migration))).toThrow("Drain pending record deliveries");
+      expect(snapshot()).toEqual(before);
+      expect(raw.prepare("select name from sqlite_temp_master").all()).toEqual([]);
+      if (lease) f.database.syncStore.delivery.complete({ lease, acknowledged: false, now: now(), retryAt: now() });
+      const retry = (await f.database.syncStore.delivery.claim(now()))!;
+      if (lease) expect(retry.body).toBe(lease.body);
+      f.database.syncStore.delivery.complete({ lease: retry, acknowledged: true, now: now() });
+      const drained = snapshot();
+      runSyncTransaction(raw, () => raw.exec(migration));
+      expect(snapshot()).toEqual(drained);
+      expect(raw.prepare("select name from sqlite_temp_master").all()).toEqual([]);
+    } finally {
+      raw.close();
+    }
+  });
+
   it("reports distinct live records separately from delivery history, including retries, purging and deletions", async () => {
     const f = await setup();
     const store = f.database.syncStore;
     await f.register("first");
     await f.commit([
-      { kind: "record", record: { id: "one", body: "First" } },
-      { kind: "record", record: { id: "two", body: "Second" } },
+      { kind: "record", record: { id: "one", title: "Record title", body: "First" } },
+      { kind: "record", record: { id: "two", title: "Record title", body: "Second" } },
     ]);
     const stats = async () => (await store.status.read()).installations.find((item) => item.id === f.id);
     expect(await stats()).toMatchObject({
@@ -135,7 +165,10 @@ describe("durable sync delivery", () => {
     store.delivery.complete({ lease: retry, acknowledged: true, now: now() });
     expect((await store.getRecord(f.id, "record", "one"))?.content).toBeUndefined();
     expect(await stats()).toMatchObject({ recordCount: 2, deliveredCount: 2, pendingCount: 0 });
-    await f.commit([{ kind: "record", record: { id: "one", body: "Updated" } }], [{ kind: "record", id: "two" }]);
+    await f.commit(
+      [{ kind: "record", record: { id: "one", title: "Record title", body: "Updated" } }],
+      [{ kind: "record", id: "two" }],
+    );
     expect(await stats()).toMatchObject({ recordCount: 1, deliveredCount: 2, pendingCount: 2 });
     await store.delivery.configure({
       url: "https://second.example.com/records",
@@ -275,7 +308,9 @@ describe("durable sync delivery", () => {
     const f = await setup();
     const committed = await f.commit();
     const old = (await f.database.syncStore.delivery.claim(now()))!;
-    await f.commit([{ kind: "record", record: { id: "two", body: "Waiting for its first batch" } }]);
+    await f.commit([
+      { kind: "record", record: { id: "two", title: "Record title", body: "Waiting for its first batch" } },
+    ]);
     f.database.syncStore.delivery.remove();
     expect(() => f.database.syncStore.delivery.complete({ lease: old, acknowledged: true, now: now() })).toThrow(
       "lease",
@@ -320,7 +355,10 @@ describe("durable sync delivery", () => {
     const f = await setup();
     await f.register("first");
     await f.commit(
-      Array.from({ length: 51 }, (_, index) => ({ kind: "record", record: { id: String(index), body: "# Record" } })),
+      Array.from({ length: 51 }, (_, index) => ({
+        kind: "record",
+        record: { id: String(index), title: "Record title", body: "# Record" },
+      })),
     );
     const first = (await f.database.syncStore.delivery.claim(now()))!;
     expect(JSON.parse(first.body).records).toHaveLength(50);
@@ -400,14 +438,17 @@ describe("durable sync delivery", () => {
     if (newerRecord.operation === "deleted") throw new Error("Expected an upsert delivery.");
     newerRecord.eventId = "01991c55-a120-7394-aef7-b08403e90943";
     newerRecord.revision = 2;
-    newerRecord.content = { body: "# New" };
+    newerRecord.content = { title: "Renamed record", body: "# Complete record" };
     newerRecord.contentHash = "1".repeat(64);
     expect((await send(JSON.stringify(newer))).status).toBe(200);
     const stale = JSON.parse(lease.body);
     stale.batchId = "01991c55-a120-7394-aef7-b08403e90944";
     stale.records[0].eventId = "01991c55-a120-7394-aef7-b08403e90945";
     expect((await send(JSON.stringify(stale))).status).toBe(200);
-    expect(received).toHaveLength(2);
+    expect(received).toMatchObject([
+      { content: { title: "Record title", body: "# Complete record" } },
+      { content: { title: "Renamed record", body: "# Complete record" } },
+    ]);
     f.database.syncStore.delivery.complete({ lease, acknowledged: false, now: now(), retryAt: now() });
     const worker = new SyncDeliveryWorker({
       store: f.database.syncStore.delivery,
@@ -487,8 +528,8 @@ describe("iteration delivery and destination management", () => {
       expectedCheckpointRevision: 1,
       nextCheckpoint: {},
       upserts: [
-        { kind: "record", record: { id: "one", body: "# Complete record" } },
-        { kind: "record", record: { id: "two", body: "New record" } },
+        { kind: "record", record: { id: "one", title: "Record title", body: "# Complete record" } },
+        { kind: "record", record: { id: "two", title: "Record title", body: "New record" } },
       ],
       committedAt: now(),
     };

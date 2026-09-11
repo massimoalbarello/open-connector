@@ -12,7 +12,7 @@ const upsert = {
   revision: 1,
   operation: "added",
   contentHash: "a".repeat(64),
-  content: { body: "# Pull request" },
+  content: { title: "owner/repo #42: Fix pagination", body: "# Pull request" },
   committedAt: "2026-09-10T10:00:00.000Z",
 };
 
@@ -25,6 +25,29 @@ describe("record delivery contract", () => {
         records: [upsert],
       }).valid,
     ).toBe(true);
+  });
+
+  it.each([undefined, null, "", " \n\t", 42])("rejects an upsert without a non-blank title: %j", (title) => {
+    const content = title === undefined ? { body: upsert.content.body } : { ...upsert.content, title };
+    expect(
+      validator.validate({
+        version: recordDeliveryContract.version,
+        batchId: "01991c55-a120-7394-aef7-b08403e90943",
+        records: [{ ...upsert, content }],
+      }).valid,
+    ).toBe(false);
+  });
+
+  it("requires version 2 while keeping deletions content-free", () => {
+    const { content: _content, ...deleted } = upsert;
+    const envelope = {
+      version: 2,
+      batchId: "01991c55-a120-7394-aef7-b08403e90943",
+      records: [{ ...deleted, operation: "deleted" }],
+    };
+    expect(recordDeliveryContract.version).toBe(2);
+    expect(validator.validate(envelope).valid).toBe(true);
+    expect(validator.validate({ ...envelope, version: 1 }).valid).toBe(false);
   });
 
   it("enforces operation content and batch limits", () => {

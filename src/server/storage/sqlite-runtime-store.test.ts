@@ -52,6 +52,7 @@ describe("SqliteRuntimeDatabase", () => {
       "0011_runtime_token_connection_scope.sql",
       "0012_marketplace.sql",
       "0013_sync_state.sql",
+      "0014_record_titles.sql",
     ];
     expect(entries.filter((entry) => entry.message === "sqlite migration started")).toEqual(
       migrations.map((migration) => ({ fields: { migration }, message: "sqlite migration started" })),
@@ -862,7 +863,7 @@ describe("SqliteRuntimeDatabase", () => {
       lease: { owner: "worker-1", generation: 1 },
       expectedCheckpointRevision: 0,
       nextCheckpoint: { cursor: "page-1" },
-      upserts: [{ kind: "PullRequest", record: { id: "PR_1", body: "# Pull request 1" } }],
+      upserts: [{ kind: "PullRequest", record: { id: "PR_1", title: "Pull request 1", body: "# Pull request 1" } }],
       committedAt: syncStartedAt,
     });
 

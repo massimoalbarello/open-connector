@@ -2,13 +2,13 @@ import type { Schema } from "@cfworker/json-schema";
 
 /** Generated from docs/record-delivery.openapi.yaml. Do not hand-edit. */
 export const recordDeliveryContract: {
-  readonly version: 1;
+  readonly version: 2;
   readonly maximumBatchRecords: 50;
   readonly maximumDeliveryBytes: 16777216;
   readonly maximumRecordBytes: 8388608;
   readonly maximumAttributesBytes: 16384;
 } = {
-  version: 1,
+  version: 2,
   maximumBatchRecords: 50,
   maximumDeliveryBytes: 16777216,
   maximumRecordBytes: 8388608,
@@ -25,7 +25,7 @@ export const recordDeliveryEnvelopeSchema: Schema = {
   "x-open-connector-maximum-record-bytes": 8388608,
   properties: {
     version: {
-      const: 1,
+      const: 2,
     },
     batchId: {
       type: "string",
@@ -99,8 +99,14 @@ export const recordDeliveryEnvelopeSchema: Schema = {
               content: {
                 type: "object",
                 additionalProperties: false,
-                required: ["body"],
+                required: ["title", "body"],
                 properties: {
+                  title: {
+                    type: "string",
+                    minLength: 1,
+                    pattern: "\\S",
+                    description: "Descriptive plain-text title chosen by the sync for display and search.",
+                  },
                   body: {
                     type: "string",
                     minLength: 1,
@@ -256,7 +262,7 @@ export const recordDeliveryEnvelopeSchema: Schema = {
  * A durable batch delivered by OpenConnector to one configured destination.
  */
 export interface SyncDeliveryEnvelope {
-  version: 1;
+  version: 2;
   /**
    * Stable batch identity. Retries preserve this value and the exact request body.
    */
@@ -282,6 +288,10 @@ export interface SyncDeliveryEnvelope {
          */
         contentHash: string;
         content: {
+          /**
+           * Descriptive plain-text title chosen by the sync for display and search.
+           */
+          title: string;
           /**
            * Markdown body of the record.
            */

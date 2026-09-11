@@ -87,7 +87,9 @@ async function seed(database: SqliteRuntimeDatabase, installationId: string, run
     lease: { owner: "worker", generation: 1 },
     expectedCheckpointRevision: 0,
     nextCheckpoint: { cursor: "durable" },
-    upserts: [{ kind: "record", record: { id: "large-9007199254740993123", body: "# Complete record" } }],
+    upserts: [
+      { kind: "record", record: { id: "large-9007199254740993123", title: "Record title", body: "# Complete record" } },
+    ],
     committedAt: now(),
   });
 }
@@ -135,7 +137,12 @@ describe("verified source binding", () => {
       lease: { owner: "worker", generation: 1 },
       expectedCheckpointRevision: 1,
       nextCheckpoint: { cursor: "next" },
-      upserts: [{ kind: "record", record: { id: "large-9007199254740993123", body: "# Complete record" } }],
+      upserts: [
+        {
+          kind: "record",
+          record: { id: "large-9007199254740993123", title: "Record title", body: "# Complete record" },
+        },
+      ],
       committedAt: now(),
     });
     expect(same.changes).toEqual([]);
