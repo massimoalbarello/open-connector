@@ -14,6 +14,7 @@ const list = (ids: string[]) =>
   `<meetings_data count="${ids.length}">${ids.map((id) => details(id)).join("")}</meetings_data>`;
 function fixture(ids = ["a", "b"]) {
   const request = vi.fn(async (operation: string, input: JsonObject = {}): Promise<JsonObject> => {
+    if (operation === "list_tools") return { tools: [{ name: "list_meetings", inputSchema: { type: "object" } }] };
     if (operation === "list_meetings") return { text: list(ids) };
     if (operation === "get_meetings") return { text: list(input.meeting_ids as string[]) };
     if (operation === "get_meeting_transcript")
@@ -37,7 +38,7 @@ function fixture(ids = ["a", "b"]) {
 }
 
 describe("Granola meeting acquisition", () => {
-  it("syncs summaries with the free-plan default without requesting transcripts", async () => {
+  it("syncs summaries without requesting transcripts or adding discovery filters", async () => {
     const { context, request } = fixture(["a"]);
     const pages = await Array.fromAsync(run({ ...context, config: granolaMeetings.defaultConfig }));
     const record = pages[0]!.records![0]!.record;
@@ -47,7 +48,8 @@ describe("Granola meeting acquisition", () => {
     });
     expect(record.body).not.toContain("## Transcript");
     expect(record.body).not.toContain("Not included in this sync");
-    expect(request.mock.calls.map(([name]) => name)).toEqual(["list_meetings", "get_meetings"]);
+    expect(request.mock.calls.map(([name]) => name)).toEqual(["list_tools", "list_meetings", "get_meetings"]);
+    expect(request.mock.calls.find(([name]) => name === "list_meetings")?.[1]).toEqual({});
   });
   it("combines both endpoints into deterministic Markdown without inventing source timestamps", async () => {
     const { context } = fixture(["a"]);
@@ -67,7 +69,7 @@ describe("Granola meeting acquisition", () => {
     expect(normalizeSyncRecord(record, granolaMeetings.kinds[0]!)).toEqual(normalized);
   });
 
-  it("resumes the remaining native IDs and completes every hydration batch", async () => {
+  it("resumes after the committed ID and completes every hydration batch", async () => {
     const { context, request } = fixture(Array.from({ length: 13 }, (_, index) => String(index).padStart(2, "0")));
     const first = run(context);
     const page = (await first.next()).value!;
@@ -75,55 +77,68 @@ describe("Granola meeting acquisition", () => {
     request.mockClear();
     const resumed = await Array.fromAsync(run({ ...context, checkpoint: page.checkpoint }));
     expect(resumed.flatMap((item) => item.records ?? []).map((item) => item.record.id)).toEqual(
-      Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0")),
+      Array.from({ length: 3 }, (_, index) => String(index + 10).padStart(2, "0")),
     );
-    expect(request.mock.calls.some(([operation]) => operation === "list_meetings")).toBe(false);
+    expect(page.records).toHaveLength(10);
+    expect(page.checkpoint).toEqual({ pendingIds: null, scan: { ranges: [null], afterId: "09" } });
     expect(resumed.at(-1)?.complete).toBe(true);
   });
 
-  it("accepts 1,000 discovered IDs but rejects a larger scan before hydrating or advancing progress", async () => {
-    const ids = Array.from({ length: 1000 }, (_, index) => `meeting-${index}`);
-    const accepted = fixture(ids);
-    const iterator = run({ ...accepted.context, config: granolaMeetings.defaultConfig });
-    const page = (await iterator.next()).value!;
-    await iterator.return(undefined);
-    expect(page).toMatchObject({ complete: false, checkpoint: { pendingIds: ids.sort().slice(1) } });
-    expect(validateSyncValue(page.checkpoint, granolaMeetings.checkpointSchema, "Checkpoint")).toEqual(page.checkpoint);
-
-    const oversized = fixture([...ids, "one-too-many"]);
-    await expect(run(oversized.context).next()).rejects.toThrow();
-    expect(oversized.request.mock.calls.map(([operation]) => operation)).toEqual(["list_meetings"]);
+  it("syncs more than 1,000 meetings in bounded batches with a constant-size checkpoint", async () => {
+    const ids = Array.from({ length: 1205 }, (_, index) => `meeting-${index}`);
+    const { context } = fixture(ids);
+    const pages = await Array.fromAsync(run({ ...context, config: granolaMeetings.defaultConfig }));
+    expect(pages.flatMap((page) => page.records ?? []).map((item) => item.record.id)).toEqual(ids.sort());
+    for (const page of pages) {
+      expect(page.records!.length).toBeLessThanOrEqual(10);
+      expect(JSON.stringify(page.checkpoint).length).toBeLessThan(128);
+      expect(validateSyncValue(page.checkpoint, granolaMeetings.checkpointSchema, "Checkpoint")).toEqual(
+        page.checkpoint,
+      );
+    }
+    expect(pages.at(-1)).toMatchObject({ complete: true, checkpoint: granolaMeetings.initialCheckpoint });
   });
 
-  it("rehydrates old meetings still inside the window and never infers deletion from an empty scan", async () => {
+  it("rehydrates accessible meetings and never infers deletion from an empty scan", async () => {
     const { context, request } = fixture(["unchanged-native-id"]);
     const first = (await Array.fromAsync(run(context)))[0]!;
-    request.mockImplementation(async (operation, input = {}) => ({
-      text:
-        operation === "get_meeting_transcript"
-          ? JSON.stringify({ id: input.meeting_id, transcript: "An edited transcript." })
-          : list(["unchanged-native-id"]),
-    }));
+    const transport = request.getMockImplementation()!;
+    request.mockImplementation(async (operation, input = {}) =>
+      operation === "list_tools"
+        ? transport(operation, input)
+        : {
+            text:
+              operation === "get_meeting_transcript"
+                ? JSON.stringify({ id: input.meeting_id, transcript: "An edited transcript." })
+                : list(["unchanged-native-id"]),
+          },
+    );
     const updated = (await Array.fromAsync(run({ ...context, checkpoint: first.checkpoint })))[0]!;
     expect(updated.records![0]!.record.id).toBe(first.records![0]!.record.id);
     expect(updated.records![0]!.record.body).toContain("An edited transcript.");
     expect(updated.records![0]!.record.body).not.toEqual(first.records![0]!.record.body);
     const empty = fixture([]);
-    expect(await Array.fromAsync(run(empty.context))).toEqual([{ checkpoint: { pendingIds: null }, complete: true }]);
+    expect(await Array.fromAsync(run(empty.context))).toEqual([
+      { records: [], checkpoint: granolaMeetings.initialCheckpoint, complete: true },
+    ]);
   });
 
-  it("keeps the checkpoint before a failed transcript and rejects incomplete details", async () => {
-    const { context, request } = fixture();
+  it("keeps progress before a failed batch and rejects incomplete details", async () => {
+    const ids = Array.from({ length: 11 }, (_, index) => `a${String(index).padStart(2, "0")}`);
+    const { context, request } = fixture(ids);
     const transport = request.getMockImplementation()!;
     request.mockImplementation(async (operation, input) => {
-      if (operation === "get_meeting_transcript" && input?.meeting_id === "b") throw new Error("Transcript failed");
+      if (operation === "get_meeting_transcript" && input?.meeting_id === "a10") throw new Error("Transcript failed");
       return transport(operation, input);
     });
     const iterator = run(context);
-    expect((await iterator.next()).value).toMatchObject({ checkpoint: { pendingIds: ["b"] }, complete: false });
+    const page = (await iterator.next()).value!;
+    expect(page).toMatchObject({ checkpoint: { pendingIds: null, scan: { afterId: "a09" } }, complete: false });
     await expect(iterator.next()).rejects.toThrow("Transcript failed");
-    request.mockImplementation(async () => ({ text: list([]) }));
-    await expect(Array.fromAsync(run({ ...context, checkpoint: { pendingIds: ["b"] } }))).rejects.toThrow(
+    request.mockImplementation(async (operation, input) =>
+      operation === "get_meetings" ? { text: list([]) } : transport(operation, input),
+    );
+    await expect(Array.fromAsync(run({ ...context, checkpoint: page.checkpoint }))).rejects.toThrow(
       "every requested meeting",
     );
   });

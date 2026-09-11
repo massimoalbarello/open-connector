@@ -111,6 +111,9 @@ and the next checkpoint. The framework persists opaque progress; the definition 
   do not persist checkpoints separately from the records they cover.
 - Resume interrupted backfills from committed progress. Repeated acquisition must be safe; do not
   promise exactly one provider fetch across a crash before commit.
+- Default backfills to all records the provider makes accessible unless the user selected a narrower
+  scope. Bound work per request and commit, not the total history or record count. Let the provider
+  enforce subscription limits; use advertised capabilities rather than encoding plan-specific lookbacks.
 - With timestamp filters, use provider-supported ordering, explicit boundary/tie handling, and a
   documented overlap where appropriate. Never blindly advance to local completion time. Preserve
   any fixed scan boundary and continuation state needed to avoid moving-window gaps.

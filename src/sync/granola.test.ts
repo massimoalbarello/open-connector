@@ -7,7 +7,7 @@ import { provider } from "../providers/granola/definition.ts";
 import { credentialValidators, executors } from "../providers/granola/executors.ts";
 import { validateGranolaOAuthCredential } from "../providers/granola/runtime-mcp.ts";
 import { createGranolaSyncProvider } from "../providers/granola/sync-provider.ts";
-import { withMcpClient } from "../providers/mcp-client.ts";
+import { McpResponseSizeError, withMcpClient } from "../providers/mcp-client.ts";
 import { ProviderLoader } from "../providers/provider-loader.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite-runtime-store.ts";
 import { granolaMeetings } from "../sync-definitions/granola/definition.ts";
@@ -29,6 +29,8 @@ function protocol() {
   const state = {
     summary: "Ship the integration.",
     transcriptError: false,
+    transcriptErrorId: "",
+    meetingIds: ["meeting"],
     account: "native-account",
     principalMissing: false,
   };
@@ -53,14 +55,20 @@ function protocol() {
       result = { tools: [{ name: "list_meetings", inputSchema: { type: "object" } }] };
     else if (request.method === "tools/call") {
       const transcript = request.params.name === "get_meeting_transcript";
+      const meetingIds: string[] =
+        request.params.name === "get_meetings" ? request.params.arguments.meeting_ids : state.meetingIds;
       const text = transcript
-        ? JSON.stringify({ id: "meeting", transcript: "[00:01] Ada: Yes & thanks." })
-        : `<meetings_data count="1"><meeting id="meeting" title="Planning" date="Sep 8, 2026"><known_participants>Ada &lt;ada@example.com&gt;</known_participants><summary>${state.summary}</summary></meeting></meetings_data>`;
+        ? JSON.stringify({ id: request.params.arguments.meeting_id, transcript: "[00:01] Ada: Yes & thanks." })
+        : `<meetings_data count="${meetingIds.length}">${meetingIds.map((id) => `<meeting id="${id}" title="Planning" date="Sep 8, 2026"><known_participants>Ada &lt;ada@example.com&gt;</known_participants><summary>${state.summary}</summary></meeting>`).join("")}</meetings_data>`;
       const notice =
         request.params.name === "list_meetings"
           ? "<access_notice>Only recent personal notes are available on this plan.</access_notice>\n\n"
           : "";
-      result = { content: [{ type: "text", text: notice + text }], isError: transcript && state.transcriptError };
+      result = {
+        content: [{ type: "text", text: notice + text }],
+        isError:
+          transcript && (state.transcriptError || request.params.arguments.meeting_id === state.transcriptErrorId),
+      };
     } else throw new Error(`Unexpected MCP method ${request.method}`);
     // Exercise the SDK's SSE framing, including a keepalive and a split data frame.
     const frame = `: keepalive\n\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n\n`;
@@ -180,6 +188,28 @@ describe("Granola MCP protocol and durable acquisition", () => {
     expect(different.installationId).not.toBe(first.installationId);
   });
 
+  it("atomically saves a completed batch and resumes the failed batch from its durable cursor", async () => {
+    const { state, database, runner } = await fixture();
+    await database.syncStore.delivery.configure(destination);
+    state.meetingIds = Array.from({ length: 13 }, (_, index) => `meeting-${String(index).padStart(2, "0")}`);
+    state.transcriptErrorId = "meeting-11";
+    const input = { definitionId: granolaMeetings.id, config: { includeTranscript: true } };
+    await expect(runner.run(input)).rejects.toThrow("failed");
+    const installationId = (await database.syncStore.status.read()).installations[0]!.id;
+    expect((await database.syncStore.listChanges()).items).toHaveLength(10);
+    expect(await database.syncStore.getRecord(installationId, "meeting", "meeting-10")).toBeUndefined();
+    expect(await database.syncStore.getCheckpoint(installationId)).toMatchObject({
+      value: { pendingIds: null, scan: { ranges: [null], afterId: "meeting-09" } },
+    });
+    state.transcriptErrorId = "";
+    const resumed = await runner.run(input);
+    expect(resumed).toMatchObject({ installationId, records: 3, complete: true });
+    expect((await database.syncStore.listChanges()).items).toHaveLength(13);
+    expect(await database.syncStore.getCheckpoint(installationId)).toMatchObject({
+      value: granolaMeetings.initialCheckpoint,
+    });
+  });
+
   it("refuses an email-only principal, write operations, and HTTP errors", async () => {
     const state = protocol();
     state.principalMissing = true;
@@ -207,6 +237,6 @@ describe("Granola MCP protocol and durable acquisition", () => {
         },
         async (client) => client.listTools(),
       ),
-    ).rejects.toThrow("size limit");
+    ).rejects.toBeInstanceOf(McpResponseSizeError);
   });
 });

@@ -11,15 +11,31 @@ export const granolaMeetings: SyncDefinition = {
   configSchema: s.object(
     {
       includeTranscript: s.boolean(
-        "Include transcripts. Requires a paid Granola plan; transcript failures stop the record from being saved.",
+        "Fetch transcripts in addition to meeting notes; transcript failures stop the batch from being saved.",
       ),
     },
     { required: ["includeTranscript"] },
   ),
   defaultConfig: { includeTranscript: false },
-  checkpointSchema: s.requiredObject("Remaining native IDs from one discovery scan; null starts a new scan.", {
-    pendingIds: s.nullable(s.array(s.string({ minLength: 1, maxLength: 1024 }), { maxItems: 1000, uniqueItems: true })),
+  checkpointSchema: s.requiredObject("Discovery continuation, persisted with each completed batch.", {
+    pendingIds: s.nullable(s.array(s.string({ minLength: 1, maxLength: 1024 }), { uniqueItems: true })),
+    scan: s.optional(
+      s.nullable(
+        s.requiredObject("Unfinished ranges and the last committed native ID in the first range.", {
+          ranges: s.array(
+            s.nullable(
+              s.requiredObject("Inclusive custom date range; null uses the server's unfiltered scope.", {
+                start: s.date("First calendar date in the range."),
+                end: s.date("Last calendar date in the range."),
+              }),
+            ),
+            { minItems: 1, maxItems: 32 },
+          ),
+          afterId: s.nullable(s.string({ minLength: 1, maxLength: 1024 })),
+        }),
+      ),
+    ),
   }),
-  initialCheckpoint: { pendingIds: null },
+  initialCheckpoint: { pendingIds: null, scan: null },
   scheduleSeconds: 3600,
 };

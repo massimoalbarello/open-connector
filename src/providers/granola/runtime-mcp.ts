@@ -19,10 +19,7 @@ export const granolaMcpActionHandlers: ProviderActionHandlerSubset<
   "granola",
   ProviderRuntimeHandler<OAuthProviderContext>
 > = {
-  mcp_list_tools: (input, context) =>
-    withGranolaClient(context, (client, signal) =>
-      client.listTools({ cursor: optionalString(input.cursor) }, { signal }),
-    ),
+  mcp_list_tools: (input, context) => listGranolaMcpTools(context, optionalString(input.cursor)),
   mcp_call_tool: async (input, context) => ({
     result: await callGranolaMcpTool(
       context,
@@ -31,6 +28,11 @@ export const granolaMcpActionHandlers: ProviderActionHandlerSubset<
     ),
   }),
 };
+
+/** Read advertised tool schemas without inferring capabilities from the account's subscription. */
+export function listGranolaMcpTools(context: OAuthProviderContext, cursor?: string): Promise<Record<string, unknown>> {
+  return withGranolaClient(context, (client, signal) => client.listTools({ cursor }, { signal }));
+}
 
 /** Execute a Granola tool through the same authenticated MCP transport for actions and acquisition. */
 export function callGranolaMcpTool(

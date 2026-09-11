@@ -4,7 +4,11 @@ import { XMLParser } from "fast-xml-parser";
 import { SyntaxValidator } from "fast-xml-validator";
 import { z } from "zod";
 import { optionalString, requiredRawString } from "../../core/cast.ts";
-import { providerResponseError, requiredResponseRecord } from "../../providers/provider-runtime.ts";
+import {
+  ProviderRequestError,
+  providerResponseError,
+  requiredResponseRecord,
+} from "../../providers/provider-runtime.ts";
 
 interface GranolaMeeting {
   id: string;
@@ -30,6 +34,13 @@ const xml = new XMLParser({
   isArray: (name) => name === "meeting",
 });
 
+/** Discovery can retry an incomplete date range; hydration must still reject incomplete records. */
+export class GranolaTruncatedMeetingsError extends ProviderRequestError {
+  constructor() {
+    super(502, "Granola meeting list is truncated; this sync cannot advance past incomplete discovery.");
+  }
+}
+
 /** Reject malformed discovery rather than silently turning it into an empty successful scan. */
 export function parseMeetings(text: string): GranolaMeeting[] {
   let document: Record<string, unknown>;
@@ -44,19 +55,14 @@ export function parseMeetings(text: string): GranolaMeeting[] {
     throw providerResponseError("Granola returned malformed meeting XML.");
   }
   const root = requiredResponseRecord(document.meetings_data, "Granola meeting list");
-  const meetings = z
-    .array(meetingSchema)
-    .max(1000)
-    .parse(root.meeting ?? []);
+  const meetings = z.array(meetingSchema).parse(root.meeting ?? []);
   const count = optionalString(root["@_count"]);
   if (
     (count !== undefined && (!/^\d+$/.test(count) || Number(count) !== meetings.length)) ||
     root["@_has_more"] === "true" ||
     optionalString(root["@_next_cursor"])
   )
-    throw providerResponseError(
-      "Granola meeting list is truncated; this sync cannot advance past incomplete discovery.",
-    );
+    throw new GranolaTruncatedMeetingsError();
   if (new Set(meetings.map((meeting) => meeting["@_id"])).size !== meetings.length)
     throw providerResponseError("Granola returned duplicate meeting IDs.");
   return meetings.map((meeting) => ({

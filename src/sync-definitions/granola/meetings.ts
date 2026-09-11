@@ -1,60 +1,33 @@
-import type { SyncContext, SyncPage } from "../../sync/sync-definition.ts";
+import type { SyncContext, SyncPage, SyncPageRecord } from "../../sync/sync-definition.ts";
 
 import { requiredRawString } from "../../core/cast.ts";
 import { providerResponseError } from "../../providers/provider-runtime.ts";
+import { discover } from "./discovery.ts";
 import { parseMeetings, parseTranscript, renderMeeting } from "./render.ts";
 
-/**
- * Rehydrate the last 30 days of accessible meetings in the active Granola workspace every hour.
- * This is a rolling scan, not a historical backfill or an incremental change feed. Rehydration
- * catches summary/transcript edits inside that window; older edits are outside its coverage.
- * Version 1 checkpoint: { pendingIds: null } starts list_meetings(time_range: "last_30_days").
- * Discovery must be complete and at most 1,000 meetings, an implementation guard that bounds
- * checkpoint size, not a provider quota. Oversized or explicitly truncated lists fail the scan.
- * Sort discovered IDs once, then fetch get_meetings(meeting_ids: pendingIds.slice(0, 10)).
- * Each yielded record and the remaining IDs commit atomically. A restart skips discovery and
- * re-fetches unfinished IDs; failures before the first commit repeat discovery. The final record
- * resets pendingIds to null so the next cycle scans the window again. This is continuation state,
- * not an incremental watermark. IDs are account-scoped native meeting IDs and survive token refresh.
- * Missing details/summaries or requested transcripts fail without overwriting earlier content.
- * Transcripts are explicitly opt-in so free-plan notes can sync. An explicit reprocess restarts
- * discovery and updates changed records in place; absence or permission loss never emits deletions.
- */
+/** Hydrate at most ten meetings before atomically committing their records and discovery progress. */
 export async function* run(context: SyncContext): AsyncGenerator<SyncPage> {
-  let pending = (context.checkpoint as { pendingIds: string[] | null }).pendingIds;
-  if (pending === null) {
-    const result = await context.provider.request("list_meetings", { time_range: "last_30_days" });
-    pending = parseMeetings(requiredRawString(result.text, "Granola meeting list", providerResponseError))
-      .map((meeting) => meeting.id)
-      .sort();
-  }
-  while (pending.length) {
+  for await (const batch of discover(context)) {
     context.signal.throwIfAborted();
-    const ids = pending.slice(0, 10);
-    const result = await context.provider.request("get_meetings", { meeting_ids: ids });
-    const details = parseMeetings(requiredRawString(result.text, "Granola meeting details", providerResponseError));
-    if (details.length !== ids.length || details.some((meeting) => !ids.includes(meeting.id)))
-      throw providerResponseError(
-        "Granola did not return every requested meeting; use Reprocess to restart discovery if access changed.",
-      );
-    for (const id of ids) {
-      context.signal.throwIfAborted();
-      const meeting = details.find((detail) => detail.id === id)!;
-      let transcript: string | undefined;
-      if (context.config.includeTranscript === true) {
-        const result = await context.provider.request("get_meeting_transcript", { meeting_id: id });
-        transcript = parseTranscript(requiredRawString(result.text, "Granola transcript", providerResponseError), id);
+    const records: SyncPageRecord[] = [];
+    if (batch.ids.length) {
+      const result = await context.provider.request("get_meetings", { meeting_ids: batch.ids });
+      const details = parseMeetings(requiredRawString(result.text, "Granola meeting details", providerResponseError));
+      if (details.length !== batch.ids.length || details.some((meeting) => !batch.ids.includes(meeting.id)))
+        throw providerResponseError(
+          "Granola did not return every requested meeting; use Reprocess to restart discovery if access changed.",
+        );
+      for (const id of batch.ids) {
+        context.signal.throwIfAborted();
+        const meeting = details.find((detail) => detail.id === id)!;
+        let transcript: string | undefined;
+        if (context.config.includeTranscript === true) {
+          const result = await context.provider.request("get_meeting_transcript", { meeting_id: id });
+          transcript = parseTranscript(requiredRawString(result.text, "Granola transcript", providerResponseError), id);
+        }
+        records.push({ kind: "meeting", record: renderMeeting(meeting, transcript) });
       }
-      const record = renderMeeting(meeting, transcript);
-      pending = pending.slice(1);
-      yield {
-        records: [{ kind: "meeting", record }],
-        checkpoint: { pendingIds: pending.length ? pending : null },
-        complete: pending.length === 0,
-      };
-      if (!pending.length) return;
     }
+    yield { records, checkpoint: batch.checkpoint, complete: batch.complete };
   }
-  // An empty discovery scan still completes a polling iteration.
-  yield { checkpoint: { pendingIds: null }, complete: true };
 }

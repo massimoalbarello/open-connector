@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { SSEClientTransport } from "@modelcontextprotocol/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/client/validators/cf-worker";
-import { providerFetch, providerResponseError } from "./provider-runtime.ts";
+import { providerFetch, ProviderRequestError } from "./provider-runtime.ts";
 
 const mcpConnectTimeoutMs = 60_000;
 const modernMcpProtocolVersion = "2026-07-28";
@@ -24,6 +24,13 @@ export interface McpClientOptions {
   mapError?: (error: unknown) => unknown;
   /** Bound each response while retaining streaming JSON/SSE protocol framing. */
   maxResponseBytes?: number;
+}
+
+/** Allows callers to retry an oversized discovery response with a smaller request. */
+export class McpResponseSizeError extends ProviderRequestError {
+  constructor() {
+    super(502, "MCP response exceeds the size limit.");
+  }
 }
 
 export async function withMcpClient<T>(options: McpClientOptions, run: (client: Client) => Promise<T>): Promise<T> {
@@ -76,7 +83,7 @@ function limitMcpResponseBytes(fetcher: typeof fetch, maxBytes: number, onLimit:
         transform(chunk, controller) {
           size += chunk.byteLength;
           if (size > maxBytes) {
-            const error = providerResponseError("MCP response exceeds the size limit.");
+            const error = new McpResponseSizeError();
             onLimit(error);
             throw error;
           }
