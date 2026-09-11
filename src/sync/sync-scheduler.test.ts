@@ -54,7 +54,7 @@ async function fixture(custom?: SyncDefinitionRuntime, contract: SyncDefinition 
       const cursor = Number((context.checkpoint as { cursor: number }).cursor);
       for (let index = cursor; index < 2; index++)
         yield {
-          records: [{ kind: "record", record: { id: String(index), body: state.body } }],
+          records: [{ kind: "record", record: { id: String(index), title: "Record title", body: state.body } }],
           checkpoint: { cursor: index + 1 },
           complete: false,
         };
@@ -150,7 +150,7 @@ describe("embedded sync scheduler", () => {
         const cursor = Number((context.checkpoint as { cursor: number }).cursor);
         cursors.push(cursor);
         yield {
-          records: [{ kind: "record", record: { id: String(cursor), body: "Saved" } }],
+          records: [{ kind: "record", record: { id: String(cursor), title: "Record title", body: "Saved" } }],
           checkpoint: { cursor: cursor + 1 },
           complete: cursor > 0,
         };
@@ -568,7 +568,7 @@ it("manages syncs through authenticated routes without losing committed progress
       const cursor = Number((context.checkpoint as { cursor: number }).cursor);
       cursors.push(cursor);
       yield {
-        records: [{ kind: "record", record: { id: String(cursor), body: "Saved" } }],
+        records: [{ kind: "record", record: { id: String(cursor), title: "Record title", body: "Saved" } }],
         checkpoint: { cursor: cursor + 1 },
         complete: cursor > 0,
       };

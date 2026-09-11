@@ -12,8 +12,8 @@ A `2xx` response acknowledges the complete batch. Destinations should respond on
 record is durably accepted; any other response may cause OpenConnector to retry the exact body and
 idempotency key. A destination can return `Retry-After` to request a delay.
 
-Each batch contains at most 50 records and is at most 16 MiB. Upserts contain Markdown `body` plus
-optional source metadata; deletions are tombstones without content. Receivers should deduplicate
+Each batch contains at most 50 records and is at most 16 MiB. Upserts contain a non-blank plain-text `title`,
+Markdown `body`, and optional source metadata; deletions are tombstones without content. Receivers should deduplicate
 events by `eventId`, use `(sourceId, kind, id)` as the record identity, and ignore revisions older
 than the latest accepted revision. All field constraints are defined in the OpenAPI schema.
 
@@ -21,5 +21,13 @@ than the latest accepted revision. All field constraints are defined in the Open
 sorted recursively, array order is preserved, non-finite numbers are rejected, and negative zero is
 normalized to zero. A deletion carries the hash of the last content.
 
-Changes incompatible with existing destinations require a new envelope `version` and OpenAPI
-contract version.
+The sync chooses a meaningful title with enough source context to distinguish the record in a list
+(for example, `owner/repository #42: Fix pagination`). It is content, not identity: title-only edits
+change the content hash and advance the record revision. The framework does not infer titles from
+Markdown or substitute opaque IDs. GitHub uses the same title in its Markdown heading.
+
+`provider` and `kind` identify the record's origin and data kind. `sourceCreatedAt` and
+`sourceUpdatedAt` describe source timestamps when available; `committedAt` is the connector commit
+time. Missing source timestamps stay absent rather than being replaced with fetch or commit time.
+
+During pre-production, this contract may change incompatibly while remaining at version 1.

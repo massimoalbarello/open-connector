@@ -99,8 +99,14 @@ export const recordDeliveryEnvelopeSchema: Schema = {
               content: {
                 type: "object",
                 additionalProperties: false,
-                required: ["body"],
+                required: ["title", "body"],
                 properties: {
+                  title: {
+                    type: "string",
+                    minLength: 1,
+                    pattern: "\\S",
+                    description: "Descriptive plain-text title chosen by the sync for display and search.",
+                  },
                   body: {
                     type: "string",
                     minLength: 1,
@@ -282,6 +288,10 @@ export interface SyncDeliveryEnvelope {
          */
         contentHash: string;
         content: {
+          /**
+           * Descriptive plain-text title chosen by the sync for display and search.
+           */
+          title: string;
           /**
            * Markdown body of the record.
            */

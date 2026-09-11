@@ -81,13 +81,13 @@ describe("compiled sync runner", () => {
           const cursor = Number((context.checkpoint as { cursor: number }).cursor);
           cursors.push(cursor);
           yield {
-            records: [{ kind: "test", record: { id: String(cursor), body: "Saved" } }],
+            records: [{ kind: "test", record: { id: String(cursor), title: "Record title", body: "Saved" } }],
             checkpoint: { cursor: cursor + 1 },
             complete: cursor > 0,
           };
           database.syncStore.delivery.remove();
           yield {
-            records: [{ kind: "test", record: { id: "uncommitted", body: "Must retry" } }],
+            records: [{ kind: "test", record: { id: "uncommitted", title: "Record title", body: "Must retry" } }],
             checkpoint: { cursor: 2 },
             complete: true,
           };
@@ -138,7 +138,7 @@ describe("compiled sync runner", () => {
         cursors.push(checkpoint.cursor);
         for (let cursor = checkpoint.cursor + 1; cursor <= 2; cursor++)
           yield {
-            records: [{ kind: "test", record: { id: "same", body: "# Same" } }],
+            records: [{ kind: "test", record: { id: "same", title: "Record title", body: "# Same" } }],
             checkpoint: { cursor },
             complete: cursor === 2,
           };
@@ -158,7 +158,7 @@ describe("compiled sync runner", () => {
     const { database, runner } = await setup({
       async *run() {
         yield {
-          records: [{ kind: "test", record: { id: "preview", body: "# Preview" } }],
+          records: [{ kind: "test", record: { id: "preview", title: "Record title", body: "# Preview" } }],
           checkpoint: { cursor: 1 },
           complete: true,
         };
@@ -177,7 +177,12 @@ describe("compiled sync runner", () => {
       async *run() {
         for (let cursor = 1; cursor <= 3; cursor++)
           yield {
-            records: [{ kind: "test", record: { id: String(cursor), body: "x".repeat(6 * 1024 * 1024) } }],
+            records: [
+              {
+                kind: "test",
+                record: { id: String(cursor), title: "Record title", body: "x".repeat(6 * 1024 * 1024) },
+              },
+            ],
             checkpoint: { cursor },
             complete: cursor === 3,
           };
@@ -194,7 +199,7 @@ describe("compiled sync runner", () => {
     const { database, runner } = await setup({
       async *run() {
         yield {
-          records: [{ kind: "test", record: { id: "good", body: "# Complete" } }],
+          records: [{ kind: "test", record: { id: "good", title: "Record title", body: "# Complete" } }],
           checkpoint: { cursor: 1 },
           complete: false,
         };
@@ -208,7 +213,7 @@ describe("compiled sync runner", () => {
     const invalid = await setup({
       async *run() {
         yield {
-          records: [{ kind: "test", record: { id: "bad", body: "# Bad" } }],
+          records: [{ kind: "test", record: { id: "bad", title: "Record title", body: "# Bad" } }],
           checkpoint: { unknown: 1 },
           complete: true,
         };
