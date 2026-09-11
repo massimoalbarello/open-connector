@@ -54,4 +54,3 @@ node examples/local-http/granola.ts meetings
 ```
 
 For paid-plan REST access, use `GRANOLA_API_KEY=... node examples/local-http/granola.ts api`.
-See [Granola API and MCP](../../docs/granola.md) for plan limits and named connections.
