@@ -1,8 +1,11 @@
 import type { ResolvedCredential } from "../../core/types.ts";
+import type { Schema } from "@cfworker/json-schema";
 
+import { Validator } from "@cfworker/json-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { executors, credentialValidators } from "./executors.ts";
 import { parseGranolaMeetings, parseGranolaTranscript } from "./mcp-response.ts";
+import { granolaMeetingActions } from "./meeting-actions.ts";
 
 const summary = "    indented code\n\nKeep **Markdown** & code `a < b`.";
 const meetingXml = (id: string) =>
@@ -74,12 +77,33 @@ function stubMcp(options: McpFixtureOptions = {}): typeof fetch {
   return fetcher;
 }
 
+function stubRest(response: (url: URL) => Response): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = new URL(String(url));
+      expect(target.origin).toBe("https://public-api.granola.ai");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer rest-key");
+      return response(target);
+    }),
+  );
+}
+
 async function execute(name: string, input: Record<string, unknown>, credential = oauth) {
-  return executors[`granola.${name}`]!(input, { getCredential: async () => credential });
+  const result = await executors[`granola.${name}`]!(input, { getCredential: async () => credential });
+  const action = granolaMeetingActions.find((action) => action.name === name);
+  if (result.ok && action) {
+    const validator = new Validator(action.outputSchema as Schema);
+    expect(validator.validate(JSON.parse(JSON.stringify(result.output)))).toMatchObject({ valid: true });
+  }
+  return result;
 }
 
 describe("Granola REST and MCP execution", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
   it.each([false, true])("lists recent meetings with normalized output over JSON/SSE (SSE: %s)", async (sse) => {
     const onCall = vi.fn();
@@ -168,13 +192,9 @@ describe("Granola REST and MCP execution", () => {
     await expect(credentialValidators.oauth2!(oauth, { fetcher })).rejects.toMatchObject({ status: 400 });
   });
 
-  it("rejects credentials for the other transport before any egress", async () => {
+  it("keeps the older REST-only actions restricted to API keys before egress", async () => {
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
-    await expect(execute("list_meetings", {}, apiKey)).resolves.toMatchObject({
-      ok: false,
-      error: { code: "authorization_failed" },
-    });
     await expect(execute("list_notes", {}, oauth)).resolves.toMatchObject({
       ok: false,
       error: { code: "authorization_failed" },
@@ -194,6 +214,117 @@ describe("Granola REST and MCP execution", () => {
     await expect(execute("list_notes", { cursor: "page-1", page_size: 2 }, apiKey)).resolves.toMatchObject({
       ok: true,
       output: { notes: [{ id: "note-1" }], hasMore: true, nextCursor: "page-2" },
+    });
+  });
+
+  it("lists every recent REST page using the same meeting action and output schema", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-11T12:00:00Z"));
+    stubRest((url) => {
+      expect(url.pathname).toBe("/v1/notes");
+      expect(url.searchParams.get("created_after")).toBe("2026-08-12T12:00:00.000Z");
+      expect(url.searchParams.get("page_size")).toBe("30");
+      return url.searchParams.has("cursor")
+        ? Response.json({ notes: [{ id: "not_b", title: null, created_at: "2026-09-09T12:00:00Z" }], hasMore: false })
+        : Response.json({ notes: [{ id: "not_a", title: "Planning" }], hasMore: true, cursor: "page-2" });
+    });
+    const result = await execute("list_meetings", {}, apiKey);
+    expect(JSON.parse(JSON.stringify(result))).toEqual({
+      ok: true,
+      output: {
+        meetings: [
+          { id: "not_a", title: "Planning" },
+          { id: "not_b", title: null },
+        ],
+      },
+    });
+  });
+
+  it.each([undefined, "repeat"])("rejects unusable REST pagination cursors (%s)", async (cursor) => {
+    stubRest(() => Response.json({ notes: [], hasMore: true, cursor }));
+    await expect(execute("list_meetings", {}, apiKey)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "provider_error" },
+    });
+  });
+
+  it("does not return a partial meeting list when a later REST page fails", async () => {
+    stubRest((url) =>
+      url.searchParams.has("cursor")
+        ? Response.json({ message: "Temporarily unavailable" }, { status: 503 })
+        : Response.json({ notes: [{ id: "not_a", title: "Planning" }], hasMore: true, cursor: "page-2" }),
+    );
+    await expect(execute("list_meetings", {}, apiKey)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "provider_error" },
+    });
+  });
+
+  it("reads API-key meeting summaries with Markdown and plain-text fallback in input order", async () => {
+    stubRest((url) => {
+      expect(url.search).toBe("");
+      const id = url.pathname.split("/").at(-1);
+      return Response.json({
+        id,
+        title: "Planning",
+        calendar_event: { scheduled_start_time: "2026-09-08T14:30:00Z" },
+        attendees: [
+          { name: "Ada", email: "ada@example.com" },
+          { name: null, email: "guest@example.com" },
+        ],
+        summary_markdown: id === "not_a" ? summary : null,
+        summary_text: "Plain text summary",
+      });
+    });
+    await expect(execute("get_meetings", { meeting_ids: ["not_a", "not_b"] }, apiKey)).resolves.toMatchObject({
+      ok: true,
+      output: {
+        meetings: [
+          { id: "not_a", summary, date: "2026-09-08T14:30:00Z", attendees: "Ada <ada@example.com>, guest@example.com" },
+          { id: "not_b", summary: "Plain text summary" },
+        ],
+      },
+    });
+  });
+
+  it("renders API-key transcript segments with timestamps and speaker labels", async () => {
+    stubRest((url) => {
+      expect(url.pathname).toBe("/v1/notes/not_a");
+      expect(url.searchParams.get("include")).toBe("transcript");
+      return Response.json({
+        id: "not_a",
+        transcript: [
+          {
+            speaker: { source: "microphone", diarization_label: "Speaker A" },
+            start_time: "2026-09-08T14:30:00Z",
+            text: "  Preserve whitespace.",
+          },
+          { speaker: { source: "speaker" }, text: "A & B < C." },
+        ],
+      });
+    });
+    await expect(execute("get_meeting_transcript", { meeting_id: "not_a" }, apiKey)).resolves.toMatchObject({
+      ok: true,
+      output: {
+        meeting_id: "not_a",
+        transcript: "[2026-09-08T14:30:00Z] Speaker A:   Preserve whitespace.\nspeaker: A & B < C.",
+      },
+    });
+  });
+
+  it.each(["get_meetings", "get_meeting_transcript"])("rejects mismatched REST identities for %s", async (action) => {
+    stubRest(() => Response.json({ id: "not_other", title: "Wrong meeting", transcript: [] }));
+    const input = action === "get_meetings" ? { meeting_ids: ["not_a"] } : { meeting_id: "not_a" };
+    await expect(execute(action, input, apiKey)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "provider_error", message: "Granola returned a different meeting identity." },
+    });
+  });
+
+  it("reports unavailable API-key transcripts instead of returning empty text", async () => {
+    stubRest(() => Response.json({ id: "not_a", transcript: null }));
+    await expect(execute("get_meeting_transcript", { meeting_id: "not_a" }, apiKey)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "provider_error", message: "Granola transcript is not available yet." },
     });
   });
 });

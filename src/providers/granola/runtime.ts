@@ -1,13 +1,30 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
-import type { ProviderActionHandlerSubset } from "../provider-runtime.ts";
+import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { GranolaMeeting } from "./meeting-actions.ts";
 
-import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import {
+  compactObject,
+  objectArray,
+  optionalRawString,
+  optionalRecord,
+  optionalString,
+  rawStringOrNull,
+  requiredBoolean,
+  requiredRawString,
+  requiredString,
+  requiredStringArray,
+} from "../../core/cast.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
+  providerResponseError,
   providerUserAgent,
   ProviderRequestError,
+  requiredInputString,
+  requiredResponseRecord,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 export const granolaApiBaseUrl = "https://public-api.granola.ai";
@@ -15,7 +32,7 @@ export const granolaApiBaseUrl = "https://public-api.granola.ai";
 type GranolaActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 type GranolaRequestMode = "validate" | "execute";
 
-export const granolaActionHandlers: ProviderActionHandlerSubset<"granola", GranolaActionHandler> = {
+export const granolaActionHandlers: ProviderActionHandlers<"granola", GranolaActionHandler> = {
   async list_notes(input, context) {
     const payload = await requestGranola(context, buildListNotesUrl(input), "execute");
     const record = asRecord(payload, "Granola notes response");
@@ -40,7 +57,87 @@ export const granolaActionHandlers: ProviderActionHandlerSubset<"granola", Grano
       nextCursor: optionalString(record.cursor) ?? null,
     };
   },
+  list_meetings(_input, context) {
+    return runProviderRequest({ signal: context.signal, label: "Granola meetings" }, async (signal) => {
+      const createdAfter = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const meetings: GranolaMeeting[] = [];
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const payload = await requestGranola(
+          { ...context, signal },
+          buildListNotesUrl({ created_after: createdAfter, page_size: 30, cursor }),
+          "execute",
+        );
+        const page = requiredResponseRecord(payload, "Granola notes response");
+        meetings.push(...objectArray(page.notes, "Granola notes", providerResponseError).map(normalizeGranolaMeeting));
+        if (!requiredBoolean(page.hasMore, "Granola hasMore", providerResponseError)) break;
+        cursor = requiredString(page.cursor, "Granola next cursor", providerResponseError);
+        if (cursors.has(cursor)) throw providerResponseError("Granola returned a repeated pagination cursor.");
+        cursors.add(cursor);
+      } while (cursor);
+      return { meetings };
+    });
+  },
+  get_meetings(input, context) {
+    const ids = requiredStringArray(input.meeting_ids, "meeting_ids", providerInputError);
+    return runProviderRequest({ signal: context.signal, label: "Granola meetings" }, async (signal) => {
+      const meetings: GranolaMeeting[] = [];
+      for (const id of ids) {
+        const note = await readGranolaMeeting({ ...context, signal }, id);
+        meetings.push(normalizeGranolaMeeting(note));
+      }
+      return { meetings };
+    });
+  },
+  async get_meeting_transcript(input, context) {
+    const meetingId = requiredInputString(input.meeting_id, "meeting_id");
+    const note = await readGranolaMeeting(context, meetingId, "transcript");
+    const segments = objectArray(note.transcript ?? [], "Granola transcript", providerResponseError);
+    if (segments.length === 0) throw providerResponseError("Granola transcript is not available yet.");
+    const transcript = segments
+      .map((segment) => {
+        const text = requiredRawString(segment.text, "Granola transcript text", providerResponseError);
+        const speaker = optionalRecord(segment.speaker);
+        const label = optionalString(speaker?.diarization_label) ?? optionalString(speaker?.source);
+        const timestamp = optionalString(segment.start_time);
+        return `${timestamp ? `[${timestamp}] ` : ""}${label ? `${label}: ` : ""}${text}`;
+      })
+      .join("\n");
+    if (!transcript.trim()) throw providerResponseError("Granola transcript is not available yet.");
+    return { meeting_id: meetingId, transcript };
+  },
 };
+
+async function readGranolaMeeting(
+  context: ApiKeyProviderContext,
+  id: string,
+  include?: string,
+): Promise<Record<string, unknown>> {
+  const payload = await requestGranola(context, buildGetNoteUrl({ note_id: id, include }), "execute");
+  const note = requiredResponseRecord(payload, "Granola note response");
+  if (note.id !== id) throw providerResponseError("Granola returned a different meeting identity.");
+  return note;
+}
+
+function normalizeGranolaMeeting(note: Record<string, unknown>): GranolaMeeting {
+  const calendarEvent = optionalRecord(note.calendar_event);
+  const attendees =
+    note.attendees == null ? undefined : objectArray(note.attendees, "Granola attendees", providerResponseError);
+  return {
+    id: requiredString(note.id, "Granola meeting ID", providerResponseError),
+    title: rawStringOrNull(note.title),
+    date: optionalString(calendarEvent?.scheduled_start_time),
+    attendees: attendees
+      ?.map((attendee) => {
+        const email = requiredString(attendee.email, "Granola attendee email", providerResponseError);
+        const name = optionalString(attendee.name);
+        return name ? `${name} <${email}>` : email;
+      })
+      .join(", "),
+    summary: optionalRawString(note.summary_markdown) ?? optionalRawString(note.summary_text),
+  };
+}
 
 export async function validateGranolaCredential(
   apiKey: string,

@@ -1,15 +1,9 @@
+import type { GranolaMeeting } from "./meeting-actions.ts";
+
 import { XMLParser } from "fast-xml-parser";
 import { SyntaxValidator } from "fast-xml-validator";
 import { objectArray, optionalString, requiredRawString, requiredString } from "../../core/cast.ts";
 import { providerResponseError, requiredResponseRecord } from "../provider-runtime.ts";
-
-interface GranolaMeeting {
-  id: string;
-  title: string;
-  date: string;
-  attendees: string;
-  summary?: string;
-}
 
 const xml = new XMLParser({
   ignoreAttributes: false,
