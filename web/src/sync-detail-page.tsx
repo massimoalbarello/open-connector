@@ -3,7 +3,7 @@ import type { SyncPageProps } from "./sync-data";
 import type { ReactNode } from "react";
 
 import { useTranslate } from "@embra/i18n/react";
-import { ArrowLeft, Loader2, Play, Settings, Square, Trash2 } from "lucide-react";
+import { ArrowLeft, Loader2, Play, RotateCcw, Settings, Square, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { apiDelete, apiPatch, apiPost } from "./api";
@@ -38,6 +38,7 @@ export function SyncDetailPage(props: SyncPageProps): ReactNode {
       await work();
       resource.refresh();
       if (action === "run") setNotice(t("syncs.manage.runQueued"));
+      if (action === "backfill") setNotice(t("syncs.manage.reprocessQueued"));
     } catch (error) {
       resource.reportError(error);
     } finally {
@@ -120,6 +121,29 @@ export function SyncDetailPage(props: SyncPageProps): ReactNode {
                     {working === "run" ? <Loader2 className="spin" size={14} /> : <Play size={14} />}
                     {t("syncs.manage.runNow")}
                   </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    title={t("syncs.manage.reprocessHint")}
+                    disabled={
+                      Boolean(working) ||
+                      !destinationReady ||
+                      sync.connectionStatus !== "connected" ||
+                      sync.latestRun?.state === "running" ||
+                      (sync.state === "enabled" && sync.requiresBackfill) ||
+                      !definition ||
+                      definition.version !== sync.definitionVersion ||
+                      !resource.value?.schedulerRunning
+                    }
+                    onClick={() =>
+                      void change("backfill", () =>
+                        apiPost(`/api/sync/installations/${encodeURIComponent(sync.id)}/run`, { backfill: true }),
+                      )
+                    }
+                  >
+                    {working === "backfill" ? <Loader2 className="spin" size={14} /> : <RotateCcw size={14} />}
+                    {t("syncs.manage.reprocess")}
+                  </Button>
                   <Button variant="outline" size="sm" disabled={Boolean(working)} onClick={() => setEditing(true)}>
                     <Settings size={14} />
                     {t("syncs.manage.edit")}
@@ -197,7 +221,13 @@ export function SyncDetailPage(props: SyncPageProps): ReactNode {
               {sync.connectionStatus !== "connected" ? (
                 <InlineError message={t(`syncs.connection.${sync.connectionStatus}`)} />
               ) : null}
-              {sync.requiresBackfill ? <InlineError message={t("syncs.backfillRequired")} /> : null}
+              {sync.requiresBackfill ? (
+                sync.state === "enabled" ? (
+                  <FormStatus message={t("syncs.manage.reprocessQueued")} />
+                ) : (
+                  <InlineError message={t("syncs.backfillRequired")} />
+                )
+              ) : null}
               {sync.lastError ? <InlineError message={sync.lastError} /> : null}
               <p className="syncs-footnote">{t("syncs.countsHint")}</p>
               <RecentIterations key={sync.id} runs={resource.value?.runs ?? []} />

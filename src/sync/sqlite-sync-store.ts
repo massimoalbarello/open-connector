@@ -165,6 +165,8 @@ export class SqliteSyncStore implements ISyncStore {
         throw new SyncStoreError("run_busy", "Another acquisition is already running.");
       const installation = this.requireInstallation(installationId);
       if (installation.removedAt) throw invalidInput("Restore this sync before starting another iteration.");
+      if (installation.state === "disabled")
+        throw invalidInput("A run cannot start for an installation that is not enabled.");
       if (installation.requiresBackfill && input.resetCheckpoint === undefined)
         throw invalidInput("Interrupted snapshot requires an explicit backfill run.");
       if (installation.requiresBackfill && input.resetCheckpoint !== undefined) {

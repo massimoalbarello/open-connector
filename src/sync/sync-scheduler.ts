@@ -100,6 +100,7 @@ export class SyncScheduler {
         definitionId: definition.id,
         connectionName,
         config: installation.config,
+        backfill: installation.requiresBackfill,
         reason: "schedule",
       });
     } catch (error) {

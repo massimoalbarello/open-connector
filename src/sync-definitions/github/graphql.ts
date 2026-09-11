@@ -47,7 +47,9 @@ export async function collectNodes(
   const ids = new Set<string>();
   while (true) {
     for (const node of page.nodes) {
-      const id = String(node.id ?? requiredResponseRecord(node.commit, "GitHub commit").oid);
+      if (typeof node.id !== "string" || !node.id)
+        throw providerResponseError("GitHub collection item is missing its identity.");
+      const id = node.id;
       if (ids.has(id)) throw providerResponseError("GitHub collection repeated an item; retry hydration.");
       ids.add(id);
       nodes.push(node);

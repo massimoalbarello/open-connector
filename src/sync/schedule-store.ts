@@ -45,5 +45,6 @@ export interface ISyncScheduleStore {
   recover(now: string): number;
   configure(input: ConfigureSyncScheduleInput): void;
   remove(installationId: string): void;
-  requestRun(installationId: string): void;
+  /** Queue a run; backfill durably requests a one-time checkpoint reset when acquisition starts. */
+  requestRun(installationId: string, backfill?: boolean): void;
 }
