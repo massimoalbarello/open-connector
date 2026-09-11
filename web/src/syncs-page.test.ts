@@ -220,7 +220,7 @@ describe("sync monitoring", () => {
       [{ state: "disabled" }, "paused"],
       [{ connectionStatus: "missing" }, "disconnected"],
       [{ connectionStatus: "changed" }, "verifying"],
-      [{ requiresBackfill: true }, "needsAttention"],
+      [{ requiresBackfill: true }, "waiting"],
       [{ state: "needs_attention" }, "needsAttention"],
     ] as [Partial<SyncInstallation>, string][]) {
       expect(syncHealth({ ...installation, ...patch }, true)).toBe(health);

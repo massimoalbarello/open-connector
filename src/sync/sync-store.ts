@@ -19,6 +19,7 @@ export interface SyncInstallation {
   removedAt?: string;
   consecutiveFailures: number;
   lastError?: string;
+  /** Progress must reset before acquisition; enabled means a backfill was explicitly queued. */
   requiresBackfill: boolean;
   sourceId: string;
   credentialRevision: string;

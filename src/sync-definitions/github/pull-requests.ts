@@ -9,13 +9,11 @@ import { renderPullRequest } from "./render.ts";
 
 const commentsSelection = `id body url createdAt updatedAt author { ${actorSelection} }`;
 const reviewsSelection = `id body url submittedAt state author { ${actorSelection} }`;
-const commitsSelection = `commit { oid message url committedDate author { user { id login url } } }`;
 const threadSelection = `id path line isResolved isOutdated comments(first: 50) { nodes { ${commentsSelection} } ${pageSelection} }`;
 const coreSelection = `id number title body url createdAt updatedAt state isDraft mergedAt closedAt baseRefName headRefName headRefOid repository { id nameWithOwner url } author { ${actorSelection} }`;
 const hydrateQuery = `query SyncPullRequest($id: ID!) { node(id: $id) { ... on PullRequest { ${coreSelection}
   comments(first: 50) { nodes { ${commentsSelection} } ${pageSelection} }
   reviews(first: 50) { nodes { ${reviewsSelection} } ${pageSelection} }
-  commits(first: 50) { nodes { ${commitsSelection} } ${pageSelection} }
   reviewThreads(first: 50) { nodes { ${threadSelection} } ${pageSelection} }
 } } }`;
 
@@ -27,7 +25,6 @@ async function hydrate(context: SyncContext, id: string): Promise<SyncRecordInpu
   if (pull.id !== id) throw providerResponseError("GitHub returned a different pull request identity.");
   const comments = await collectNodes(context, id, "PullRequest", "comments", commentsSelection, pull.comments);
   const reviews = await collectNodes(context, id, "PullRequest", "reviews", reviewsSelection, pull.reviews);
-  const commits = await collectNodes(context, id, "PullRequest", "commits", commitsSelection, pull.commits);
   const threads = await collectNodes(context, id, "PullRequest", "reviewThreads", threadSelection, pull.reviewThreads);
   for (const thread of threads)
     thread.comments = await collectNodes(
@@ -53,7 +50,6 @@ async function hydrate(context: SyncContext, id: string): Promise<SyncRecordInpu
     pull,
     comments,
     reviews,
-    commits,
     threads,
   });
 }
@@ -63,7 +59,7 @@ async function hydrate(context: SyncContext, id: string): Promise<SyncRecordInpu
  * and daily full rehydration for child edits/deletions that need not advance parent updatedAt.
  * Accessible mode enumerates affiliated repositories and fully rehydrates each cycle. Neither
  * mode infers deletes from absence/permission loss. Each yielded record includes all children.
- * Native GraphQL connections avoid Search's 1,000-result and REST commits' 250-item caps.
+ * Native GraphQL connections avoid Search's 1,000-result cap.
  * Cursors are opaque and persisted only after hydration. Expired discovery cursors restart
  * backwards without resetting records. Manual backfill also restarts discovery.
  */
