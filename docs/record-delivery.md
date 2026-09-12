@@ -31,3 +31,21 @@ Markdown or substitute opaque IDs. GitHub uses the same title in its Markdown he
 time. Missing source timestamps stay absent rather than being replaced with fetch or commit time.
 
 During pre-production, this contract may change incompatibly while remaining at version 1.
+
+## Asset references
+
+An upsert may include `content.assetIds`, the complete set of destination asset identifiers used by
+the record. Assets are uploaded individually before records are delivered; binary data and temporary
+upload handles never enter the record envelope. The sender resolves permanent asset links in Markdown
+before computing `contentHash`. The identifiers are part of that hashed content. Omission or an empty
+array means the record has no asset references.
+
+Receivers apply the record and replace its asset references in the same transaction. Required assets
+must be ready and authorized for the receiving principal. Check revisions first: an obsolete or
+identical retry does not acquire new references or require assets its content no longer owns. Deletes
+release the record's references; asset retention and deletion are destination policy.
+
+Batch receipts are not required. Per-record revisions and content conflicts provide idempotent
+acceptance even if a response is lost. Reject an equal revision with different content, ignore older
+revisions, and acknowledge identical retries. A batch containing a rejected record must not partially
+apply other records or their references.
