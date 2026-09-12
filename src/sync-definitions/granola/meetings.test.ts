@@ -29,6 +29,7 @@ function fixture(ids = ["a", "b"]) {
     throw new Error("Unexpected read operation");
   });
   const context: SyncContext = {
+    records: { list: async () => ({ ids: [], throughSequence: 0 }) },
     assets: { stage: async (input) => describeSyncAsset(input) },
     provider: { request },
     config: { includeTranscript: true },

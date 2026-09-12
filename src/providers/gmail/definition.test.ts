@@ -13,10 +13,10 @@ describe("Gmail provider definition", () => {
     expect(oauth?.scopes).not.toContain(gmailSettingsSharingScope);
   });
 
-  it("requests only the least scopes that cover the full Gmail action catalog", () => {
+  it("requests Gmail action scopes and stable account identity", () => {
     const oauth = provider.auth.find((auth) => auth.type === "oauth2");
 
-    expect(oauth?.scopes).toEqual([gmailModifyScope, gmailLabelsScope, gmailSettingsBasicScope]);
+    expect(oauth?.scopes).toEqual(["openid", gmailModifyScope, gmailLabelsScope, gmailSettingsBasicScope]);
   });
 
   it("uses a user-authorizable scope for forwarding read actions", () => {

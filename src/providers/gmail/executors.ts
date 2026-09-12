@@ -2,11 +2,14 @@ import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { GmailDraftResource, GmailMessageResource, GmailThreadResource } from "./message.ts";
 
+import { requiredString } from "../../core/cast.ts";
 import {
   defineProviderExecutors,
   ProviderRequestError,
   readProviderJsonBody,
   requireOAuthCredential,
+  requiredResponseRecord,
+  providerResponseError,
 } from "../provider-runtime.ts";
 import {
   buildRecipients,
@@ -21,6 +24,7 @@ import {
   resolveReplyHeaders,
   summarizeGmailMessage,
 } from "./message.ts";
+import { gmailIdentityScope } from "./scopes.ts";
 
 const gmailApiBaseUrl = "https://gmail.googleapis.com/gmail/v1";
 const detailHydrationBatchSize = 10;
@@ -203,9 +207,26 @@ export const executors: ProviderExecutors = defineProviderExecutors<ActionContex
 });
 
 export const credentialValidators: CredentialValidators = {
-  async oauth2(input, { fetcher }) {
+  async oauth2(input, { fetcher, signal }) {
     const profile = await getProfile("me", input.accessToken, fetcher);
+    const identity = input.profile.grantedScopes.includes(gmailIdentityScope)
+      ? requiredResponseRecord(
+          await readProviderJsonBody(
+            await sendGmailRequest("https://openidconnect.googleapis.com/v1/userinfo", input.accessToken, fetcher, {
+              signal,
+            }),
+            { emptyBody: null, maxBytes: 64 * 1024, invalidJsonMessage: "Google returned invalid account identity." },
+          ),
+          "Google identity",
+        )
+      : undefined;
     return {
+      sourceIdentity: identity
+        ? {
+            accountId: requiredString(identity.sub, "Google subject", providerResponseError),
+            authorizationBoundary: "mailbox",
+          }
+        : undefined,
       profile: {
         accountId: profile.emailAddress,
         displayName: profile.emailAddress,

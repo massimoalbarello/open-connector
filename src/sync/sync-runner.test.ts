@@ -1,5 +1,5 @@
 import type { CredentialValidators } from "../core/types.ts";
-import type { SyncDefinitionRuntime, SyncRegistration } from "./sync-definition.ts";
+import type { SyncDefinition, SyncDefinitionRuntime, SyncRegistration } from "./sync-definition.ts";
 
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -29,8 +29,12 @@ const definition = {
   scheduleSeconds: 60,
 };
 
-async function setup(runtime: SyncDefinitionRuntime, validators?: CredentialValidators) {
-  const database = new SqliteRuntimeDatabase(":memory:", { syncDefinitions: [definition] });
+async function setup(
+  runtime: SyncDefinitionRuntime,
+  validators?: CredentialValidators,
+  selectedDefinition: SyncDefinition = definition,
+) {
+  const database = new SqliteRuntimeDatabase(":memory:", { syncDefinitions: [selectedDefinition] });
   databases.push(database);
   await database.syncStore.delivery.configure({
     url: "https://receiver.example.com",
@@ -57,7 +61,9 @@ async function setup(runtime: SyncDefinitionRuntime, validators?: CredentialVali
   });
   const connections = new ConnectionService({ catalog, providerLoader: loader, store: database.connectionStore });
   const load = vi.fn(async () => runtime);
-  const registrations: SyncRegistration[] = [{ definition, load, createProvider: createGitHubSyncProvider }];
+  const registrations: SyncRegistration[] = [
+    { definition: selectedDefinition, load, createProvider: createGitHubSyncProvider },
+  ];
   const runner = new SyncRunner({
     store: database.syncStore,
     connectionStore: database.connectionStore,
@@ -330,4 +336,40 @@ it("pauses a full attachment spool without losing progress or escalating acquisi
   expect(paused).toMatchObject({ state: "enabled", consecutiveFailures: 0, lastError: "asset_storage_full" });
   expect(Date.parse(paused!.nextDueAt!)).toBeGreaterThanOrEqual(before + 60_000);
   expect((await database.syncStore.listChanges()).items).toHaveLength(1);
+});
+
+it.each([
+  { grants: ["identity", "read"], accepted: true },
+  { grants: ["identity", "modify"], accepted: true },
+  { grants: ["identity"], accepted: false },
+  { grants: ["modify"], accepted: false },
+])("requires mandatory scopes and accepts any supported read grant: $grants", async ({ grants, accepted }) => {
+  const { database, runner, load } = await setup(
+    {
+      async *run() {
+        yield { checkpoint: { cursor: 1 }, complete: true };
+      },
+    },
+    {
+      apiKey: async () => ({
+        sourceIdentity: { accountId: "native", authorizationBoundary: "scope" },
+        grantedScopes: grants,
+      }),
+    },
+    { ...definition, requiredScopes: ["identity"], requiredScopesAnyOf: ["read", "modify"] },
+  );
+  const connection = (await database.connectionStore.get("github", "default"))!;
+  if (connection.credential.authType !== "api_key") throw new Error("Expected test API key");
+  await database.connectionStore.set("github", "default", {
+    ...connection.credential,
+    profile: { ...connection.credential.profile, grantedScopes: grants },
+  });
+  if (accepted) expect((await runner.run({ definitionId: definition.id })).complete).toBe(true);
+  else {
+    await expect(runner.run({ definitionId: definition.id })).rejects.toMatchObject({
+      code: "invalid_input",
+      message: "Required sync scopes have not been granted.",
+    });
+    expect(load).not.toHaveBeenCalled();
+  }
 });

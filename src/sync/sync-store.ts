@@ -225,7 +225,23 @@ export interface StageRunAssetInput extends StageSyncAssetInput {
   lease: SyncLeaseInput;
 }
 
+export interface SyncRecordInventoryInput {
+  kind: string;
+  afterId?: string;
+  throughSequence?: number;
+}
+
+export interface SyncRecordInventoryPage {
+  ids: string[];
+  throughSequence: number;
+}
+
+export interface ListSyncRecordIdsInput extends SyncRecordInventoryInput {
+  installationId: string;
+}
+
 export interface ISyncStore {
+  listRecordIds(input: ListSyncRecordIdsInput): Promise<SyncRecordInventoryPage>;
   stageAsset(input: StageRunAssetInput): Promise<SyncRecordAsset>;
   readonly schedule: ISyncScheduleStore;
   readonly status: ISyncStatusStore;

@@ -96,6 +96,7 @@ export function githubPullRequestFixture(): GitHubPullRequestFixture {
     },
   );
   const context: SyncContext = {
+    records: { list: async () => ({ ids: [], throughSequence: 0 }) },
     assets: { stage: async (input) => describeSyncAsset(input) },
     provider: { request: (_operation, input = {}) => graphql(String(input.query), input.variables as JsonObject) },
     checkpoint: githubPullRequests.initialCheckpoint,
