@@ -1,4 +1,4 @@
-import type { GranolaMeeting } from "../../providers/granola/mcp-response.ts";
+import type { GranolaMeeting } from "../../providers/granola/actions.ts";
 import type { SyncParticipant, SyncRecordInput } from "../../sync/record-contract.ts";
 
 import { optionalString, requiredRawString } from "../../core/cast.ts";
@@ -9,7 +9,7 @@ export function renderMeeting(meeting: GranolaMeeting, transcript?: string): Syn
   const summary = requiredRawString(meeting.summary, "Granola meeting summary", providerResponseError);
   if (!summary.trim() || /^no summary\b/i.test(summary.trim()))
     throw providerResponseError("Granola meeting summary is not available yet.");
-  const labels = meeting.attendees
+  const labels = (meeting.attendees ?? "")
     .split(/>\s*,\s*/)
     .map((entry, index, entries) => (index < entries.length - 1 ? `${entry}>` : entry).trim())
     .filter(Boolean)
@@ -29,7 +29,7 @@ export function renderMeeting(meeting: GranolaMeeting, transcript?: string): Syn
     });
   }
   const sourceUrl = `https://notes.granola.ai/d/${encodeURIComponent(meeting.id)}`;
-  const title = meeting.title.trim() || "Untitled meeting";
+  const title = meeting.title?.trim() || "Untitled meeting";
   const body = [`# ${title}`, "", `- Granola: ${sourceUrl}`];
   if (meeting.date) body.push(`- Meeting date: ${meeting.date}`);
   if (labels.length) body.push(`- Attendees: ${[...new Set(labels)].join(", ")}`);

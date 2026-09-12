@@ -2,7 +2,7 @@ import type { SyncContext } from "../../sync/sync-definition.ts";
 import type { JsonObject } from "../../sync/sync-store.ts";
 
 import { describe, expect, it, vi } from "vitest";
-import { parseMeetings, parseTranscript } from "../../providers/granola/mcp-response.ts";
+import { parseGranolaMeetings, parseGranolaTranscript } from "../../providers/granola/mcp-response.ts";
 import { normalizeSyncRecord } from "../../sync/record-contract.ts";
 import { validateSyncValue } from "../../sync/sync-validation.ts";
 import { granolaMeetings } from "./definition.ts";
@@ -145,15 +145,15 @@ describe("Granola meeting acquisition", () => {
   });
 
   it("validates XML, identities, discovery counts, and missing required content", () => {
-    expect(() => parseMeetings("not XML")).toThrow();
-    expect(() => parseMeetings(`<meetings_data count="2">${details("a")}</meetings_data>`)).toThrow("truncated");
-    expect(() => parseMeetings(list(["a", "a"]))).toThrow("duplicate");
-    expect(() => parseMeetings('<!DOCTYPE x [<!ENTITY x "expanded">]><meetings_data/>')).toThrow();
-    expect(() => parseTranscript('{"id":"other","transcript":"wrong meeting"}', "a")).toThrow("identity");
-    expect(() => parseTranscript("No transcript available", "a")).toThrow("not available");
-    const meeting = parseMeetings(`<meetings_data>${details("a", "No summary")}</meetings_data>`)[0]!;
+    expect(() => parseGranolaMeetings("not XML")).toThrow();
+    expect(() => parseGranolaMeetings(`<meetings_data count="2">${details("a")}</meetings_data>`)).toThrow("truncated");
+    expect(() => parseGranolaMeetings(list(["a", "a"]))).toThrow("duplicate");
+    expect(() => parseGranolaMeetings('<!DOCTYPE x [<!ENTITY x "expanded">]><meetings_data/>')).toThrow();
+    expect(() => parseGranolaTranscript('{"id":"other","transcript":"wrong meeting"}', "a")).toThrow("identity");
+    expect(() => parseGranolaTranscript("No transcript available", "a")).toThrow("not available");
+    const meeting = parseGranolaMeetings(`<meetings_data>${details("a", "No summary")}</meetings_data>`)[0]!;
     expect(() => renderMeeting(meeting, "Transcript")).toThrow("not available");
-    expect(parseTranscript('<transcript meeting_id="a"><![CDATA[Me: A & B < C]]></transcript>', "a")).toBe(
+    expect(parseGranolaTranscript('<transcript meeting_id="a"><![CDATA[Me: A & B < C]]></transcript>', "a")).toBe(
       "Me: A & B < C",
     );
     const guest = renderMeeting({ ...meeting, summary: "Summary", attendees: "A guest" }, "Transcript");
@@ -166,8 +166,10 @@ describe("Granola meeting acquisition", () => {
     expect(authored.body).toContain("## Summary\n\n    indented code");
     expect(authored.body).toContain("## Transcript\n\n  A speaker's words.");
     expect(renderMeeting({ ...meeting, title: "   ", summary: "Summary" }).title).toBe("Untitled meeting");
-    expect(() => parseMeetings(`<meetings_data has_more="true">${details("a")}</meetings_data>`)).toThrow("truncated");
-    expect(() => parseMeetings(`<meetings_data next_cursor="next">${details("a")}</meetings_data>`)).toThrow(
+    expect(() => parseGranolaMeetings(`<meetings_data has_more="true">${details("a")}</meetings_data>`)).toThrow(
+      "truncated",
+    );
+    expect(() => parseGranolaMeetings(`<meetings_data next_cursor="next">${details("a")}</meetings_data>`)).toThrow(
       "truncated",
     );
   });
@@ -175,18 +177,18 @@ describe("Granola meeting acquisition", () => {
   it("accepts access notices beside meeting data without weakening fragment validation", () => {
     const notice = "<access_notice>Only recent personal notes are available on this plan.</access_notice>";
     const response = `${notice}\n\n${list(["a"])}`;
-    const meetings = parseMeetings(response);
-    expect(meetings).toEqual(parseMeetings(list(["a"])));
+    const meetings = parseGranolaMeetings(response);
+    expect(meetings).toEqual(parseGranolaMeetings(list(["a"])));
     expect(renderMeeting(meetings[0]!).body).not.toContain("Only recent personal notes");
-    expect(() => parseMeetings(`<access_notice>Unclosed notice\n${list(["a"])}`)).toThrow("malformed");
-    expect(() => parseMeetings(`${notice}<meetings_data count="2">${details("a")}</meetings_data>`)).toThrow(
+    expect(() => parseGranolaMeetings(`<access_notice>Unclosed notice\n${list(["a"])}`)).toThrow("malformed");
+    expect(() => parseGranolaMeetings(`${notice}<meetings_data count="2">${details("a")}</meetings_data>`)).toThrow(
       "truncated",
     );
-    expect(() => parseMeetings(notice)).toThrow("meeting list");
+    expect(() => parseGranolaMeetings(notice)).toThrow("meeting list");
   });
 
   it("preserves identity and detects title changes while normalizing participant order", async () => {
-    const meeting = parseMeetings(list(["a"]))[0]!;
+    const meeting = parseGranolaMeetings(list(["a"]))[0]!;
     const record = renderMeeting(meeting, "Transcript");
     const reordered = renderMeeting(
       { ...meeting, attendees: "Max (note creator) <max@example.com>, Ada <ada@example.com>" },

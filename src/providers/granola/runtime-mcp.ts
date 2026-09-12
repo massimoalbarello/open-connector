@@ -14,8 +14,8 @@ import {
 import { withMcpClient } from "../mcp-client.ts";
 import {
   providerResponseError,
+  providerUserAgent,
   providerInputError,
-  parseProviderJsonBodyText,
   ProviderRequestError,
   readProviderJsonBody,
   requiredInputString,
@@ -23,50 +23,31 @@ import {
   runProviderRequest,
 } from "../provider-runtime.ts";
 import { granolaMcpEndpoint, granolaOAuthIssuer } from "./endpoints.ts";
-import { parseMeetings, parseTranscript } from "./mcp-response.ts";
+import { parseGranolaMeetings, parseGranolaTranscript } from "./mcp-response.ts";
 
 export const granolaMcpActionHandlers: ProviderActionHandlerSubset<
   "granola",
   ProviderRuntimeHandler<OAuthProviderContext>
 > = {
-  async list_meetings(input, context) {
-    if (input.time_range === "custom") {
-      const start = requiredInputString(input.custom_start, "custom_start");
-      const end = requiredInputString(input.custom_end, "custom_end");
-      if (start > end) throw providerInputError("custom_start must not be after custom_end.");
-    } else if (input.custom_start !== undefined || input.custom_end !== undefined) {
-      throw providerInputError("Custom dates require time_range: custom.");
-    }
-    return { meetings: parseMeetings(await callGranolaMcpTool(context, "list_meetings", input)) };
+  async list_meetings(_input, context) {
+    const text = await callGranolaMcpTool(context, "list_meetings", { time_range: "last_30_days" });
+    return { meetings: parseGranolaMeetings(text) };
   },
   async get_meetings(input, context) {
     const ids = requiredStringArray(input.meeting_ids, "meeting_ids", providerInputError);
-    const meetings = parseMeetings(await callGranolaMcpTool(context, "get_meetings", input));
-    if (meetings.length !== new Set(ids).size || meetings.some((meeting) => !ids.includes(meeting.id)))
+    const text = await callGranolaMcpTool(context, "get_meetings", { meeting_ids: ids });
+    const meetings = parseGranolaMeetings(text);
+    const byId = new Map(meetings.map((meeting) => [meeting.id, meeting]));
+    if (meetings.length !== ids.length || ids.some((id) => !byId.has(id))) {
       throw providerResponseError("Granola did not return every requested meeting.");
-    return { meetings };
+    }
+    return { meetings: ids.map((id) => byId.get(id)!) };
   },
   async get_meeting_transcript(input, context) {
-    const id = requiredInputString(input.meeting_id, "meeting_id");
-    return {
-      meeting_id: id,
-      transcript: parseTranscript(await callGranolaMcpTool(context, "get_meeting_transcript", input), id),
-    };
+    const meetingId = requiredInputString(input.meeting_id, "meeting_id");
+    const text = await callGranolaMcpTool(context, "get_meeting_transcript", { meeting_id: meetingId });
+    return { meeting_id: meetingId, transcript: parseGranolaTranscript(text, meetingId) };
   },
-  list_meeting_folders: async (input, context) => ({
-    text: await callGranolaMcpTool(context, "list_meeting_folders", input),
-  }),
-  query_meetings: async (input, context) => ({
-    answer: await callGranolaMcpTool(context, "query_granola_meetings", input),
-  }),
-  get_account_info: async (input, context) =>
-    requiredResponseRecord(
-      parseProviderJsonBodyText(await callGranolaMcpTool(context, "get_account_info", input), {
-        emptyBody: undefined,
-        invalidJsonMessage: "Invalid Granola account response.",
-      }),
-      "Granola account",
-    ),
 };
 
 /** Read advertised tool schemas without inferring capabilities from the account's subscription. */
@@ -111,7 +92,7 @@ function withGranolaClient<T>(
         endpoint: new URL(granolaMcpEndpoint),
         transport: "streamable_http",
         fetcher: context.fetcher,
-        headers: { authorization: `Bearer ${context.accessToken}` },
+        headers: { authorization: `Bearer ${context.accessToken}`, "user-agent": providerUserAgent },
         redirect: "manual",
         signal,
         maxResponseBytes: 16 * 1024 * 1024,

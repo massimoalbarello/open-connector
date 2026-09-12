@@ -52,9 +52,16 @@ node examples/local-http/granola.ts connect
 node examples/local-http/granola.ts meetings
 node examples/local-http/granola.ts summaries <meeting-id>
 node examples/local-http/granola.ts transcript <meeting-id>
-node examples/local-http/granola.ts folders
-node examples/local-http/granola.ts query "What were the action items?"
-node examples/local-http/granola.ts account
 ```
 
 For paid-plan REST access, use `GRANOLA_API_KEY=... node examples/local-http/granola.ts api`.
+The same meeting actions also work with that API-key connection:
+
+```bash
+GRANOLA_CONNECTION=api node examples/local-http/granola.ts meetings
+GRANOLA_CONNECTION=api node examples/local-http/granola.ts summaries <note-id>
+GRANOLA_CONNECTION=api node examples/local-http/granola.ts transcript <note-id>
+```
+
+The `meetings` action lists recent meetings; historical sync discovery is separate. Use IDs returned
+by the same connection: REST note IDs and MCP meeting IDs are not interchangeable.

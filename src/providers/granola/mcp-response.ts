@@ -1,31 +1,10 @@
+import type { GranolaMeeting } from "./actions.ts";
+
 import { XMLParser } from "fast-xml-parser";
 import { SyntaxValidator } from "fast-xml-validator";
-import { z } from "zod";
-import { optionalString, requiredRawString } from "../../core/cast.ts";
-import {
-  ProviderRequestError,
-  providerResponseError,
-  requiredResponseRecord,
-  parseProviderJsonBodyText,
-} from "../provider-runtime.ts";
+import { objectArray, optionalString, requiredRawString, requiredString } from "../../core/cast.ts";
+import { ProviderRequestError, providerResponseError, requiredResponseRecord } from "../provider-runtime.ts";
 
-export interface GranolaMeeting {
-  id: string;
-  title: string;
-  date: string;
-  attendees: string;
-  summary?: string;
-  privateNotes?: string;
-}
-
-const meetingSchema = z.object({
-  "@_id": z.string().min(1).max(1024),
-  "@_title": z.string(),
-  "@_date": z.string(),
-  known_participants: z.string().default(""),
-  summary: z.string().optional(),
-  private_notes: z.string().optional(),
-});
 const xml = new XMLParser({
   ignoreAttributes: false,
   parseTagValue: false,
@@ -35,79 +14,81 @@ const xml = new XMLParser({
   isArray: (name) => name === "meeting",
 });
 
-/** Discovery can retry an incomplete date range; hydration must still reject incomplete records. */
+/** Discovery retries incomplete ranges; hydration still rejects incomplete records. */
 export class GranolaTruncatedMeetingsError extends ProviderRequestError {
   constructor() {
-    super(502, "Granola meeting list is truncated.");
+    super(502, "Granola returned a truncated meeting list.");
   }
 }
 
-/** Reject malformed discovery rather than silently turning it into an empty successful scan. */
-export function parseMeetings(text: string): GranolaMeeting[] {
-  let document: Record<string, unknown>;
+function parseGranolaXml(text: string): Record<string, unknown> {
   try {
-    // Granola does not need DTDs. Do not expand provider-supplied custom entities.
+    // Granola uses XML fragments, including access notices beside meeting data. DTDs are unnecessary.
     if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error("Unsupported XML declaration");
-    // MCP returns XML fragments: free-plan discovery includes an access_notice beside meetings_data.
     const response = `<granola_response>${text}</granola_response>`;
     SyntaxValidator.validate(response);
-    document = requiredResponseRecord(xml.parse(response).granola_response, "Granola meetings");
+    return requiredResponseRecord(xml.parse(response).granola_response, "Granola MCP XML");
   } catch {
-    throw providerResponseError("Granola returned malformed meeting XML.");
+    throw providerResponseError("Granola returned malformed MCP XML.");
   }
-  const root = requiredResponseRecord(document.meetings_data, "Granola meeting list");
-  const parsed = z.array(meetingSchema).safeParse(root.meeting ?? []);
-  if (!parsed.success) throw providerResponseError("Granola returned invalid meeting fields.");
-  const meetings = parsed.data;
-  const count = optionalString(root["@_count"]);
-  if (
-    (count !== undefined && (!/^\d+$/.test(count) || Number(count) !== meetings.length)) ||
-    root["@_has_more"] === "true" ||
-    optionalString(root["@_next_cursor"])
-  )
-    throw new GranolaTruncatedMeetingsError();
-  if (new Set(meetings.map((meeting) => meeting["@_id"])).size !== meetings.length)
-    throw providerResponseError("Granola returned duplicate meeting IDs.");
-  return meetings.map((meeting) => ({
-    id: meeting["@_id"],
-    title: meeting["@_title"],
-    date: meeting["@_date"],
-    attendees: meeting.known_participants,
-    summary: meeting.summary,
-    privateNotes: meeting.private_notes,
-  }));
 }
 
-/** Preserve authored transcript text, including speaker labels and timestamps, without rewriting prose. */
-export function parseTranscript(text: string, meetingId: string): string {
-  let transcript: string;
+/** Parse meeting XML without treating access notices or incomplete lists as meeting data. */
+export function parseGranolaMeetings(text: string): GranolaMeeting[] {
+  const document = parseGranolaXml(text);
+  const root =
+    document.meetings_data === "" ? {} : requiredResponseRecord(document.meetings_data, "Granola meeting list");
+  const records = objectArray(root.meeting ?? [], "Granola meeting", providerResponseError);
+  const count = optionalString(root["@_count"]);
+  if (
+    (count !== undefined && (!/^\d+$/.test(count) || Number(count) !== records.length)) ||
+    root["@_has_more"] === "true" ||
+    optionalString(root["@_next_cursor"])
+  ) {
+    throw new GranolaTruncatedMeetingsError();
+  }
+  const meetings = records.map((meeting) => ({
+    id: requiredString(meeting["@_id"], "Granola meeting ID", providerResponseError),
+    title: requiredRawString(meeting["@_title"], "Granola meeting title", providerResponseError),
+    date: requiredRawString(meeting["@_date"], "Granola meeting date", providerResponseError),
+    attendees: requiredRawString(meeting.known_participants ?? "", "Granola participants", providerResponseError),
+    summary:
+      meeting.summary === undefined
+        ? undefined
+        : requiredRawString(meeting.summary, "Granola meeting summary", providerResponseError),
+  }));
+  if (new Set(meetings.map((meeting) => meeting.id)).size !== meetings.length) {
+    throw providerResponseError("Granola returned duplicate meeting IDs.");
+  }
+  return meetings;
+}
+
+/** Preserve transcript text and verify the meeting identity when Granola supplies an envelope. */
+export function parseGranolaTranscript(text: string, meetingId: string): string {
   const value = text.trim();
+  let transcript: string;
   if (value.startsWith("{")) {
-    const data = requiredResponseRecord(
-      parseProviderJsonBodyText(value, {
-        emptyBody: undefined,
-        invalidJsonMessage: "Invalid Granola transcript response.",
-      }),
-      "Granola transcript",
-    );
+    let payload: unknown;
+    try {
+      payload = JSON.parse(value);
+    } catch {
+      throw providerResponseError("Granola returned malformed transcript JSON.");
+    }
+    const data = requiredResponseRecord(payload, "Granola transcript");
     if (data.id !== meetingId) throw providerResponseError("Granola returned a different transcript identity.");
     transcript = requiredRawString(data.transcript, "Granola transcript", providerResponseError);
-  } else if (value.startsWith("<transcript")) {
-    if (/<!DOCTYPE|<!ENTITY/i.test(value)) throw providerResponseError("Unsupported Granola transcript XML.");
-    try {
-      SyntaxValidator.validate(value);
-    } catch {
-      throw providerResponseError("Granola returned malformed transcript XML.");
-    }
-    const data = requiredResponseRecord(xml.parse(value).transcript, "Granola transcript");
-    if (data["@_meeting_id"] !== meetingId)
+  } else if (value.startsWith("<")) {
+    const data = requiredResponseRecord(parseGranolaXml(value).transcript, "Granola transcript");
+    if (data["@_meeting_id"] !== meetingId) {
       throw providerResponseError("Granola returned a different transcript identity.");
+    }
     transcript = requiredRawString(data["#text"], "Granola transcript", providerResponseError);
   } else {
-    // Older MCP responses contain the transcript directly, without an envelope.
-    transcript = requiredRawString(text, "Granola transcript", providerResponseError);
+    // Older MCP responses contain transcript text without an envelope.
+    transcript = text;
   }
-  if (!transcript.trim() || /^no transcript\b/i.test(transcript.trim()))
+  if (!transcript.trim() || /^no transcript\b/i.test(transcript.trim())) {
     throw providerResponseError("Granola transcript is not available yet.");
+  }
   return transcript;
 }

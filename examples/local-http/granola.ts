@@ -12,21 +12,16 @@ if (mode === "connect") {
   });
   console.log("Open this URL and finish Granola consent, then run this example with meetings:");
   console.log(started.authorizationUrl);
-} else if (mode && ["meetings", "summaries", "transcript", "folders", "query", "account"].includes(mode)) {
+} else if (mode && ["meetings", "summaries", "transcript"].includes(mode)) {
   const argument = process.argv[3];
-  if (["summaries", "transcript", "query"].includes(mode) && !argument) {
-    console.log(
-      "Skipping: summaries requires comma-separated meeting IDs, transcript requires one meeting ID, and query requires a question.",
-    );
+  if (["summaries", "transcript"].includes(mode) && !argument) {
+    console.log("Skipping: summaries requires comma-separated meeting IDs; transcript requires one meeting ID.");
     process.exit(0);
   }
   const actions: Record<string, string> = {
     meetings: "list_meetings",
     summaries: "get_meetings",
     transcript: "get_meeting_transcript",
-    folders: "list_meeting_folders",
-    query: "query_meetings",
-    account: "get_account_info",
   };
   const action = actions[mode];
   const input =
@@ -34,9 +29,7 @@ if (mode === "connect") {
       ? { meeting_ids: argument!.split(",") }
       : mode === "transcript"
         ? { meeting_id: argument }
-        : mode === "query"
-          ? { query: argument }
-          : {};
+        : {};
   console.log(
     JSON.stringify(
       await fetchJson(`${origin}/v1/actions/granola.${action}`, {
@@ -71,8 +64,6 @@ if (mode === "connect") {
     ),
   );
 } else {
-  console.log(
-    "Usage: node examples/local-http/granola.ts connect|meetings|summaries <ids>|transcript <id>|folders|query <question>|account|api",
-  );
+  console.log("Usage: node examples/local-http/granola.ts connect|meetings|summaries <ids>|transcript <id>|api");
   console.log("Start the runtime first. MCP uses browser OAuth; api requires GRANOLA_API_KEY.");
 }

@@ -2,7 +2,7 @@ import type { SyncContext } from "../../sync/sync-definition.ts";
 import type { JsonObject } from "../../sync/sync-store.ts";
 
 import { looseArray, optionalRecord, optionalString, requiredRawString } from "../../core/cast.ts";
-import { GranolaTruncatedMeetingsError, parseMeetings } from "../../providers/granola/mcp-response.ts";
+import { GranolaTruncatedMeetingsError, parseGranolaMeetings } from "../../providers/granola/mcp-response.ts";
 import { McpResponseSizeError } from "../../providers/mcp-client.ts";
 import { providerResponseError, requiredResponseRecord } from "../../providers/provider-runtime.ts";
 
@@ -67,7 +67,7 @@ export async function* discover(context: SyncContext): AsyncGenerator<DiscoveryB
     try {
       const input: JsonObject = range ? { time_range: "custom", custom_start: range.start, custom_end: range.end } : {};
       const result = await context.provider.request("list_meetings", input);
-      ids = parseMeetings(requiredRawString(result.text, "Granola meeting list", providerResponseError))
+      ids = parseGranolaMeetings(requiredRawString(result.text, "Granola meeting list", providerResponseError))
         .map((meeting) => meeting.id)
         .sort();
     } catch (error) {
