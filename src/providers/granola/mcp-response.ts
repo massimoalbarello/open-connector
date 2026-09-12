@@ -1,4 +1,4 @@
-import type { GranolaMeeting } from "./meeting-actions.ts";
+import type { GranolaMeeting } from "./actions.ts";
 
 import { XMLParser } from "fast-xml-parser";
 import { SyntaxValidator } from "fast-xml-validator";

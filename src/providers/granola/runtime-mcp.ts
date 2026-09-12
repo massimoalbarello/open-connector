@@ -14,6 +14,7 @@ import { withMcpClient } from "../mcp-client.ts";
 import {
   providerInputError,
   providerResponseError,
+  providerUserAgent,
   ProviderRequestError,
   readProviderJsonBody,
   requiredInputString,
@@ -73,7 +74,7 @@ function withGranolaClient<T>(
         endpoint: new URL(granolaMcpEndpoint),
         transport: "streamable_http",
         fetcher: context.fetcher,
-        headers: { authorization: `Bearer ${context.accessToken}` },
+        headers: { authorization: `Bearer ${context.accessToken}`, "user-agent": providerUserAgent },
         redirect: "manual",
         signal,
         mapError(error) {
@@ -106,7 +107,6 @@ export async function validateGranolaOAuthCredential(
         await readProviderJsonBody(response, {
           emptyBody: undefined,
           invalidJsonMessage: "Invalid Granola account response.",
-          maxBytes: 1024 * 1024,
         }),
         "Granola account",
       );

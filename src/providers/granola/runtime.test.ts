@@ -3,9 +3,9 @@ import type { Schema } from "@cfworker/json-schema";
 
 import { Validator } from "@cfworker/json-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { granolaActions } from "./actions.ts";
 import { executors, credentialValidators } from "./executors.ts";
 import { parseGranolaMeetings, parseGranolaTranscript } from "./mcp-response.ts";
-import { granolaMeetingActions } from "./meeting-actions.ts";
 
 const summary = "    indented code\n\nKeep **Markdown** & code `a < b`.";
 const meetingXml = (id: string) =>
@@ -77,21 +77,21 @@ function stubMcp(options: McpFixtureOptions = {}): typeof fetch {
   return fetcher;
 }
 
-function stubRest(response: (url: URL) => Response): void {
+function stubRest(response: (url: URL, signal: AbortSignal) => Response): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const target = new URL(String(url));
       expect(target.origin).toBe("https://public-api.granola.ai");
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer rest-key");
-      return response(target);
+      return response(target, init!.signal!);
     }),
   );
 }
 
-async function execute(name: string, input: Record<string, unknown>, credential = oauth) {
-  const result = await executors[`granola.${name}`]!(input, { getCredential: async () => credential });
-  const action = granolaMeetingActions.find((action) => action.name === name);
+async function execute(name: string, input: Record<string, unknown>, credential = oauth, signal?: AbortSignal) {
+  const result = await executors[`granola.${name}`]!(input, { getCredential: async () => credential, signal });
+  const action = granolaActions.find((action) => action.name === name);
   if (result.ok && action) {
     const validator = new Validator(action.outputSchema as Schema);
     expect(validator.validate(JSON.parse(JSON.stringify(result.output)))).toMatchObject({ valid: true });
@@ -176,6 +176,8 @@ describe("Granola REST and MCP execution", () => {
   ])("preserves actionable HTTP failures (%s)", async (status, code) => {
     stubMcp({ status: Number(status) });
     await expect(execute("list_meetings", {})).resolves.toMatchObject({ ok: false, error: { code } });
+    stubRest(() => Response.json({ message: "Request failed" }, { status: Number(status) }));
+    await expect(execute("list_meetings", {}, apiKey)).resolves.toMatchObject({ ok: false, error: { code } });
   });
 
   it("validates an OAuth account without invoking paid meeting tools", async () => {
@@ -320,11 +322,42 @@ describe("Granola REST and MCP execution", () => {
     });
   });
 
-  it("reports unavailable API-key transcripts instead of returning empty text", async () => {
-    stubRest(() => Response.json({ id: "not_a", transcript: null }));
-    await expect(execute("get_meeting_transcript", { meeting_id: "not_a" }, apiKey)).resolves.toMatchObject({
+  it.each([null, [], [{ text: "   ", speaker: { source: "microphone" }, start_time: "2026-09-08T14:30:00Z" }]])(
+    "reports unavailable API-key transcripts instead of returning empty text (%#)",
+    async (transcript) => {
+      stubRest(() => Response.json({ id: "not_a", transcript }));
+      await expect(execute("get_meeting_transcript", { meeting_id: "not_a" }, apiKey)).resolves.toMatchObject({
+        ok: false,
+        error: { code: "provider_error", message: "Granola transcript is not available yet." },
+      });
+    },
+  );
+
+  it("keeps REST response body reads cancellable after headers arrive", async () => {
+    const controller = new AbortController();
+    const reading = Promise.withResolvers<void>();
+    stubRest(
+      (_url, signal) =>
+        new Response(
+          new ReadableStream(
+            {
+              start(body) {
+                signal.addEventListener("abort", () => body.error(signal.reason), { once: true });
+              },
+              pull() {
+                reading.resolve();
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+        ),
+    );
+    const result = execute("get_note", { note_id: "not_a" }, apiKey, controller.signal);
+    await reading.promise;
+    controller.abort();
+    await expect(result).resolves.toMatchObject({
       ok: false,
-      error: { code: "provider_error", message: "Granola transcript is not available yet." },
+      error: { code: "provider_error", details: { status: 504 } },
     });
   });
 });
