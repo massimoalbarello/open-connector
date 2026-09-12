@@ -22,6 +22,7 @@ interface DestinationFormProps {
 export function DestinationForm(props: DestinationFormProps): ReactNode {
   const t = useTranslate();
   const [url, setUrl] = useState(props.destination?.url ?? "");
+  const [assetsUrl, setAssetsUrl] = useState(props.destination?.assetsUrl ?? "");
   const [token, setToken] = useState("");
   const [enabled, setEnabled] = useState(props.destination?.enabled ?? true);
   const [saving, setSaving] = useState(false);
@@ -32,8 +33,20 @@ export function DestinationForm(props: DestinationFormProps): ReactNode {
     setError(undefined);
     try {
       const path = "/api/sync/destination";
-      if (props.destination) await apiPatch(path, { url: url.trim(), bearerToken: token.trim() || undefined, enabled });
-      else await apiPut(path, { url: url.trim(), bearerToken: token.trim(), enabled });
+      if (props.destination)
+        await apiPatch(path, {
+          url: url.trim(),
+          assetsUrl: assetsUrl.trim() || null,
+          bearerToken: token.trim() || undefined,
+          enabled,
+        });
+      else
+        await apiPut(path, {
+          url: url.trim(),
+          assetsUrl: assetsUrl.trim() || null,
+          bearerToken: token.trim(),
+          enabled,
+        });
       props.onSaved();
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 401) props.onAuthExpired();
@@ -64,6 +77,16 @@ export function DestinationForm(props: DestinationFormProps): ReactNode {
               placeholder="https://example.com/records"
               required
             />
+          </Label>
+          <Label className="field">
+            <span>{t("destinations.assetsUrl")}</span>
+            <Input
+              type="url"
+              value={assetsUrl}
+              onChange={(event) => setAssetsUrl(event.target.value)}
+              placeholder="https://example.com/api/assets/imports"
+            />
+            <span className="syncs-footnote">{t("destinations.assetsHint")}</span>
           </Label>
           <CredentialInput
             field={{

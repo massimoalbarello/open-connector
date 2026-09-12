@@ -80,6 +80,8 @@
         "title": "Resources"
       },
       "destinations": {
+        "assetsUrl": "Asset upload URL (optional)",
+        "assetsHint": "Required for attachments. Use the asset import endpoint on the same host as the webhook.",
         "title": "Destination"
       }
     }
@@ -747,6 +749,8 @@
     "waitingDestination": "Syncs are waiting for an enabled destination. Pending records are retained."
   },
   "destinations": {
+    "assetsUrl": "Asset upload URL (optional)",
+    "assetsHint": "Required for attachments. Use the asset import endpoint on the same host as the webhook.",
     "description": "Manage the webhook destination that receives records from all your syncs.",
     "add": "Add destination",
     "edit": "Edit destination",

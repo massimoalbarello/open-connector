@@ -128,6 +128,7 @@ export function registerSyncRoutes(
   app.patch("/api/sync/destination", async (context) => {
     const schema = z.strictObject({
       url: z.string().max(8192).optional(),
+      assetsUrl: z.string().max(8192).nullable().optional(),
       bearerToken: z.string().min(1).max(8192).optional(),
       enabled: z.boolean().optional(),
     });
@@ -154,6 +155,7 @@ export function registerSyncRoutes(
   app.put("/api/sync/destination", async (context) => {
     const schema = z.strictObject({
       url: z.string().max(8192),
+      assetsUrl: z.string().max(8192).nullable().optional(),
       bearerToken: z.string().max(8192),
       enabled: z.boolean().default(true),
     });

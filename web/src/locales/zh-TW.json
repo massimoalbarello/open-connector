@@ -80,6 +80,8 @@
         "title": "資源"
       },
       "destinations": {
+        "assetsUrl": "資源上傳 URL（選填）",
+        "assetsHint": "同步附件時需要。請使用與 Webhook 相同主機上的資源匯入端點。",
         "title": "傳送目的地"
       }
     }
@@ -730,6 +732,8 @@
     "waitingDestination": "同步正在等待已啟用的目的地。待傳送的記錄會保留。"
   },
   "destinations": {
+    "assetsUrl": "資源上傳 URL（選填）",
+    "assetsHint": "同步附件時需要。請使用與 Webhook 相同主機上的資源匯入端點。",
     "description": "管理接收所有同步記錄的 Webhook 目的地。",
     "add": "新增目標位址",
     "edit": "編輯目標位址",

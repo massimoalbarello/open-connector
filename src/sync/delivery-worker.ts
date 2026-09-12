@@ -1,6 +1,7 @@
 import type { ISyncDeliveryStore } from "./delivery-store.ts";
 
 import { providerFetch } from "../providers/provider-runtime.ts";
+import { DeliveryHttpError, uploadSyncAsset } from "./asset-upload.ts";
 import { SyncStoreError } from "./sync-store.ts";
 
 export interface SyncDeliveryWorkerOptions {
@@ -24,7 +25,7 @@ export class SyncDeliveryWorker {
     if (this.stopped) return Promise.resolve(false);
     if (this.pending) return this.pending;
     this.controller = new AbortController();
-    const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(30_000)]);
+    const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(10 * 60_000)]);
     this.pending = this.deliver(signal).finally(() => {
       this.pending = undefined;
       this.controller = undefined;
@@ -45,7 +46,33 @@ export class SyncDeliveryWorker {
     let httpStatus: number | undefined;
     let errorCode: string | undefined;
     let retryAfter = 0;
+    const abort = new AbortController();
+    const activeSignal = AbortSignal.any([signal, abort.signal]);
+    const heartbeat = setInterval(() => {
+      try {
+        this.options.store.renew(lease, new Date().toISOString());
+      } catch (error) {
+        abort.abort(error);
+      }
+    }, 20_000);
+    heartbeat.unref();
     try {
+      const pending = this.options.store.pendingAssets(lease);
+      if (pending.length && !lease.assetsUrl)
+        throw new SyncStoreError("destination_required", "Configure an asset upload URL for attachments.");
+      for (const asset of pending) {
+        const receipt = await uploadSyncAsset({
+          asset,
+          assetsUrl: lease.assetsUrl!,
+          bearerToken: lease.bearerToken,
+          signal: AbortSignal.any([activeSignal, AbortSignal.timeout(120_000)]),
+          fetcher: this.options.fetcher ?? providerFetch,
+          readBytes: () => this.options.store.readAsset(lease, asset.sha256),
+        });
+        this.options.store.assetUploaded(lease, receipt);
+      }
+      const body = this.options.store.prepare(lease);
+      activeSignal.throwIfAborted();
       const response = await (this.options.fetcher ?? providerFetch)(lease.url, {
         method: "POST",
         headers: {
@@ -53,20 +80,25 @@ export class SyncDeliveryWorker {
           "content-type": "application/json",
           "idempotency-key": lease.id,
         },
-        body: lease.body,
+        body,
         redirect: "error",
-        signal,
+        signal: AbortSignal.any([activeSignal, AbortSignal.timeout(30_000)]),
       });
       httpStatus = response.status;
       acknowledged = response.ok;
-      if (!acknowledged) errorCode = `http_${response.status}`;
-      const header = response.headers.get("retry-after");
-      if (header)
-        retryAfter = /^\d+$/.test(header) ? Number(header) * 1000 : Math.max(0, Date.parse(header) - Date.now());
-      // Only the status is the batch ACK. Never store response bodies or receiver credentials in errors.
       await response.body?.cancel().catch(() => undefined);
-    } catch {
-      errorCode = signal.aborted ? "delivery_aborted" : "delivery_failed";
+      if (!acknowledged) throw new DeliveryHttpError(response);
+    } catch (error) {
+      if (error instanceof DeliveryHttpError) {
+        httpStatus = error.status;
+        retryAfter = error.retryAfter;
+        errorCode = `http_${error.status}`;
+      } else {
+        errorCode =
+          error instanceof SyncStoreError ? error.code : activeSignal.aborted ? "delivery_aborted" : "delivery_failed";
+      }
+    } finally {
+      clearInterval(heartbeat);
     }
     const backoff = Math.min(3600_000, 1000 * 2 ** Math.min(lease.attempt, 12));
     const delay = Math.min(
