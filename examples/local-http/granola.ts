@@ -10,11 +10,33 @@ if (mode === "connect") {
     headers: adminHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({ service: "granola", connectionName: connection }),
   });
-  console.log("Open this URL and finish Granola consent, then run this example with tools or meetings:");
+  console.log("Open this URL and finish Granola consent, then run this example with meetings:");
   console.log(started.authorizationUrl);
-} else if (mode === "tools" || mode === "meetings") {
-  const action = mode === "tools" ? "mcp_list_tools" : "mcp_call_tool";
-  const input = mode === "tools" ? {} : { toolName: "list_meetings", arguments: { time_range: "last_30_days" } };
+} else if (mode && ["meetings", "summaries", "transcript", "folders", "query", "account"].includes(mode)) {
+  const argument = process.argv[3];
+  if (["summaries", "transcript", "query"].includes(mode) && !argument) {
+    console.log(
+      "Skipping: summaries requires comma-separated meeting IDs, transcript requires one meeting ID, and query requires a question.",
+    );
+    process.exit(0);
+  }
+  const actions: Record<string, string> = {
+    meetings: "list_meetings",
+    summaries: "get_meetings",
+    transcript: "get_meeting_transcript",
+    folders: "list_meeting_folders",
+    query: "query_meetings",
+    account: "get_account_info",
+  };
+  const action = actions[mode];
+  const input =
+    mode === "summaries"
+      ? { meeting_ids: argument!.split(",") }
+      : mode === "transcript"
+        ? { meeting_id: argument }
+        : mode === "query"
+          ? { query: argument }
+          : {};
   console.log(
     JSON.stringify(
       await fetchJson(`${origin}/v1/actions/granola.${action}`, {
@@ -49,6 +71,8 @@ if (mode === "connect") {
     ),
   );
 } else {
-  console.log("Usage: node examples/local-http/granola.ts connect|tools|meetings|api");
+  console.log(
+    "Usage: node examples/local-http/granola.ts connect|meetings|summaries <ids>|transcript <id>|folders|query <question>|account|api",
+  );
   console.log("Start the runtime first. MCP uses browser OAuth; api requires GRANOLA_API_KEY.");
 }

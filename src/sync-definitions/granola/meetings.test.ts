@@ -2,11 +2,12 @@ import type { SyncContext } from "../../sync/sync-definition.ts";
 import type { JsonObject } from "../../sync/sync-store.ts";
 
 import { describe, expect, it, vi } from "vitest";
+import { parseMeetings, parseTranscript } from "../../providers/granola/mcp-response.ts";
 import { normalizeSyncRecord } from "../../sync/record-contract.ts";
 import { validateSyncValue } from "../../sync/sync-validation.ts";
 import { granolaMeetings } from "./definition.ts";
 import { run } from "./meetings.ts";
-import { parseMeetings, parseTranscript, renderMeeting } from "./render.ts";
+import { renderMeeting } from "./render.ts";
 
 const details = (id: string, summary = "## Decisions\n\n- Keep authored **Markdown** & code `a < b`.") =>
   `<meeting id="${id}" title="Roadmap &amp; delivery" date="Sep 8, 2026 2:30 PM"><known_participants>Ada &lt;ada@example.com&gt;, Max (note creator) &lt;max@example.com&gt;</known_participants><summary><![CDATA[${summary}]]></summary><private_notes>private sentinel</private_notes><debug>debug sentinel</debug></meeting>`;

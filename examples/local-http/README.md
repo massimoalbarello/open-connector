@@ -48,9 +48,13 @@ Connect Granola MCP through browser OAuth without a client ID or secret:
 
 ```bash
 node examples/local-http/granola.ts connect
-# Complete consent, then discover the available tools:
-node examples/local-http/granola.ts tools
+# Complete consent, then list meetings and read their summaries:
 node examples/local-http/granola.ts meetings
+node examples/local-http/granola.ts summaries <meeting-id>
+node examples/local-http/granola.ts transcript <meeting-id>
+node examples/local-http/granola.ts folders
+node examples/local-http/granola.ts query "What were the action items?"
+node examples/local-http/granola.ts account
 ```
 
 For paid-plan REST access, use `GRANOLA_API_KEY=... node examples/local-http/granola.ts api`.

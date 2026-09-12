@@ -2,9 +2,9 @@ import type { SyncContext } from "../../sync/sync-definition.ts";
 import type { JsonObject } from "../../sync/sync-store.ts";
 
 import { looseArray, optionalRecord, optionalString, requiredRawString } from "../../core/cast.ts";
+import { GranolaTruncatedMeetingsError, parseMeetings } from "../../providers/granola/mcp-response.ts";
 import { McpResponseSizeError } from "../../providers/mcp-client.ts";
 import { providerResponseError, requiredResponseRecord } from "../../providers/provider-runtime.ts";
-import { GranolaTruncatedMeetingsError, parseMeetings } from "./render.ts";
 
 interface MeetingRange extends JsonObject {
   start: string;

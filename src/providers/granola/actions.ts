@@ -131,21 +131,22 @@ const listFoldersOutputSchema = s.object("Paginated Granola folders response.", 
 export const granolaActions: ActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_notes",
-    description: "List accessible Granola meeting notes with optional date, folder, and cursor filters.",
+    description:
+      "List accessible Granola meeting notes using an API key, with optional date, folder, and cursor filters.",
     requiredScopes: [],
     inputSchema: listNotesInputSchema,
     outputSchema: listNotesOutputSchema,
   }),
   defineProviderAction(service, {
     name: "get_note",
-    description: "Get a Granola meeting note by ID, optionally including the transcript.",
+    description: "Get a Granola meeting note by ID using an API key, optionally including the transcript.",
     requiredScopes: [],
     inputSchema: getNoteInputSchema,
     outputSchema: getNoteOutputSchema,
   }),
   defineProviderAction(service, {
     name: "list_folders",
-    description: "List accessible Granola folders with cursor pagination.",
+    description: "List accessible Granola folders using an API key, with cursor pagination.",
     requiredScopes: [],
     inputSchema: listFoldersInputSchema,
     outputSchema: listFoldersOutputSchema,

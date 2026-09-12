@@ -1,9 +1,10 @@
 import type { SyncContext, SyncPage, SyncPageRecord } from "../../sync/sync-definition.ts";
 
 import { requiredRawString } from "../../core/cast.ts";
+import { parseMeetings, parseTranscript } from "../../providers/granola/mcp-response.ts";
 import { providerResponseError } from "../../providers/provider-runtime.ts";
 import { discover } from "./discovery.ts";
-import { parseMeetings, parseTranscript, renderMeeting } from "./render.ts";
+import { renderMeeting } from "./render.ts";
 
 /** Hydrate at most ten meetings before atomically committing their records and discovery progress. */
 export async function* run(context: SyncContext): AsyncGenerator<SyncPage> {
