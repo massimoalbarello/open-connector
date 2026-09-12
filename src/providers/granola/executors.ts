@@ -9,7 +9,6 @@ import type { ProviderFetch } from "../provider-runtime.ts";
 import {
   defineProviderExecutors,
   defineProviderProxy,
-  getProviderActionHandler,
   mapProviderActionSources,
   ProviderRequestError,
 } from "../provider-runtime.ts";
@@ -40,11 +39,10 @@ export const executors: ProviderExecutors = defineProviderExecutors<GranolaConte
         if (credential.authType === "api_key") {
           return restHandler(input, { apiKey: credential.apiKey, fetcher, signal });
         }
-        const mcpHandler = getProviderActionHandler(granolaMcpActionHandlers, name);
-        if (credential.authType === "oauth2" && mcpHandler) {
-          return mcpHandler(input, { accessToken: credential.accessToken, fetcher, signal });
+        if (credential.authType === "oauth2") {
+          return granolaMcpActionHandlers[name](input, { accessToken: credential.accessToken, fetcher, signal });
         }
-        throw new ProviderRequestError(401, `Granola ${name} requires an API key connection.`);
+        throw new ProviderRequestError(401, "A Granola OAuth or API key connection is required.");
       },
   ),
 });

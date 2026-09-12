@@ -3,7 +3,17 @@ import type { GranolaMeeting } from "./actions.ts";
 import { XMLParser } from "fast-xml-parser";
 import { SyntaxValidator } from "fast-xml-validator";
 import { objectArray, optionalString, requiredRawString, requiredString } from "../../core/cast.ts";
-import { ProviderRequestError, providerResponseError, requiredResponseRecord } from "../provider-runtime.ts";
+import {
+  parseProviderJsonBodyText,
+  ProviderRequestError,
+  providerResponseError,
+  requiredResponseRecord,
+} from "../provider-runtime.ts";
+
+interface GranolaMcpFolder {
+  id: string;
+  name: string;
+}
 
 const xml = new XMLParser({
   ignoreAttributes: false,
@@ -61,6 +71,27 @@ export function parseGranolaMeetings(text: string): GranolaMeeting[] {
     throw providerResponseError("Granola returned duplicate meeting IDs.");
   }
   return meetings;
+}
+
+/** Map MCP folder titles to the note API's folder names, without inventing hierarchy metadata. */
+export function parseGranolaFolders(text: string): GranolaMcpFolder[] {
+  const root = requiredResponseRecord(
+    parseProviderJsonBodyText(text, {
+      emptyBody: undefined,
+      invalidJsonMessage: "Granola returned malformed folder JSON.",
+    }),
+    "Granola folders",
+  );
+  const records = objectArray(root.folders, "Granola folders", providerResponseError);
+  if (root.count !== records.length) throw providerResponseError("Granola returned an incomplete folder list.");
+  const folders = records.map((folder) => ({
+    id: requiredString(folder.id, "Granola folder ID", providerResponseError),
+    name: requiredRawString(folder.title, "Granola folder title", providerResponseError),
+  }));
+  if (new Set(folders.map((folder) => folder.id)).size !== folders.length) {
+    throw providerResponseError("Granola returned duplicate folder IDs.");
+  }
+  return folders;
 }
 
 /** Preserve transcript text and verify the meeting identity when Granola supplies an envelope. */
