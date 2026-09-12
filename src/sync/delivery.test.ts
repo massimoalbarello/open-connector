@@ -1,4 +1,5 @@
 import type { SyncDeliveryEnvelope } from "./delivery-store.ts";
+import type { SyncPageRecord } from "./sync-definition.ts";
 
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { startLoggingReceiver } from "../../examples/sync/receiver-server.ts";
 import { createSecretCodec } from "../server/secrets/secret-codec.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite-runtime-store.ts";
+import { syncAssetUrl } from "./asset-store.ts";
 import { SyncDeliveryWorker } from "./delivery-worker.ts";
+import { canonicalizeJsonObject } from "./record-hash.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 const definition = { id: "test", version: "1", provider: "github", kinds: [{ kind: "record" }] };
@@ -66,7 +69,9 @@ async function setup() {
       enabled: true,
     });
   const commit = async (
-    records = [{ kind: "record", record: { id: "one", title: "Record title", body: "# Complete record" } }],
+    records: SyncPageRecord[] = [
+      { kind: "record", record: { id: "one", title: "Record title", body: "# Complete record" } },
+    ],
     deletes?: { kind: string; id: string }[],
   ) => {
     const result = await database.syncStore.commitPage({
@@ -299,14 +304,14 @@ describe("durable sync delivery", () => {
     await f.register("replacement");
     const retry = (await f.database.syncStore.delivery.claim(now()))!;
     expect(retry).toMatchObject({ id: old.id, body: old.body, url: "https://replacement.example.com/records" });
-    const record = (JSON.parse(retry.body) as SyncDeliveryEnvelope).records[0]!;
+    const record = (JSON.parse(retry.body!) as SyncDeliveryEnvelope).records[0]!;
     expect(record.eventId).toBe(committed.changes[0]!.eventId);
     expect(record.revision).toBe(1);
     f.database.syncStore.delivery.complete({ lease: retry, acknowledged: true, now: now() });
     expect((await f.database.syncStore.getRecord(f.id, "record", "one"))?.content).toBeUndefined();
     expect((await f.database.syncStore.getRecord(f.id, "record", "two"))?.content).toBeDefined();
     const unbatched = (await f.database.syncStore.delivery.claim(now()))!;
-    expect(JSON.parse(unbatched.body).records[0]).toMatchObject({
+    expect(JSON.parse(unbatched.body!).records[0]).toMatchObject({
       id: "two",
       content: { body: "Waiting for its first batch" },
     });
@@ -315,7 +320,7 @@ describe("durable sync delivery", () => {
     expect(await f.database.syncStore.delivery.claim(now())).toBeUndefined();
     const deletion = await f.commit([], [{ kind: "record", id: "one" }]);
     expect(deletion.changes[0]?.recordRevision).toBe(2);
-    const tombstone = JSON.parse((await f.database.syncStore.delivery.claim(now()))!.body).records[0];
+    const tombstone = JSON.parse((await f.database.syncStore.delivery.claim(now()))!.body!).records[0];
     expect(tombstone.operation).toBe("deleted");
     expect(tombstone.content).toBeUndefined();
   });
@@ -331,7 +336,7 @@ describe("durable sync delivery", () => {
       })),
     );
     const first = (await f.database.syncStore.delivery.claim(now()))!;
-    expect(JSON.parse(first.body).records).toHaveLength(50);
+    expect(JSON.parse(first.body!).records).toHaveLength(50);
     expect(await f.database.syncStore.delivery.claim(now())).toBeUndefined();
     vi.setSystemTime(Date.now() + 61_000);
     f.restart();
@@ -346,7 +351,7 @@ describe("durable sync delivery", () => {
     );
     const rotated = (await f.database.syncStore.delivery.claim(now()))!;
     f.database.syncStore.delivery.complete({ lease: rotated, acknowledged: true, now: now() });
-    expect(JSON.parse((await f.database.syncStore.delivery.claim(now()))!.body).records).toHaveLength(1);
+    expect(JSON.parse((await f.database.syncStore.delivery.claim(now()))!.body!).records).toHaveLength(1);
   });
 
   it("honors Retry-After, hides/encrypts secrets and rejects private or non-HTTPS receivers", async () => {
@@ -399,10 +404,10 @@ describe("durable sync delivery", () => {
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body,
       });
-    expect((await send(lease.body, "wrong")).status).toBe(401);
-    expect((await send(lease.body)).status).toBe(200);
-    expect((await send(lease.body)).status).toBe(200);
-    const newer = JSON.parse(lease.body) as SyncDeliveryEnvelope;
+    expect((await send(lease.body!, "wrong")).status).toBe(401);
+    expect((await send(lease.body!)).status).toBe(200);
+    expect((await send(lease.body!)).status).toBe(200);
+    const newer = JSON.parse(lease.body!) as SyncDeliveryEnvelope;
     newer.batchId = "01991c55-a120-7394-aef7-b08403e90942";
     const newerRecord = newer.records[0]!;
     if (newerRecord.operation === "deleted") throw new Error("Expected an upsert delivery.");
@@ -411,7 +416,7 @@ describe("durable sync delivery", () => {
     newerRecord.content = { title: "Renamed record", body: "# Complete record" };
     newerRecord.contentHash = "1".repeat(64);
     expect((await send(JSON.stringify(newer))).status).toBe(200);
-    const stale = JSON.parse(lease.body);
+    const stale = JSON.parse(lease.body!);
     stale.batchId = "01991c55-a120-7394-aef7-b08403e90944";
     stale.records[0].eventId = "01991c55-a120-7394-aef7-b08403e90945";
     expect((await send(JSON.stringify(stale))).status).toBe(200);
@@ -563,3 +568,207 @@ describe("iteration delivery and destination management", () => {
     });
   });
 });
+
+it("recovers lost asset and record acknowledgements across restarts without duplicate uploads or changed hashes", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const f = await setup();
+  await f.database.syncStore.delivery.update({ assetsUrl: "https://first.example.com/api/assets/imports" });
+  const asset = await f.database.syncStore.stageAsset({
+    runId: "run",
+    lease: { owner: "owner", generation: 1 },
+    name: "note.txt",
+    bytes: Buffer.from("hello"),
+  });
+  const result = await f.commit([
+    { kind: "record", record: { id: "one", title: "Mail", body: `[Note](${syncAssetUrl(asset)})`, assets: [asset] } },
+  ]);
+  const sourceHash = result.changes[0]!.contentHash;
+  const receipt = {
+    sha256: asset.sha256,
+    sizeBytes: asset.sizeBytes,
+    assetId: "note-file",
+    url: "context-use://asset/note-file",
+  };
+  let uploaded = false;
+  let putCount = 0;
+  let getCount = 0;
+  const bodies: string[] = [];
+  const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer receiver-secret");
+    if (String(url).includes("/assets/imports/")) {
+      if (init?.method === "PUT") {
+        putCount++;
+        const form = init.body as FormData;
+        expect(form.get("sha256")).toBe(asset.sha256);
+        expect(await (form.get("file") as Blob).text()).toBe("hello");
+        uploaded = true;
+        throw new Error("Upload committed but response was lost");
+      }
+      getCount++;
+      return uploaded ? Response.json(receipt) : new Response(null, { status: 404 });
+    }
+    bodies.push(String(init?.body));
+    if (bodies.length === 1) throw new Error("Records committed but response was lost");
+    return new Response(null, { status: 204 });
+  });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const worker = new SyncDeliveryWorker({ store: f.database.syncStore.delivery, fetcher });
+    expect(await worker.tick()).toBe(true);
+    await worker.stop();
+    const retryAt = f.database.syncStore.delivery.status().nextAttemptAt;
+    if (retryAt) vi.setSystemTime(Date.parse(retryAt) + 1);
+    f.restart();
+  }
+  expect(putCount).toBe(1);
+  expect(getCount).toBe(2);
+  expect(bodies).toHaveLength(2);
+  expect(bodies[0]).toBe(bodies[1]);
+  const envelope = JSON.parse(bodies[0]!) as SyncDeliveryEnvelope;
+  const delivered = envelope.records[0]!;
+  if (delivered.operation === "deleted") throw new Error("Expected content");
+  expect(delivered.content).toMatchObject({ assetIds: ["note-file"] });
+  expect(delivered.content).not.toHaveProperty("assets");
+  expect(delivered.content.body).toContain("context-use://asset/note-file");
+  expect(delivered.contentHash).toBe(canonicalizeJsonObject(delivered.content).sha256);
+  expect(delivered.contentHash).not.toBe(sourceHash);
+  expect(await f.database.syncStore.getRecord(f.id, "record", "one")).toMatchObject({
+    contentHash: sourceHash,
+    revision: 1,
+    content: undefined,
+  });
+  const inspect = new DatabaseSync(f.path);
+  try {
+    expect(inspect.prepare("select count(*) as count from sync_assets").get()!.count).toBe(0);
+  } finally {
+    inspect.close();
+  }
+  await f.commit([], [{ kind: "record", id: "one" }]);
+  const worker = new SyncDeliveryWorker({ store: f.database.syncStore.delivery, fetcher });
+  await worker.tick();
+  await worker.stop();
+  expect(JSON.parse(bodies[2]!).records[0]).toMatchObject({ operation: "deleted", contentHash: delivered.contentHash });
+});
+
+it("fences uploaded assets and frozen content when the destination identity changes", async () => {
+  const f = await setup();
+  const store = f.database.syncStore;
+  await store.delivery.update({ assetsUrl: "https://first.example.com/api/assets/imports" });
+  const asset = await store.stageAsset({
+    runId: "run",
+    lease: { owner: "owner", generation: 1 },
+    name: "file",
+    bytes: Buffer.from("file"),
+  });
+  await f.commit([
+    { kind: "record", record: { id: "one", title: "File", body: `[File](${syncAssetUrl(asset)})`, assets: [asset] } },
+  ]);
+  const old = (await store.delivery.claim(now()))!;
+  expect(() => store.delivery.complete({ lease: old, acknowledged: true, now: now() })).toThrow("before preparing");
+  const receipt = {
+    sha256: asset.sha256,
+    sizeBytes: asset.sizeBytes,
+    assetId: "old-file",
+    url: "context-use://asset/old-file",
+  };
+  store.delivery.assetUploaded(old, receipt);
+  store.delivery.assetUploaded(old, receipt);
+  const before = store.delivery.prepare(old);
+  await store.delivery.update({ bearerToken: "another-sync-token" });
+  expect(() => store.delivery.assetUploaded(old, receipt)).toThrow("no longer owned");
+  expect(() => store.delivery.prepare(old)).toThrow("no longer owned");
+  expect(() => store.delivery.complete({ lease: old, acknowledged: true, now: now() })).toThrow("no longer owned");
+  const next = (await store.delivery.claim(now()))!;
+  expect(store.delivery.pendingAssets(next)).toHaveLength(1);
+  store.delivery.assetUploaded(next, { ...receipt, assetId: "new-file", url: "context-use://asset/new-file" });
+  const after = store.delivery.prepare(next);
+  expect(JSON.parse(after).records[0]).toMatchObject({
+    eventId: JSON.parse(before).records[0].eventId,
+    revision: 1,
+    content: { assetIds: ["new-file"] },
+  });
+  expect(after).not.toBe(before);
+  for (const assetsUrl of [
+    "https://other.example.com/assets",
+    "http://first.example.com/assets",
+    "https://first.example.com/assets?token=x",
+  ])
+    await expect(store.delivery.update({ assetsUrl })).rejects.toMatchObject({ code: "invalid_input" });
+});
+
+it("keeps a delivery lease alive while a large upload is outstanding", async () => {
+  vi.useFakeTimers();
+  const f = await setup();
+  await f.database.syncStore.delivery.update({ assetsUrl: "https://first.example.com/api/assets/imports" });
+  const asset = await f.database.syncStore.stageAsset({
+    runId: "run",
+    lease: { owner: "owner", generation: 1 },
+    name: "file",
+    bytes: Buffer.from("file"),
+  });
+  await f.commit([
+    { kind: "record", record: { id: "one", title: "File", body: `[File](${syncAssetUrl(asset)})`, assets: [asset] } },
+  ]);
+  const started = Promise.withResolvers<void>();
+  const response = Promise.withResolvers<Response>();
+  const fetcher = vi.fn<typeof fetch>(async (url) => {
+    if (String(url).includes("/assets/imports/")) {
+      started.resolve();
+      return response.promise;
+    }
+    return new Response(null, { status: 204 });
+  });
+  const worker = new SyncDeliveryWorker({ store: f.database.syncStore.delivery, fetcher });
+  const tick = worker.tick();
+  await started.promise;
+  await vi.advanceTimersByTimeAsync(90_000);
+  const other = new SqliteRuntimeDatabase(f.path, { syncDefinitions: [definition] });
+  try {
+    expect(await other.syncStore.delivery.claim(now())).toBeUndefined();
+  } finally {
+    other.close();
+  }
+  response.resolve(
+    Response.json({
+      sha256: asset.sha256,
+      sizeBytes: asset.sizeBytes,
+      assetId: "file",
+      url: "context-use://asset/file",
+    }),
+  );
+  expect(await tick).toBe(true);
+  expect(f.database.syncStore.delivery.status().pendingRecords).toBe(0);
+  await worker.stop();
+});
+
+it("splits an unsent batch when resolved asset URLs exceed its byte limit", async () => {
+  const f = await setup();
+  const store = f.database.syncStore;
+  await store.delivery.update({ assetsUrl: "https://first.example.com/api/assets/imports" });
+  const asset = await store.stageAsset({
+    runId: "run",
+    lease: { owner: "owner", generation: 1 },
+    name: "file",
+    bytes: Buffer.from("file"),
+  });
+  const body = Array.from({ length: 3000 }, () => `[File](${syncAssetUrl(asset)})`).join("\n\n");
+  await f.commit(
+    ["one", "two", "three"].map((id) => ({ kind: "record", record: { id, title: id, body, assets: [asset] } })),
+  );
+  const first = (await store.delivery.claim(now()))!;
+  store.delivery.assetUploaded(first, {
+    sha256: asset.sha256,
+    sizeBytes: asset.sizeBytes,
+    assetId: "file",
+    url: `https://assets.example.com/${"a".repeat(1900)}`,
+  });
+  const firstBody = store.delivery.prepare(first);
+  expect(JSON.parse(firstBody).records).toHaveLength(2);
+  expect(Buffer.byteLength(firstBody)).toBeLessThanOrEqual(16 * 1024 * 1024);
+  expect(store.delivery.prepare(first)).toBe(firstBody);
+  store.delivery.complete({ lease: first, acknowledged: true, now: now() });
+  const remaining = (await store.delivery.claim(now()))!;
+  expect(store.delivery.pendingAssets(remaining)).toEqual([]);
+  expect(JSON.parse(store.delivery.prepare(remaining)).records).toHaveLength(1);
+  store.delivery.complete({ lease: remaining, acknowledged: true, now: now() });
+  expect(store.delivery.status().pendingRecords).toBe(0);
+}, 20_000);

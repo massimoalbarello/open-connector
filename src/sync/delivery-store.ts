@@ -1,3 +1,6 @@
+import type { SyncRecordAsset } from "./asset-store.ts";
+import type { SyncAssetReceipt } from "./asset-upload.ts";
+
 import { recordDeliveryContract } from "./record-delivery-contract.generated.ts";
 
 export type { SyncDeliveryEnvelope, SyncDeliveryRecord } from "./record-delivery-contract.generated.ts";
@@ -6,11 +9,13 @@ export const maximumDeliveryBytes: number = recordDeliveryContract.maximumDelive
 export const maximumRecordBytes: number = recordDeliveryContract.maximumRecordBytes;
 
 export interface SyncDestinationInput {
+  assetsUrl?: string | null;
   url: string;
   bearerToken: string;
   enabled: boolean;
 }
 export interface UpdateSyncDestinationInput {
+  assetsUrl?: string | null;
   url?: string;
   bearerToken?: string;
   enabled?: boolean;
@@ -25,6 +30,7 @@ export interface SyncRunDelivery {
   lastDeliveredAt?: string;
 }
 export interface SyncDestination {
+  assetsUrl?: string;
   url: string;
   enabled: boolean;
 }
@@ -44,7 +50,9 @@ export interface SyncDeliveryLease {
   attempt: number;
   url: string;
   bearerToken: string;
-  body: string;
+  assetsUrl?: string;
+  /** Available once all assets have been resolved into a durable delivery body. */
+  body?: string;
 }
 export interface CompleteSyncDeliveryInput {
   lease: SyncDeliveryLease;
@@ -63,6 +71,11 @@ export interface ISyncDeliveryStore {
   getDestination(): SyncDestination | undefined;
   requireDestination(): void;
   status(): SyncDeliveryStatus;
+  pendingAssets(lease: SyncDeliveryLease): SyncRecordAsset[];
+  readAsset(lease: SyncDeliveryLease, sha256: string): Uint8Array;
+  assetUploaded(lease: SyncDeliveryLease, asset: SyncAssetReceipt): void;
+  prepare(lease: SyncDeliveryLease): string;
+  renew(lease: SyncDeliveryLease, now: string): void;
   claim(now: string): Promise<SyncDeliveryLease | undefined>;
   complete(input: CompleteSyncDeliveryInput): void;
   purge(): void;

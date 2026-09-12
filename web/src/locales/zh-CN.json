@@ -80,6 +80,8 @@
         "title": "资源"
       },
       "destinations": {
+        "assetsUrl": "资源上传 URL（可选）",
+        "assetsHint": "同步附件时需要。请使用与 Webhook 相同主机上的资源导入端点。",
         "title": "投递目标"
       }
     }
@@ -730,6 +732,8 @@
     "waitingDestination": "同步正在等待已启用的目标。待投递的记录会保留。"
   },
   "destinations": {
+    "assetsUrl": "资源上传 URL（可选）",
+    "assetsHint": "同步附件时需要。请使用与 Webhook 相同主机上的资源导入端点。",
     "description": "管理接收所有同步记录的 Webhook 目标。",
     "add": "添加目标地址",
     "edit": "编辑目标地址",

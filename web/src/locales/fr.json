@@ -80,6 +80,8 @@
         "title": "Ressources"
       },
       "destinations": {
+        "assetsUrl": "URL de téléversement des fichiers (facultatif)",
+        "assetsHint": "Requise pour les pièces jointes. Utilisez le point d’import des fichiers sur le même hôte que le webhook.",
         "title": "Destination"
       }
     }
@@ -753,6 +755,8 @@
     "waitingDestination": "Les synchronisations attendent une destination activée. Les enregistrements en attente sont conservés."
   },
   "destinations": {
+    "assetsUrl": "URL de téléversement des fichiers (facultatif)",
+    "assetsHint": "Requise pour les pièces jointes. Utilisez le point d’import des fichiers sur le même hôte que le webhook.",
     "description": "Gérez la destination webhook qui reçoit les enregistrements de toutes vos synchronisations.",
     "add": "Ajouter une destination",
     "edit": "Modifier la destination",

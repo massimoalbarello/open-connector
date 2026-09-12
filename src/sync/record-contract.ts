@@ -6,6 +6,8 @@ import type { Schema } from "@cfworker/json-schema";
 
 import { Validator } from "@cfworker/json-schema";
 import { s } from "../core/json-schema.ts";
+import { resolveSyncAssetLinks } from "./asset-links.ts";
+import { syncAssetUrl } from "./asset-store.ts";
 import { maximumSyncAssetBytes } from "./asset-store.ts";
 import { canonicalizeJsonObject } from "./record-hash.ts";
 import { SyncStoreError } from "./sync-store.ts";
@@ -126,6 +128,10 @@ export function normalizeSyncRecord(input: unknown, kind: SyncKindContract): Nor
     if (content.assets !== undefined) {
       content.assets = sortedUnique(content.assets as JsonObject[]);
       if ((content.assets as JsonObject[]).length === 0) delete content.assets;
+    }
+    if ((content.body as string).includes("open-connector://asset/")) {
+      const urls = ((content.assets ?? []) as unknown as SyncRecordAsset[]).map((asset) => syncAssetUrl(asset));
+      resolveSyncAssetLinks(content.body as string, new Map(urls.map((url) => [url, url])));
     }
     if (content.attributes !== undefined) {
       const attributes = canonicalizeJsonObject(content.attributes);

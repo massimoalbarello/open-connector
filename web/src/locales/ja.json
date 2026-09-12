@@ -80,6 +80,8 @@
         "title": "リソース"
       },
       "destinations": {
+        "assetsUrl": "アセットアップロードURL（任意）",
+        "assetsHint": "添付ファイルに必要です。Webhookと同じホストのアセットインポート先を指定してください。",
         "title": "送信先"
       }
     }
@@ -733,6 +735,8 @@
     "waitingDestination": "同期は有効な送信先を待機しています。未配信のレコードは保持されます。"
   },
   "destinations": {
+    "assetsUrl": "アセットアップロードURL（任意）",
+    "assetsHint": "添付ファイルに必要です。Webhookと同じホストのアセットインポート先を指定してください。",
     "description": "すべての同期からレコードを受け取る Webhook 送信先を管理します。",
     "add": "送信先を追加",
     "edit": "送信先を編集",
