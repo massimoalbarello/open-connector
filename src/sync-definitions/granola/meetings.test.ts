@@ -3,6 +3,7 @@ import type { JsonObject } from "../../sync/sync-store.ts";
 
 import { describe, expect, it, vi } from "vitest";
 import { parseGranolaMeetings, parseGranolaTranscript } from "../../providers/granola/mcp-response.ts";
+import { describeSyncAsset } from "../../sync/asset-store.ts";
 import { normalizeSyncRecord } from "../../sync/record-contract.ts";
 import { validateSyncValue } from "../../sync/sync-validation.ts";
 import { granolaMeetings } from "./definition.ts";
@@ -28,6 +29,7 @@ function fixture(ids = ["a", "b"]) {
     throw new Error("Unexpected read operation");
   });
   const context: SyncContext = {
+    assets: { stage: async (input) => describeSyncAsset(input) },
     provider: { request },
     config: { includeTranscript: true },
     checkpoint: granolaMeetings.initialCheckpoint,

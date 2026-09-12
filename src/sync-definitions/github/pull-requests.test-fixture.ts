@@ -3,6 +3,7 @@ import type { JsonObject } from "../../sync/sync-store.ts";
 import type { Mock } from "vitest";
 
 import { vi } from "vitest";
+import { describeSyncAsset } from "../../sync/asset-store.ts";
 import { githubPullRequests } from "./definition.ts";
 
 interface GitHubPullRequestFixture {
@@ -95,6 +96,7 @@ export function githubPullRequestFixture(): GitHubPullRequestFixture {
     },
   );
   const context: SyncContext = {
+    assets: { stage: async (input) => describeSyncAsset(input) },
     provider: { request: (_operation, input = {}) => graphql(String(input.query), input.variables as JsonObject) },
     checkpoint: githubPullRequests.initialCheckpoint,
     config: { scope: "authored" },

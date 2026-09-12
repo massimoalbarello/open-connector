@@ -73,9 +73,9 @@ revisions, operations, and delivery envelopes. Do not duplicate those framework 
   Preserve fractional precision. The normalizer rejects unknown `-00:00` offsets, leap seconds,
   ambiguous local times, and invalid dates. Do not substitute fetch time for a missing
   source modification time. An event date is not automatically a modification timestamp.
-- Do not add attachment schemas, ingestion, downloads, blob storage,
-  signed URLs, or a placeholder attachments field. Ordinary source links may appear in Markdown;
-  they do not promise mirrored or durably retrievable assets.
+- Stage attachment bytes through `context.assets.stage` before yielding the page that references
+  them. Use the returned manifest and the shared `syncAssetUrl` helper in Markdown. The framework
+  owns durable bytes, storage budgets, and destination links; definitions never upload to receivers.
 
 ## Deterministic changes
 

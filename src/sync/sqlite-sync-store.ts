@@ -1,6 +1,8 @@
 import type { ISecretCodec } from "../server/secrets/secret-codec-core.ts";
 import type { RuntimeRow } from "../server/storage/runtime-sql.ts";
+import type { SyncRecordAsset } from "./asset-store.ts";
 import type { SyncDefinitionContract } from "./record-contract.ts";
+import type { StageRunAssetInput } from "./sync-store.ts";
 import type {
   CommitSyncPageInput,
   FinishSyncRunInput,
@@ -37,6 +39,7 @@ import { parseJson, readString } from "../server/storage/runtime-sql.ts";
 import { maximumRecordBytes } from "./delivery-store.ts";
 import { normalizeSyncRecord } from "./record-contract.ts";
 import { canonicalizeJsonValue } from "./record-hash.ts";
+import { SqliteSyncAssetStore } from "./sqlite-asset-store.ts";
 import { SqliteSyncDeliveryStore } from "./sqlite-delivery-store.ts";
 import { SqliteSyncScheduleStore } from "./sqlite-schedule-store.ts";
 import { SqliteSyncSourceStore } from "./sqlite-source-store.ts";
@@ -110,14 +113,17 @@ export class SqliteSyncStore implements ISyncStore {
   readonly delivery: SqliteSyncDeliveryStore;
   readonly schedule: SqliteSyncScheduleStore;
   readonly status: SqliteSyncStatusStore;
+  private readonly assets: SqliteSyncAssetStore;
   private readonly definitions: readonly SyncDefinitionContract[];
 
   constructor(
     database: DatabaseSync,
     definitions: readonly SyncDefinitionContract[] = [],
     codec: ISecretCodec = new PlainTextSecretCodec(),
+    maximumPendingAssetBytes?: number,
   ) {
-    this.delivery = new SqliteSyncDeliveryStore(database, codec);
+    this.assets = new SqliteSyncAssetStore(database, maximumPendingAssetBytes);
+    this.delivery = new SqliteSyncDeliveryStore(database, codec, this.assets);
     this.database = database;
     this.schedule = new SqliteSyncScheduleStore(database, {
       installation: (id) => this.readInstallation(id),
@@ -139,6 +145,14 @@ export class SqliteSyncStore implements ISyncStore {
       normalizeModels(definition.kinds.map((kind) => kind.kind));
     }
     this.sources = new SqliteSyncSourceStore(database, this.definitions);
+  }
+
+  async stageAsset(input: StageRunAssetInput): Promise<SyncRecordAsset> {
+    return runSyncTransaction(this.database, () => {
+      this.delivery.requireDestination();
+      this.assertLease(input.runId, input.lease);
+      return this.assets.stage(input.runId, input);
+    });
   }
 
   async getInstallation(id: string): Promise<SyncInstallation | undefined> {
@@ -294,6 +308,7 @@ export class SqliteSyncStore implements ISyncStore {
         `,
         )
         .run(state, completedAt, input.errorCode ?? null, input.errorMessage ?? null, runId);
+      this.assets.purge();
       if (state === "succeeded") {
         this.database
           .prepare("update sync_installations set last_success_at = ?, updated_at = ? where id = ?")
@@ -517,6 +532,8 @@ export class SqliteSyncStore implements ISyncStore {
       }
     }
 
+    const pageAssets = input.upserts.flatMap((upsert) => (upsert.payload.assets ?? []) as unknown as SyncRecordAsset[]);
+    this.assets.require(pageAssets);
     const source: ChangeSource = { installation, run, committedAt: input.committedAt };
     const changes: SyncChange[] = [];
     for (const upsert of input.upserts) {
@@ -646,6 +663,7 @@ export class SqliteSyncStore implements ISyncStore {
       valueJson: input.checkpointJson,
       committedAt: input.committedAt,
     });
+    this.assets.releasePage(run.id, pageAssets);
     this.updateRunProgress(run.id, checkpoint.revision, 1, input.upserts.length, input.deletes.length, changes.length);
     return {
       checkpoint,
@@ -685,6 +703,7 @@ export class SqliteSyncStore implements ISyncStore {
         input.committedAt,
       );
     const sequence = toSafeInteger(result.lastInsertRowid, "change sequence");
+    this.assets.claim(sequence, (input.payload?.assets ?? []) as unknown as SyncRecordAsset[]);
     this.database
       .prepare(
         `

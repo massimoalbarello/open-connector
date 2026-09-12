@@ -113,3 +113,21 @@ describe("shared Markdown record contract", () => {
     expect(normalizeSourceTimestamp("2000-02-29T23:59:59Z")).toBe("2000-02-29T23:59:59Z");
   });
 });
+
+it("hashes attachment manifests deterministically and rejects destination upload state in source content", () => {
+  const first = { sha256: "a".repeat(64), name: "first.txt", sizeBytes: 0 };
+  const second = { sha256: "b".repeat(64), name: "second.txt", sizeBytes: 8 };
+  const original = normalizeSyncRecord({ ...base, assets: [first, second] }, kind);
+  expect(normalizeSyncRecord({ ...base, assets: [second, first, first] }, kind)).toEqual(original);
+  expect(
+    normalizeSyncRecord({ ...base, assets: [{ ...first, name: "renamed.txt" }, second] }, kind).content.sha256,
+  ).not.toBe(original.content.sha256);
+  for (const asset of [
+    { ...first, url: "https://upload.example.com/temporary" },
+    { ...first, assetId: "destination-id" },
+    { ...first, sizeBytes: -1 },
+    { ...first, sha256: "invalid" },
+  ])
+    expect(() => normalizeSyncRecord({ ...base, assets: [asset] }, kind)).toThrow();
+  expect(normalizeSyncRecord({ ...base, assets: [] }, kind)).toEqual(normalizeSyncRecord(base, kind));
+});
