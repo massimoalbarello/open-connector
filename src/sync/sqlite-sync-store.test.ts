@@ -1071,3 +1071,47 @@ it("releases unfinished acquisition bytes after failure and fences stale workers
     inspect.close();
   }
 });
+
+it("pages active record identities against a stable creation boundary without retaining bodies", async () => {
+  const f = await createFixture();
+  const store = f.database.syncStore;
+  const records = Array.from({ length: 51 }, (_, index) => ({
+    kind: "PullRequest",
+    record: { id: `record-${String(index).padStart(2, "0")}`, title: "Thread", body: "Body" },
+  }));
+  await store.commitPage({ ...commitIdentity(f, 0, t1), nextCheckpoint: {}, upserts: records });
+  const first = await store.listRecordIds({ installationId: "github-prs", kind: "PullRequest" });
+  expect(first.ids).toHaveLength(50);
+  await store.commitPage({
+    ...commitIdentity(f, 1, t2),
+    nextCheckpoint: {},
+    upserts: [
+      { kind: "PullRequest", record: { id: "record-99", title: "New", body: "New" } },
+      { kind: "PullRequest", record: { id: "record-50", title: "Updated", body: "Updated" } },
+    ],
+  });
+  const next = await store.listRecordIds({
+    installationId: "github-prs",
+    kind: "PullRequest",
+    throughSequence: first.throughSequence,
+    afterId: first.ids.at(-1),
+  });
+  expect(next.ids).toEqual(["record-50"]);
+  await store.commitPage({
+    ...commitIdentity(f, 2, t3),
+    nextCheckpoint: {},
+    deletes: [{ kind: "PullRequest", id: "record-50" }],
+  });
+  expect(
+    (
+      await store.listRecordIds({
+        installationId: "github-prs",
+        kind: "PullRequest",
+        throughSequence: first.throughSequence,
+        afterId: first.ids.at(-1),
+      })
+    ).ids,
+  ).toEqual([]);
+  expect((await store.listRecordIds({ installationId: "other", kind: "PullRequest" })).ids).toEqual([]);
+  expect((await store.listRecordIds({ installationId: "github-prs", kind: "Other" })).ids).toEqual([]);
+});

@@ -53,6 +53,7 @@ function fixture(meetings: Meeting[], custom = true) {
     };
   });
   const context: SyncContext = {
+    records: { list: async () => ({ ids: [], throughSequence: 0 }) },
     assets: { stage: async (input) => describeSyncAsset(input) },
     provider: { request },
     config: granolaMeetings.defaultConfig,

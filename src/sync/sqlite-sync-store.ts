@@ -11,6 +11,8 @@ import type {
   JsonObject,
   JsonValue,
   ListSyncChangesInput,
+  ListSyncRecordIdsInput,
+  SyncRecordInventoryPage,
   RenewSyncRunLeaseInput,
   StartSyncRunInput,
   StartSyncSnapshotInput,
@@ -453,6 +455,32 @@ export class SqliteSyncStore implements ISyncStore {
       )
       .get(requiredIdentifier(installationId, "installation id"), requiredModel(model), requiredRecordId(recordId));
     return row ? readRecordRow(row) : undefined;
+  }
+
+  async listRecordIds(input: ListSyncRecordIdsInput): Promise<SyncRecordInventoryPage> {
+    const installationId = requiredIdentifier(input.installationId, "installation id");
+    const kind = requiredModel(input.kind);
+    if (
+      input.throughSequence !== undefined &&
+      (!Number.isSafeInteger(input.throughSequence) || input.throughSequence < 0)
+    )
+      throw invalidInput("Inventory sequence must be a non-negative safe integer.");
+    const throughSequence =
+      input.throughSequence ??
+      readNumber(
+        this.database
+          .prepare(
+            "select coalesce(max(created_sequence), 0) as sequence from sync_records where installation_id = ? and model = ?",
+          )
+          .get(installationId, kind)!,
+        "sequence",
+      );
+    const rows = this.database
+      .prepare(`select record_id from sync_records
+      where installation_id = ? and model = ? and deleted_at is null
+        and created_sequence <= ? and record_id > ? order by record_id limit 50`)
+      .all(installationId, kind, throughSequence, input.afterId === undefined ? "" : requiredRecordId(input.afterId));
+    return { ids: rows.map((row) => readString(row, "record_id")), throughSequence };
   }
 
   async listChanges(input: ListSyncChangesInput = {}): Promise<SyncChangePage> {

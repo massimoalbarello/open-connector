@@ -176,7 +176,9 @@ export class SyncRunner {
     const credential = connection.credential;
     if (
       credential.authType === "no_auth" ||
-      definition.requiredScopes.some((scope) => !credential.profile.grantedScopes.includes(scope))
+      definition.requiredScopes.some((scope) => !credential.profile.grantedScopes.includes(scope)) ||
+      (definition.requiredScopesAnyOf !== undefined &&
+        !definition.requiredScopesAnyOf.some((scope) => credential.profile.grantedScopes.includes(scope)))
     )
       throw new SyncStoreError("invalid_input", "Required sync scopes have not been granted.");
     if (installation) {
@@ -244,6 +246,12 @@ export class SyncRunner {
       });
       for await (const page of runtime.run({
         provider,
+        records: {
+          list: async (input) =>
+            installation
+              ? store.listRecordIds({ ...input, installationId: installation.id })
+              : { ids: [], throughSequence: 0 },
+        },
         assets: {
           stage: async (asset) => {
             signal.throwIfAborted();
