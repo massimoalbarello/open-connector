@@ -17,8 +17,17 @@ export const granolaMeetings: SyncDefinition = {
     { required: ["includeTranscript"] },
   ),
   defaultConfig: { includeTranscript: false },
-  checkpointSchema: s.requiredObject("Discovery continuation, persisted with each completed batch.", {
+  checkpointSchema: s.requiredObject("Discovery continuation and polling progress, committed with each batch.", {
     pendingIds: s.nullable(s.array(s.string({ minLength: 1, maxLength: 1024 }), { uniqueItems: true })),
+    polling: s.optional(
+      s.nullable(
+        s.requiredObject("Progress from the last completed scan; absent in legacy checkpoints.", {
+          watermark: s.dateTime("Start of the completed scan; subsequent polls overlap the preceding calendar day."),
+          reconciledAt: s.dateTime("Last completed full scan; older meetings are reconciled daily."),
+          customRanges: s.boolean("Whether that scan used the advertised custom date filters."),
+        }),
+      ),
+    ),
     scan: s.optional(
       s.nullable(
         s.requiredObject("Unfinished ranges and the last committed native ID in the first range.", {
@@ -32,6 +41,8 @@ export const granolaMeetings: SyncDefinition = {
             { minItems: 1, maxItems: 32 },
           ),
           afterId: s.nullable(s.string({ minLength: 1, maxLength: 1024 })),
+          startedAt: s.optional(s.dateTime("Fixed scan boundary, preserved when resuming.")),
+          from: s.optional(s.nullable(s.date("Polling lower bound; null rehydrates all accessible meetings."))),
         }),
       ),
     ),

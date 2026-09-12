@@ -81,7 +81,11 @@ describe("Granola meeting acquisition", () => {
       Array.from({ length: 3 }, (_, index) => String(index + 10).padStart(2, "0")),
     );
     expect(page.records).toHaveLength(10);
-    expect(page.checkpoint).toEqual({ pendingIds: null, scan: { ranges: [null], afterId: "09" } });
+    expect(page.checkpoint).toMatchObject({
+      pendingIds: null,
+      scan: { ranges: [null], afterId: "09", startedAt: context.startedAt },
+      polling: null,
+    });
     expect(resumed.at(-1)?.complete).toBe(true);
   });
 
@@ -92,12 +96,15 @@ describe("Granola meeting acquisition", () => {
     expect(pages.flatMap((page) => page.records ?? []).map((item) => item.record.id)).toEqual(ids.sort());
     for (const page of pages) {
       expect(page.records!.length).toBeLessThanOrEqual(10);
-      expect(JSON.stringify(page.checkpoint).length).toBeLessThan(128);
+      expect(JSON.stringify(page.checkpoint).length).toBeLessThan(400);
       expect(validateSyncValue(page.checkpoint, granolaMeetings.checkpointSchema, "Checkpoint")).toEqual(
         page.checkpoint,
       );
     }
-    expect(pages.at(-1)).toMatchObject({ complete: true, checkpoint: granolaMeetings.initialCheckpoint });
+    expect(pages.at(-1)).toMatchObject({
+      complete: true,
+      checkpoint: { scan: null, polling: { watermark: context.startedAt } },
+    });
   });
 
   it("rehydrates accessible meetings and never infers deletion from an empty scan", async () => {
@@ -119,9 +126,31 @@ describe("Granola meeting acquisition", () => {
     expect(updated.records![0]!.record.body).toContain("An edited transcript.");
     expect(updated.records![0]!.record.body).not.toEqual(first.records![0]!.record.body);
     const empty = fixture([]);
-    expect(await Array.fromAsync(run(empty.context))).toEqual([
-      { records: [], checkpoint: granolaMeetings.initialCheckpoint, complete: true },
+    expect(await Array.fromAsync(run(empty.context))).toMatchObject([
+      { records: [], checkpoint: { scan: null, polling: { watermark: empty.context.startedAt } }, complete: true },
     ]);
+  });
+
+  it("skips old meeting bodies between reconciliations and catches their edits in the daily scan", async () => {
+    const { context, request } = fixture(["old"]);
+    const first = (await Array.fromAsync(run({ ...context, startedAt: "2026-09-12T10:00:00Z" })))[0]!;
+    request.mockClear();
+    const poll = await Array.fromAsync(
+      run({ ...context, checkpoint: first.checkpoint, startedAt: "2026-09-12T11:00:00Z" }),
+    );
+    expect(poll).toMatchObject([{ records: [], complete: true }]);
+    expect(request.mock.calls.map(([operation]) => operation)).toEqual(["list_tools", "list_meetings"]);
+    const transport = request.getMockImplementation()!;
+    request.mockImplementation(async (operation, input) =>
+      operation === "get_meetings"
+        ? { text: `<meetings_data>${details("old", "An edit to an older meeting.")}</meetings_data>` }
+        : transport(operation, input),
+    );
+    const reconciled = await Array.fromAsync(
+      run({ ...context, checkpoint: poll.at(-1)!.checkpoint, startedAt: "2026-09-13T10:00:00Z" }),
+    );
+    expect(reconciled[0]!.records![0]!.record.body).toContain("An edit to an older meeting.");
+    expect(reconciled[0]!.records![0]!.record.id).toBe("old");
   });
 
   it("keeps progress before a failed batch and rejects incomplete details", async () => {

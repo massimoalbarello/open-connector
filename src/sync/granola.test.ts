@@ -31,6 +31,7 @@ function protocol() {
     transcriptError: false,
     transcriptErrorId: "",
     meetingIds: ["meeting"],
+    meetingDate: new Date().toISOString().slice(0, 10),
     account: "native-account",
     principalMissing: false,
   };
@@ -59,7 +60,7 @@ function protocol() {
         request.params.name === "get_meetings" ? request.params.arguments.meeting_ids : state.meetingIds;
       const text = transcript
         ? JSON.stringify({ id: request.params.arguments.meeting_id, transcript: "[00:01] Ada: Yes & thanks." })
-        : `<meetings_data count="${meetingIds.length}">${meetingIds.map((id) => `<meeting id="${id}" title="Planning" date="Sep 8, 2026"><known_participants>Ada &lt;ada@example.com&gt;</known_participants><summary>${state.summary}</summary></meeting>`).join("")}</meetings_data>`;
+        : `<meetings_data count="${meetingIds.length}">${meetingIds.map((id) => `<meeting id="${id}" title="Planning" date="${state.meetingDate}"><known_participants>Ada &lt;ada@example.com&gt;</known_participants><summary>${state.summary}</summary></meeting>`).join("")}</meetings_data>`;
       const notice =
         request.params.name === "list_meetings"
           ? "<access_notice>Only recent personal notes are available on this plan.</access_notice>\n\n"
@@ -124,6 +125,7 @@ describe("Granola MCP protocol and durable acquisition", () => {
   it("previews free-plan summaries without a destination, then persists and reprocesses the same identities", async () => {
     const { state, database, runner } = await fixture();
     state.transcriptError = true;
+    state.meetingDate = "2023-04-03";
     const input = { definitionId: granolaMeetings.id };
     const preview = await runner.run({ ...input, dryRun: true });
     expect(preview.preview).toMatchObject([{ provider: "granola", id: "meeting", content: { title: "Planning" } }]);
@@ -137,7 +139,11 @@ describe("Granola MCP protocol and durable acquisition", () => {
     expect(record?.content?.body).toContain(state.summary);
     expect(record?.content?.body).not.toContain("## Transcript");
     expect(record?.content?.body).not.toContain("Not included in this sync");
-    await runner.run(input);
+    const polled = await runner.run(input);
+    expect(polled).toMatchObject({ records: 0, complete: true });
+    expect(await database.syncStore.getCheckpoint(first.installationId!)).toMatchObject({
+      value: { polling: { watermark: expect.any(String) } },
+    });
     expect((await database.syncStore.listChanges()).items).toHaveLength(1);
     state.summary = "Summary revised before reprocessing.";
     database.syncStore.schedule.requestRun(first.installationId!, true);
@@ -206,7 +212,11 @@ describe("Granola MCP protocol and durable acquisition", () => {
     expect(resumed).toMatchObject({ installationId, records: 3, complete: true });
     expect((await database.syncStore.listChanges()).items).toHaveLength(13);
     expect(await database.syncStore.getCheckpoint(installationId)).toMatchObject({
-      value: granolaMeetings.initialCheckpoint,
+      value: {
+        pendingIds: null,
+        scan: null,
+        polling: { watermark: expect.any(String), reconciledAt: expect.any(String) },
+      },
     });
   });
 

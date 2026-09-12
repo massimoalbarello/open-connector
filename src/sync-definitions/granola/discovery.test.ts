@@ -86,7 +86,14 @@ describe("Granola history discovery", () => {
         batch.checkpoint,
       );
     }
-    expect(batches.at(-1)).toMatchObject({ complete: true, checkpoint: granolaMeetings.initialCheckpoint });
+    expect(batches.at(-1)).toMatchObject({
+      complete: true,
+      checkpoint: {
+        pendingIds: null,
+        scan: null,
+        polling: { watermark: context.startedAt, reconciledAt: context.startedAt, customRanges: true },
+      },
+    });
   });
 
   it.each(["truncated", "oversized"])("subdivides %s ranges without dropping boundary meetings", async (failure) => {
@@ -125,7 +132,9 @@ describe("Granola history discovery", () => {
       custom_start: "2023-01-01",
       custom_end: "2026-09-10",
     });
-    const nextCycle = await Array.fromAsync(discover({ ...context, checkpoint: resumed.at(-1)!.checkpoint }));
+    const nextCycle = await Array.fromAsync(
+      discover({ ...context, checkpoint: resumed.at(-1)!.checkpoint, startedAt: "2026-10-10T12:00:00.000Z" }),
+    );
     expect(nextCycle.flatMap((batch) => batch.ids)).toContain("inserted-before-cursor");
   });
 
@@ -154,7 +163,11 @@ describe("Granola history discovery", () => {
     const checkpoint = { pendingIds: ["unfinished"] };
     validateSyncValue(checkpoint, granolaMeetings.checkpointSchema, "Legacy checkpoint");
     const batches = await Array.fromAsync(discover({ ...context, checkpoint }));
-    expect(batches[0]).toEqual({ ids: ["unfinished"], checkpoint: granolaMeetings.initialCheckpoint, complete: false });
+    expect(batches[0]).toEqual({
+      ids: ["unfinished"],
+      checkpoint: { ...(granolaMeetings.initialCheckpoint as JsonObject), polling: null },
+      complete: false,
+    });
     expect(batches.flatMap((batch) => batch.ids)).toEqual(["unfinished", "historical"]);
     expect(batches.at(-1)?.complete).toBe(true);
   });
@@ -184,5 +197,113 @@ describe("Granola history discovery", () => {
       },
     });
     await expect(iterator.next()).rejects.toThrow("truncated");
+  });
+
+  it.each([true, false])(
+    "polls recent meetings after backfill, then reconciles old arrivals daily (custom=%s)",
+    async (custom) => {
+      const meetings = [{ id: "old", date: "2023-04-03" }];
+      const { context, request } = fixture(meetings, custom);
+      const historical = await Array.fromAsync(discover(context));
+      expect(historical.flatMap((batch) => batch.ids)).toEqual(["old"]);
+      let checkpoint = historical.at(-1)!.checkpoint;
+      request.mockClear();
+      const empty = await Array.fromAsync(discover({ ...context, checkpoint, startedAt: "2026-09-09T13:00:00.000Z" }));
+      expect(empty.flatMap((batch) => batch.ids)).toEqual([]);
+      expect(empty.at(-1)).toMatchObject({
+        complete: true,
+        checkpoint: { polling: { watermark: "2026-09-09T13:00:00.000Z", reconciledAt: context.startedAt } },
+      });
+      expect(request.mock.calls.find(([operation]) => operation === "list_meetings")?.[1]).toEqual(
+        custom
+          ? {
+              time_range: "custom",
+              custom_start: "2026-09-08",
+              custom_end: "2026-09-10",
+            }
+          : {},
+      );
+      checkpoint = empty.at(-1)!.checkpoint;
+      meetings.push(
+        { id: "new", date: "2026-09-09" },
+        { id: "overlap", date: "2026-09-08" },
+        { id: "late-old", date: "2023-04-03" },
+      );
+      const recent = await Array.fromAsync(discover({ ...context, checkpoint, startedAt: "2026-09-09T14:00:00.000Z" }));
+      expect(recent.flatMap((batch) => batch.ids)).toEqual(["new", "overlap"]);
+      const reconciled = await Array.fromAsync(
+        discover({ ...context, checkpoint: recent.at(-1)!.checkpoint, startedAt: "2026-09-10T12:00:00.000Z" }),
+      );
+      expect(reconciled.flatMap((batch) => batch.ids)).toEqual(["late-old", "new", "old", "overlap"]);
+      expect(reconciled.at(-1)).toMatchObject({
+        checkpoint: { polling: { reconciledAt: "2026-09-10T12:00:00.000Z" } },
+      });
+    },
+  );
+
+  it("keeps the polling cutoff and watermark fixed across interrupted batches and downtime", async () => {
+    const meetings: Meeting[] = [];
+    const { context, request } = fixture(meetings);
+    const first = await Array.fromAsync(discover(context));
+    meetings.push(
+      ...Array.from({ length: 13 }, (_, index) => ({
+        id: `meeting-${String(index).padStart(2, "0")}`,
+        date: "2026-09-09",
+      })),
+    );
+    const iterator = discover({
+      ...context,
+      checkpoint: first.at(-1)!.checkpoint,
+      startedAt: "2026-09-09T13:00:00.000Z",
+    });
+    const committed = (await iterator.next()).value!;
+    await iterator.return(undefined);
+    expect(committed.checkpoint.polling).toEqual(first.at(-1)!.checkpoint.polling);
+    expect(committed.checkpoint.scan).toMatchObject({
+      startedAt: "2026-09-09T13:00:00.000Z",
+      from: "2026-09-08",
+      afterId: "meeting-09",
+    });
+    request.mockClear();
+    const resumed = await Array.fromAsync(
+      discover({ ...context, checkpoint: committed.checkpoint, startedAt: "2026-10-09T12:00:00.000Z" }),
+    );
+    expect(resumed.flatMap((batch) => batch.ids)).toEqual(["meeting-10", "meeting-11", "meeting-12"]);
+    expect(request.mock.calls.find(([operation]) => operation === "list_meetings")?.[1]).toEqual({
+      time_range: "custom",
+      custom_start: "2026-09-08",
+      custom_end: "2026-09-10",
+    });
+    expect(resumed.at(-1)).toMatchObject({
+      checkpoint: { polling: { watermark: "2026-09-09T13:00:00.000Z", reconciledAt: context.startedAt } },
+    });
+  });
+
+  it("keeps undated and unrecognized dates eligible and compares display dates without timezone shifts", async () => {
+    const { context, request } = fixture([], false);
+    const first = await Array.fromAsync(discover(context));
+    const read = request.getMockImplementation()!;
+    request.mockImplementation(async (operation, input) =>
+      operation === "list_meetings"
+        ? {
+            text: '<meetings_data><meeting title="Meeting" id="old" date="Sep 7, 2026 11:59 PM GMT+1"/><meeting title="Meeting" id="edge" date="September 8, 2026 12:00 AM"/><meeting title="Meeting" id="iso" date="2026-09-08T00:00:00+14:00"/><meeting title="Meeting" id="missing" date=""/><meeting title="Meeting" id="unknown" date="Yesterday"/><meeting title="Meeting" id="invalid" date="2026-02-30"/></meetings_data>',
+          }
+        : read(operation, input),
+    );
+    const recent = await Array.fromAsync(
+      discover({ ...context, checkpoint: first.at(-1)!.checkpoint, startedAt: "2026-09-09T13:00:00.000Z" }),
+    );
+    expect(recent.flatMap((batch) => batch.ids)).toEqual(["edge", "invalid", "iso", "missing", "unknown"]);
+  });
+
+  it("reconciles newly accessible history when custom filters become available after a completed scan", async () => {
+    const { context, state } = fixture([{ id: "old", date: "2023-04-03" }], false);
+    const first = await Array.fromAsync(discover(context));
+    state.custom = true;
+    const next = await Array.fromAsync(
+      discover({ ...context, checkpoint: first.at(-1)!.checkpoint, startedAt: "2026-09-09T13:00:00.000Z" }),
+    );
+    expect(next.flatMap((batch) => batch.ids)).toEqual(["old"]);
+    expect(next.at(-1)).toMatchObject({ checkpoint: { polling: { customRanges: true } } });
   });
 });
