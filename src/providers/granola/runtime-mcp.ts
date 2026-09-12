@@ -1,11 +1,13 @@
 import type { CredentialValidationResult, CredentialValidatorOptions, ResolvedCredential } from "../../core/types.ts";
-import type { OAuthProviderContext, ProviderActionHandlerSubset, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { OAuthProviderContext, ProviderActionHandlers, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { GranolaMeeting } from "./actions.ts";
 import type { Client } from "@modelcontextprotocol/client";
 
 import { SdkHttpError, UnauthorizedError } from "@modelcontextprotocol/client";
 import {
   objectArray,
   optionalString,
+  positiveInteger,
   requiredRawString,
   requiredString,
   requiredStringArray,
@@ -22,43 +24,113 @@ import {
   runProviderRequest,
 } from "../provider-runtime.ts";
 import { granolaMcpEndpoint, granolaOAuthIssuer } from "./endpoints.ts";
-import { parseGranolaMeetings, parseGranolaTranscript } from "./mcp-response.ts";
+import { parseGranolaFolders, parseGranolaMeetings, parseGranolaTranscript } from "./mcp-response.ts";
 
-export const granolaMcpActionHandlers: ProviderActionHandlerSubset<
+const granolaMcpCursorPrefix = "granola-mcp:";
+
+export const granolaMcpActionHandlers: ProviderActionHandlers<
   "granola",
   ProviderRuntimeHandler<OAuthProviderContext>
 > = {
+  async list_notes(input, context) {
+    for (const field of ["created_before", "created_after", "updated_after"]) {
+      if (input[field] !== undefined) {
+        throw providerInputError(
+          `${field} requires an API key connection; Granola MCP does not expose note creation or update timestamps.`,
+        );
+      }
+    }
+    const meetings = await listGranolaMeetings(context, optionalString(input.folder_id));
+    const page = paginateGranolaMcp(meetings, input);
+    return {
+      notes: page.items.map(({ id, title }) => ({ id, title })),
+      hasMore: page.hasMore,
+      cursor: page.nextCursor,
+      nextCursor: page.nextCursor,
+    };
+  },
+  async get_note(input, context) {
+    const id = requiredInputString(input.note_id, "note_id");
+    const meeting = (await getGranolaMeetings(context, [id]))[0]!;
+    return {
+      note: {
+        id: meeting.id,
+        title: meeting.title,
+        summary_markdown: meeting.summary,
+        transcript: input.include === "transcript" ? [{ text: await getGranolaTranscript(context, id) }] : undefined,
+      },
+    };
+  },
+  async list_folders(input, context) {
+    const text = await callGranolaTool(context, "list_meeting_folders", {});
+    const page = paginateGranolaMcp(parseGranolaFolders(text), input);
+    return { folders: page.items, hasMore: page.hasMore, cursor: page.nextCursor, nextCursor: page.nextCursor };
+  },
   async list_meetings(_input, context) {
-    const text = await callGranolaTool(context, "list_meetings", { time_range: "last_30_days" });
-    return { meetings: parseGranolaMeetings(text) };
+    return { meetings: await listGranolaMeetings(context) };
   },
   async get_meetings(input, context) {
     const ids = requiredStringArray(input.meeting_ids, "meeting_ids", providerInputError);
-    const text = await callGranolaTool(context, "get_meetings", { meeting_ids: ids });
-    const meetings = parseGranolaMeetings(text);
-    const byId = new Map(meetings.map((meeting) => [meeting.id, meeting]));
-    if (meetings.length !== ids.length || ids.some((id) => !byId.has(id))) {
-      throw providerResponseError("Granola did not return every requested meeting.");
-    }
-    return { meetings: ids.map((id) => byId.get(id)!) };
+    return { meetings: await getGranolaMeetings(context, ids) };
   },
   async get_meeting_transcript(input, context) {
     const meetingId = requiredInputString(input.meeting_id, "meeting_id");
-    const text = await callGranolaTool(context, "get_meeting_transcript", { meeting_id: meetingId });
-    return { meeting_id: meetingId, transcript: parseGranolaTranscript(text, meetingId) };
+    return { meeting_id: meetingId, transcript: await getGranolaTranscript(context, meetingId) };
   },
 };
+
+async function listGranolaMeetings(context: OAuthProviderContext, folderId?: string): Promise<GranolaMeeting[]> {
+  const text = await callGranolaTool(context, "list_meetings", { time_range: "last_30_days", folder_id: folderId });
+  return parseGranolaMeetings(text);
+}
+
+async function getGranolaMeetings(context: OAuthProviderContext, ids: string[]): Promise<GranolaMeeting[]> {
+  const text = await callGranolaTool(context, "get_meetings", { meeting_ids: ids });
+  const meetings = parseGranolaMeetings(text);
+  const byId = new Map(meetings.map((meeting) => [meeting.id, meeting]));
+  if (meetings.length !== ids.length || ids.some((id) => !byId.has(id))) {
+    throw providerResponseError("Granola did not return every requested meeting.");
+  }
+  return ids.map((id) => byId.get(id)!);
+}
+
+async function getGranolaTranscript(context: OAuthProviderContext, meetingId: string): Promise<string> {
+  const text = await callGranolaTool(context, "get_meeting_transcript", { meeting_id: meetingId });
+  return parseGranolaTranscript(text, meetingId);
+}
+
+interface GranolaMcpPage<T> {
+  items: T[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+function paginateGranolaMcp<T extends { id: string }>(items: T[], input: Record<string, unknown>): GranolaMcpPage<T> {
+  const cursor = optionalString(input.cursor);
+  let offset = 0;
+  if (cursor) {
+    const index = cursor.startsWith(granolaMcpCursorPrefix)
+      ? items.findIndex((item) => item.id === cursor.slice(granolaMcpCursorPrefix.length))
+      : -1;
+    if (index === -1) throw providerInputError("Invalid or expired Granola MCP cursor. Restart from the first page.");
+    offset = index + 1;
+  }
+  const pageSize = positiveInteger(input.page_size ?? 10, "page_size", providerInputError);
+  const page = items.slice(offset, offset + pageSize);
+  const hasMore = offset + page.length < items.length;
+  return { items: page, hasMore, nextCursor: hasMore ? `${granolaMcpCursorPrefix}${page.at(-1)!.id}` : null };
+}
 
 function callGranolaTool(context: OAuthProviderContext, name: string, input: Record<string, unknown>): Promise<string> {
   return withGranolaClient(context, async (client, signal) => {
     const result = await client.callTool({ name, arguments: input }, { signal });
     if (result.isError) throw new ProviderRequestError(502, `Granola MCP tool ${name} failed.`, result);
     const content = objectArray(result.content, "Granola MCP content", providerResponseError);
-    if (content.length === 0) throw providerResponseError("Granola MCP returned no meeting content.");
+    if (content.length === 0) throw providerResponseError("Granola MCP returned no content.");
     return content
       .map((block) => {
-        if (block.type !== "text") throw providerResponseError("Granola MCP returned unsupported meeting content.");
-        return requiredRawString(block.text, "Granola meeting text", providerResponseError);
+        if (block.type !== "text") throw providerResponseError("Granola MCP returned unsupported content.");
+        return requiredRawString(block.text, "Granola MCP text", providerResponseError);
       })
       .join("\n");
   });

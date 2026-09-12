@@ -22,13 +22,13 @@ const meetingSchema = s.requiredObject("A Granola meeting.", {
   summary: s.optional(s.string("Meeting summary, preserving its original Markdown when present.")),
 });
 
-const cursorSchema = s.nonEmptyString("Cursor token returned by a previous Granola page.");
+const cursorSchema = s.nonEmptyString("Cursor returned by this action for the same connection and filters.");
 const pageSizeSchema = s.integer("Maximum number of records to return. Granola allows 1 to 30.", {
   minimum: 1,
   maximum: 30,
 });
 const dateOrDateTimeSchema = s.nonEmptyString(
-  "Date or date-time filter accepted by Granola, such as 2026-01-27 or 2026-01-27T15:30:00Z.",
+  "API-key-only date or date-time filter, such as 2026-01-27 or 2026-01-27T15:30:00Z. MCP does not expose note creation or update timestamps.",
 );
 
 const userSchema = s.looseObject("A Granola user object.", {
@@ -36,21 +36,27 @@ const userSchema = s.looseObject("A Granola user object.", {
   email: s.email("The email address of the user."),
 });
 
-const folderSchema = s.looseObject("A Granola folder object.", {
-  id: s.string("The ID of the folder."),
-  object: s.string("The object type returned by Granola."),
-  name: s.string("The name of the folder."),
-  parent_folder_id: s.nullable(s.string("The ID of the parent folder, or null for top-level folders.")),
-});
+const folderSchema = s.looseObject(
+  "A Granola folder object. MCP supplies ID and name; REST also supplies object type and folder hierarchy.",
+  {
+    id: s.string("The ID of the folder."),
+    object: s.string("The object type returned by Granola."),
+    name: s.string("The name of the folder."),
+    parent_folder_id: s.nullable(s.string("The ID of the parent folder, or null for top-level folders.")),
+  },
+);
 
-const noteSummarySchema = s.looseObject("A Granola note summary object.", {
-  id: s.string("The ID of the note."),
-  object: s.string("The object type returned by Granola."),
-  title: s.nullable(s.string("The title of the note.")),
-  owner: userSchema,
-  created_at: s.string("The creation time of the note."),
-  updated_at: s.string("The last update time of the note."),
-});
+const noteSummarySchema = s.looseObject(
+  "A Granola note summary object. MCP supplies the ID and title; REST includes owner and timestamps.",
+  {
+    id: s.string("The ID of the note."),
+    object: s.string("The object type returned by Granola."),
+    title: s.nullable(s.string("The title of the note.")),
+    owner: userSchema,
+    created_at: s.string("The creation time of the note."),
+    updated_at: s.string("The last update time of the note."),
+  },
+);
 
 const calendarInviteeSchema = s.looseObject("A Granola calendar invitee object.", {
   email: s.email("The email address of the calendar invitee."),
@@ -70,28 +76,34 @@ const speakerSchema = s.looseObject("A Granola transcript speaker object.", {
   diarization_label: s.string("The diarized anonymous speaker label when Granola returns one."),
 });
 
-const transcriptItemSchema = s.looseObject("A Granola transcript item.", {
-  speaker: speakerSchema,
-  text: s.string("The transcript text."),
-  start_time: s.string("The start time of the transcript item."),
-  end_time: s.string("The end time of the transcript item."),
-});
+const transcriptItemSchema = s.looseObject(
+  "A Granola transcript item. MCP returns one text-only item preserving the full transcript.",
+  {
+    speaker: speakerSchema,
+    text: s.string("The transcript text."),
+    start_time: s.string("The start time of the transcript item."),
+    end_time: s.string("The end time of the transcript item."),
+  },
+);
 
-const noteSchema = s.looseObject("A Granola note object.", {
-  id: s.string("The ID of the note."),
-  object: s.string("The object type returned by Granola."),
-  title: s.nullable(s.string("The title of the note.")),
-  owner: userSchema,
-  created_at: s.string("The creation time of the note."),
-  updated_at: s.string("The last update time of the note."),
-  web_url: s.url("The URL to view the note in Granola."),
-  calendar_event: s.nullable(calendarEventSchema),
-  attendees: s.array("Meeting attendees returned by Granola.", userSchema),
-  folder_membership: s.array("Folders that contain the note.", folderSchema),
-  summary_text: s.string("The plain text summary of the note."),
-  summary_markdown: s.nullable(s.string("The markdown summary of the note, when available.")),
-  transcript: s.nullable(s.array("Transcript items returned by Granola.", transcriptItemSchema)),
-});
+const noteSchema = s.looseObject(
+  "A Granola note object. MCP supplies ID, title, Markdown summary, and an optional transcript; other REST metadata is omitted.",
+  {
+    id: s.string("The ID of the note."),
+    object: s.string("The object type returned by Granola."),
+    title: s.nullable(s.string("The title of the note.")),
+    owner: userSchema,
+    created_at: s.string("The creation time of the note."),
+    updated_at: s.string("The last update time of the note."),
+    web_url: s.url("The URL to view the note in Granola."),
+    calendar_event: s.nullable(calendarEventSchema),
+    attendees: s.array("Meeting attendees returned by Granola.", userSchema),
+    folder_membership: s.array("Folders that contain the note.", folderSchema),
+    summary_text: s.string("The plain text summary of the note."),
+    summary_markdown: s.nullable(s.string("The markdown summary of the note, when available.")),
+    transcript: s.nullable(s.array("Transcript items returned by Granola.", transcriptItemSchema)),
+  },
+);
 
 const listNotesInputSchema = s.object(
   "Query parameters for listing Granola notes.",
@@ -99,7 +111,9 @@ const listNotesInputSchema = s.object(
     created_before: dateOrDateTimeSchema,
     created_after: dateOrDateTimeSchema,
     updated_after: dateOrDateTimeSchema,
-    folder_id: s.nonEmptyString("Granola folder ID used to filter notes."),
+    folder_id: s.nonEmptyString(
+      "Folder ID returned for this connection. Folder filtering through MCP requires a paid plan.",
+    ),
     cursor: cursorSchema,
     page_size: pageSizeSchema,
   },
@@ -147,21 +161,24 @@ const listFoldersOutputSchema = s.object("Paginated Granola folders response.", 
 export const granolaActions: ActionDefinition[] = [
   defineProviderAction(service, {
     name: "list_notes",
-    description: "List accessible Granola meeting notes with optional date, folder, and cursor filters.",
+    description:
+      "List Granola notes with OAuth or an API key. MCP lists meetings from the last 30 days and supports folder filtering and local cursor pagination. Creation and update filters require an API key.",
     requiredScopes: [],
     inputSchema: listNotesInputSchema,
     outputSchema: listNotesOutputSchema,
   }),
   defineProviderAction(service, {
     name: "get_note",
-    description: "Get a Granola meeting note by ID, optionally including the transcript.",
+    description:
+      "Get a Granola note and summary by ID with OAuth or an API key, optionally including the transcript on eligible paid plans. Use an ID returned for the same connection.",
     requiredScopes: [],
     inputSchema: getNoteInputSchema,
     outputSchema: getNoteOutputSchema,
   }),
   defineProviderAction(service, {
     name: "list_folders",
-    description: "List accessible Granola folders with cursor pagination.",
+    description:
+      "List accessible Granola folders with OAuth or an API key and cursor pagination. MCP folder access requires a paid plan and uses local pagination of the returned list.",
     requiredScopes: [],
     inputSchema: listFoldersInputSchema,
     outputSchema: listFoldersOutputSchema,

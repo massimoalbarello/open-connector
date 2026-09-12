@@ -5,7 +5,7 @@ import { Validator } from "@cfworker/json-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { granolaActions } from "./actions.ts";
 import { executors, credentialValidators } from "./executors.ts";
-import { parseGranolaMeetings, parseGranolaTranscript } from "./mcp-response.ts";
+import { parseGranolaFolders, parseGranolaMeetings, parseGranolaTranscript } from "./mcp-response.ts";
 
 const summary = "    indented code\n\nKeep **Markdown** & code `a < b`.";
 const meetingXml = (id: string) =>
@@ -31,7 +31,7 @@ const apiKey: ResolvedCredential = {
 interface McpFixtureOptions {
   sse?: boolean;
   status?: number;
-  result?: Record<string, unknown>;
+  result?: Record<string, unknown> | ((params: Record<string, unknown>) => Record<string, unknown>);
   onCall?: (params: Record<string, unknown>) => void;
 }
 
@@ -59,7 +59,7 @@ function stubMcp(options: McpFixtureOptions = {}): typeof fetch {
       options.onCall?.(request.params);
     } else if (request.method === "tools/call") {
       options.onCall?.(request.params);
-      result = options.result ?? {
+      result = (typeof options.result === "function" ? options.result(request.params) : options.result) ?? {
         content: [
           { type: "text", text: "<access_notice>Only recent personal notes are available.</access_notice>" },
           { type: "text", text: meetingsXml(["meeting-1"]) },
@@ -194,14 +194,131 @@ describe("Granola REST and MCP execution", () => {
     await expect(credentialValidators.oauth2!(oauth, { fetcher })).rejects.toMatchObject({ status: 400 });
   });
 
-  it("keeps the older REST-only actions restricted to API keys before egress", async () => {
-    const fetcher = vi.fn();
-    vi.stubGlobal("fetch", fetcher);
-    await expect(execute("list_notes", {}, oauth)).resolves.toMatchObject({
-      ok: false,
-      error: { code: "authorization_failed" },
+  it.each(["created_before", "created_after", "updated_after"])(
+    "rejects unsupported MCP timestamp filters before egress (%s)",
+    async (field) => {
+      const fetcher = vi.fn();
+      vi.stubGlobal("fetch", fetcher);
+      await expect(execute("list_notes", { [field]: "2026-09-01" }, oauth)).resolves.toMatchObject({
+        ok: false,
+        error: { code: "invalid_input" },
+      });
+      expect(fetcher).not.toHaveBeenCalled();
+    },
+  );
+
+  it("paginates MCP notes and forwards the folder filter without fabricating REST metadata", async () => {
+    const onCall = vi.fn();
+    stubMcp({ onCall, result: { content: [{ type: "text", text: meetingsXml(["a", "b", "c"]) }] } });
+    await expect(execute("list_notes", { folder_id: "folder-a", page_size: 2 })).resolves.toEqual({
+      ok: true,
+      output: {
+        notes: [
+          { id: "a", title: "Roadmap & delivery" },
+          { id: "b", title: "Roadmap & delivery" },
+        ],
+        hasMore: true,
+        cursor: "granola-mcp:b",
+        nextCursor: "granola-mcp:b",
+      },
     });
-    expect(fetcher).not.toHaveBeenCalled();
+    await expect(
+      execute("list_notes", { folder_id: "folder-a", page_size: 2, cursor: "granola-mcp:b" }),
+    ).resolves.toEqual({
+      ok: true,
+      output: {
+        notes: [{ id: "c", title: "Roadmap & delivery" }],
+        hasMore: false,
+        cursor: null,
+        nextCursor: null,
+      },
+    });
+    expect(onCall).toHaveBeenCalledWith({
+      name: "list_meetings",
+      arguments: { time_range: "last_30_days", folder_id: "folder-a" },
+    });
+  });
+
+  it.each(["rest-cursor", "granola-mcp:missing"])("rejects invalid or expired MCP cursors (%s)", async (cursor) => {
+    stubMcp();
+    await expect(execute("list_notes", { cursor })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+  });
+
+  it.each([false, true])(
+    "reads an MCP note summary with an optional transcript (include: %s)",
+    async (includeTranscript) => {
+      const transcript = "[00:10] Ada: Preserve the exact transcript.";
+      const onCall = vi.fn();
+      stubMcp({
+        onCall,
+        result: (params) => ({
+          content: [
+            {
+              type: "text",
+              text:
+                params.name === "get_meeting_transcript" ? JSON.stringify({ id: "a", transcript }) : meetingsXml(["a"]),
+            },
+          ],
+        }),
+      });
+      const result = await execute("get_note", { note_id: "a", include: includeTranscript ? "transcript" : undefined });
+      expect(result).toEqual({
+        ok: true,
+        output: {
+          note: {
+            id: "a",
+            title: "Roadmap & delivery",
+            summary_markdown: summary,
+            transcript: includeTranscript ? [{ text: transcript }] : undefined,
+          },
+        },
+      });
+      expect(onCall).toHaveBeenCalledWith({ name: "get_meetings", arguments: { meeting_ids: ["a"] } });
+      expect(onCall).toHaveBeenCalledTimes(includeTranscript ? 2 : 1);
+    },
+  );
+
+  it("lists MCP folders through the existing paginated folder action", async () => {
+    const onCall = vi.fn();
+    stubMcp({
+      onCall,
+      result: {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              count: 2,
+              folders: [
+                { id: "folder-a", title: "Planning", description: null, note_count: 3 },
+                { id: "folder-b", title: "Research", description: "Customer interviews", note_count: 7 },
+              ],
+            }),
+          },
+        ],
+      },
+    });
+    await expect(execute("list_folders", { page_size: 1 })).resolves.toEqual({
+      ok: true,
+      output: {
+        folders: [{ id: "folder-a", name: "Planning" }],
+        hasMore: true,
+        cursor: "granola-mcp:folder-a",
+        nextCursor: "granola-mcp:folder-a",
+      },
+    });
+    await expect(execute("list_folders", { page_size: 1, cursor: "granola-mcp:folder-a" })).resolves.toEqual({
+      ok: true,
+      output: { folders: [{ id: "folder-b", name: "Research" }], hasMore: false, cursor: null, nextCursor: null },
+    });
+    expect(onCall).toHaveBeenCalledWith({ name: "list_meeting_folders", arguments: {} });
+  });
+
+  it("preserves MCP plan restrictions for folders", async () => {
+    stubMcp({ result: { isError: true, content: [{ type: "text", text: "Requires a paid plan" }] } });
+    await expect(execute("list_folders", {})).resolves.toMatchObject({ ok: false, error: { code: "provider_error" } });
   });
 
   it("keeps REST notes and pagination on the API key endpoint", async () => {
@@ -363,6 +480,20 @@ describe("Granola REST and MCP execution", () => {
 });
 
 describe("Granola MCP response parsing", () => {
+  it("accepts an empty MCP folder list", () => {
+    expect(parseGranolaFolders('{"count":0,"folders":[]}')).toEqual([]);
+  });
+
+  it.each([
+    "not JSON",
+    '{"count":2,"folders":[{"id":"a","title":"Planning"}]}',
+    '{"count":2,"folders":[{"id":"a","title":"Planning"},{"id":"a","title":"Duplicate"}]}',
+    '{"count":1,"folders":[{"title":"Missing identity"}]}',
+    '{"count":1,"folders":[{"id":"a"}]}',
+  ])("rejects malformed or incomplete folder data (%#)", (text) => {
+    expect(() => parseGranolaFolders(text)).toThrow();
+  });
+
   it("accepts an empty meeting list and preserves identifiers and optional fields", () => {
     expect(parseGranolaMeetings('<meetings_data count="0"/>')).toEqual([]);
     expect(parseGranolaMeetings("<meetings_data/>")).toEqual([]);
