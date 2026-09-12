@@ -137,14 +137,16 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
   complete(input: SyncScheduleResult): void {
     const installation = this.readers.installation(input.installationId);
     if (!installation || installation.bindingRevision !== input.bindingRevision) return;
-    const waiting = input.errorCode === "destination_required";
+    const waiting = input.errorCode === "destination_required" || input.errorCode === "asset_storage_full";
     const failures = waiting
       ? installation.consecutiveFailures
       : input.succeeded
         ? 0
         : installation.consecutiveFailures + 1;
     const next = waiting
-      ? input.now
+      ? input.errorCode === "asset_storage_full"
+        ? new Date(Date.parse(input.now) + 60_000).toISOString()
+        : input.now
       : input.succeeded
         ? new Date(
             Date.parse(input.now) + (input.complete ? (installation.scheduleSeconds ?? 900) * 1000 : 1000),
@@ -154,7 +156,13 @@ export class SqliteSyncScheduleStore implements ISyncScheduleStore {
       .prepare(
         `update sync_installations set consecutive_failures = ?, last_error = case when requires_backfill = 1 and state = 'needs_attention' then 'snapshot_interrupted' else ? end, next_due_at = ? where id = ? and binding_revision = ?`,
       )
-      .run(failures, waiting ? null : (input.errorCode ?? null), next, input.installationId, input.bindingRevision);
+      .run(
+        failures,
+        input.errorCode === "destination_required" ? null : (input.errorCode ?? null),
+        next,
+        input.installationId,
+        input.bindingRevision,
+      );
   }
 
   failBeforeRun(input: FailedSyncPollInput): void {

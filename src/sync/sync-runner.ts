@@ -4,6 +4,7 @@ import type { ISyncStore, JsonObject, JsonValue, SyncRun, SyncInstallation } fro
 
 import { normalizeConnectionName } from "../connection-service.ts";
 import { randomUUIDv7 } from "../core/uuid-v7.ts";
+import { describeSyncAsset } from "./asset-store.ts";
 import { maximumRecordBytes } from "./delivery-store.ts";
 import { createSyncProvider } from "./provider-adapter.ts";
 import { normalizeSyncRecord } from "./record-contract.ts";
@@ -243,6 +244,13 @@ export class SyncRunner {
       });
       for await (const page of runtime.run({
         provider,
+        assets: {
+          stage: async (asset) => {
+            signal.throwIfAborted();
+            await heartbeatWork;
+            return installation ? store.stageAsset({ ...asset, runId, lease }) : describeSyncAsset(asset);
+          },
+        },
         config,
         checkpoint,
         sourceId: installation?.sourceId ?? "dry-run",
@@ -332,7 +340,8 @@ export class SyncRunner {
       return result;
     } catch (cause) {
       const error = signal.aborted ? signal.reason : cause;
-      const waiting = error instanceof SyncStoreError && error.code === "destination_required";
+      const waiting =
+        error instanceof SyncStoreError && ["destination_required", "asset_storage_full"].includes(error.code);
       if (heartbeat) clearInterval(heartbeat);
       await heartbeatWork;
       if (installation) {
@@ -344,7 +353,7 @@ export class SyncRunner {
             completedAt: new Date().toISOString(),
             errorCode: error instanceof SyncStoreError ? error.code : "acquisition_failed",
             errorMessage: waiting
-              ? "Waiting for destination; committed progress is retained."
+              ? "Acquisition paused; committed progress is retained."
               : signal.aborted
                 ? "Acquisition cancelled."
                 : "Acquisition failed; committed progress is retained.",

@@ -1,10 +1,12 @@
 import type { JsonSchema } from "../core/types.ts";
+import type { SyncRecordAsset } from "./asset-store.ts";
 import type { CanonicalJson } from "./record-hash.ts";
 import type { JsonObject } from "./sync-store.ts";
 import type { Schema } from "@cfworker/json-schema";
 
 import { Validator } from "@cfworker/json-schema";
 import { s } from "../core/json-schema.ts";
+import { maximumSyncAssetBytes } from "./asset-store.ts";
 import { canonicalizeJsonObject } from "./record-hash.ts";
 import { SyncStoreError } from "./sync-store.ts";
 
@@ -43,6 +45,7 @@ export interface SyncRecordInput {
   sourceUpdatedAt?: string;
   participants?: SyncParticipant[];
   attributes?: JsonObject;
+  assets?: SyncRecordAsset[];
 }
 
 export interface NormalizedSyncRecord {
@@ -73,6 +76,17 @@ export function syncRecordSchema(kind: SyncKindContract): JsonSchema {
     sourceCreatedAt: s.string(),
     sourceUpdatedAt: s.string(),
     participants: s.array(participantSchema, { maxItems: 1000 }),
+    assets: s.array(
+      s.object(
+        {
+          sha256: s.string({ pattern: "^[a-f0-9]{64}$" }),
+          name: s.nonWhitespaceString("Asset filename.", { maxLength: 160 }),
+          sizeBytes: s.integer({ minimum: 0, maximum: maximumSyncAssetBytes }),
+        },
+        { required: ["sha256", "name", "sizeBytes"] },
+      ),
+      { maxItems: 1000 },
+    ),
   };
   if (kind.attributesSchema) {
     if (kind.attributesSchema.type !== "object" || kind.attributesSchema.additionalProperties !== false)
@@ -108,6 +122,10 @@ export function normalizeSyncRecord(input: unknown, kind: SyncKindContract): Nor
           roles: [...new Set(participant.roles)].sort(),
         })),
       ) as unknown as JsonObject[];
+    }
+    if (content.assets !== undefined) {
+      content.assets = sortedUnique(content.assets as JsonObject[]);
+      if ((content.assets as JsonObject[]).length === 0) delete content.assets;
     }
     if (content.attributes !== undefined) {
       const attributes = canonicalizeJsonObject(content.attributes);

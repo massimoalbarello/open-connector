@@ -1,3 +1,4 @@
+import type { StageSyncAssetInput, SyncRecordAsset } from "./asset-store.ts";
 import type { ISyncDeliveryStore } from "./delivery-store.ts";
 import type { ISyncScheduleStore } from "./schedule-store.ts";
 import type { ISyncSourceStore } from "./source-binding.ts";
@@ -219,7 +220,13 @@ export interface SyncOutboxRecord {
   lastError?: string;
 }
 
+export interface StageRunAssetInput extends StageSyncAssetInput {
+  runId: string;
+  lease: SyncLeaseInput;
+}
+
 export interface ISyncStore {
+  stageAsset(input: StageRunAssetInput): Promise<SyncRecordAsset>;
   readonly schedule: ISyncScheduleStore;
   readonly status: ISyncStatusStore;
   readonly delivery: ISyncDeliveryStore;
@@ -240,6 +247,7 @@ export interface ISyncStore {
 }
 
 export type SyncStoreErrorCode =
+  | "asset_storage_full"
   | "destination_required"
   | "binding_conflict"
   | "credential_changed"

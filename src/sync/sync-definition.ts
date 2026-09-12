@@ -1,4 +1,5 @@
 import type { JsonSchema } from "../core/types.ts";
+import type { SyncAssets } from "./asset-store.ts";
 import type { SyncProvider, SyncProviderContext } from "./provider-adapter.ts";
 import type { SyncDefinitionContract, SyncRecordInput } from "./record-contract.ts";
 import type { JsonObject, JsonValue, SyncRecordDeleteInput } from "./sync-store.ts";
@@ -13,6 +14,7 @@ export interface SyncDefinition extends SyncDefinitionContract {
 }
 
 export interface SyncContext {
+  assets: SyncAssets;
   provider: SyncProvider;
   config: JsonObject;
   checkpoint: JsonValue;

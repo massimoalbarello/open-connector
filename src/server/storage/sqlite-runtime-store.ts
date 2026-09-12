@@ -43,6 +43,7 @@ const migrationDirectory = new URL("../../../migrations/", import.meta.url);
 
 export interface SqliteRuntimeDatabaseOptions {
   syncDefinitions?: readonly SyncDefinitionContract[];
+  maximumPendingAssetBytes?: number;
   logger?: RuntimeLogger;
   runLimit?: number;
   secretCodec?: ISecretCodec;
@@ -110,7 +111,12 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
     this.runLogStore = new SqliteRunLogStore(this.database, options.runLimit ?? DEFAULT_RUN_LIMIT);
     this.idempotencyStore = new SqliteIdempotencyStore(this.database, this.secretCodec);
     this.marketplaceStore = new SqliteMarketplaceStore(this.database);
-    this.syncStore = new SqliteSyncStore(this.database, options.syncDefinitions, this.secretCodec);
+    this.syncStore = new SqliteSyncStore(
+      this.database,
+      options.syncDefinitions,
+      this.secretCodec,
+      options.maximumPendingAssetBytes,
+    );
   }
 
   close(): void {

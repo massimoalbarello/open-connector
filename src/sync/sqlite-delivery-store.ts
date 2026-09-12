@@ -12,6 +12,7 @@ import type {
   SyncDestination,
   SyncDeliveryStatus,
 } from "./delivery-store.ts";
+import type { SqliteSyncAssetStore } from "./sqlite-asset-store.ts";
 import type { DatabaseSync } from "node:sqlite";
 
 import { assertPublicHttpUrl } from "../core/request.ts";
@@ -26,10 +27,12 @@ import { SyncStoreError } from "./sync-store.ts";
 export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
   private readonly database: DatabaseSync;
   private readonly codec: ISecretCodec;
+  private readonly assets: SqliteSyncAssetStore;
 
-  constructor(database: DatabaseSync, codec: ISecretCodec) {
+  constructor(database: DatabaseSync, codec: ISecretCodec, assets: SqliteSyncAssetStore) {
     this.database = database;
     this.codec = codec;
+    this.assets = assets;
   }
 
   async configure(input: SyncDestinationInput): Promise<void> {
@@ -311,6 +314,7 @@ export class SqliteSyncDeliveryStore implements ISyncDeliveryStore {
 
   /** Retain unacknowledged bodies even when destination configuration is absent. */
   purge(): void {
+    this.assets.purge();
     this.database
       .prepare(`update sync_changes set payload = 'null' where payload != 'null'
       and exists(select 1 from sync_outbox o where o.change_sequence = sync_changes.sequence and o.state = 'delivered')`)
@@ -329,6 +333,8 @@ function readDeliveryRecord(row: RuntimeRow): SyncDeliveryRecord {
     undefined;
   if (operation !== "deleted" && !content)
     throw new SyncStoreError("invalid_input", "Pending delivery payload is unavailable.");
+  if (content && "assets" in content)
+    throw new SyncStoreError("invalid_input", "Attachments require asset-aware delivery preparation.");
   const common = {
     eventId: readString(row, "event_id"),
     provider: readString(row, "provider"),

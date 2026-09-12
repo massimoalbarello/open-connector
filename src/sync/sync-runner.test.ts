@@ -11,7 +11,9 @@ import { ProviderLoader } from "../providers/provider-loader.ts";
 import { createLocalAuthMiddleware } from "../server/api/auth.ts";
 import { registerSyncRoutes } from "../server/api/sync-routes.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite-runtime-store.ts";
+import { syncAssetUrl } from "./asset-store.ts";
 import { SyncRunner } from "./sync-runner.ts";
+import { SyncStoreError } from "./sync-store.ts";
 
 const databases: SqliteRuntimeDatabase[] = [];
 const definition = {
@@ -156,9 +158,20 @@ describe("compiled sync runner", () => {
 
   it("dry runs use isolated progress and leave installations, records and checkpoints untouched", async () => {
     const { database, runner } = await setup({
-      async *run() {
+      async *run(context) {
+        const asset = await context.assets.stage({ name: "preview.txt", bytes: Buffer.from("preview") });
         yield {
-          records: [{ kind: "test", record: { id: "preview", title: "Record title", body: "# Preview" } }],
+          records: [
+            {
+              kind: "test",
+              record: {
+                id: "preview",
+                title: "Record title",
+                body: `# Preview\n\n[File](${syncAssetUrl(asset)})`,
+                assets: [asset],
+              },
+            },
+          ],
           checkpoint: { cursor: 1 },
           complete: true,
         };
@@ -166,7 +179,13 @@ describe("compiled sync runner", () => {
     });
     database.syncStore.delivery.remove();
     const result = await runner.run({ definitionId: definition.id, dryRun: true });
-    expect(result.preview?.[0]).toMatchObject({ id: "preview", content: { body: "# Preview" } });
+    expect(result.preview?.[0]).toMatchObject({
+      id: "preview",
+      content: {
+        body: expect.stringContaining("# Preview"),
+        assets: [expect.objectContaining({ name: "preview.txt" })],
+      },
+    });
     expect(database.syncStore.sources.getBindingRevision()).toBe(0);
     expect((await database.syncStore.listChanges()).items).toEqual([]);
     expect(result.installationId).toBeUndefined();
@@ -290,4 +309,25 @@ describe("compiled sync runner", () => {
       ).status,
     ).toBe(200);
   });
+});
+
+it("pauses a full attachment spool without losing progress or escalating acquisition failures", async () => {
+  const { runner, database } = await setup({
+    async *run() {
+      yield {
+        records: [{ kind: "test", record: { id: "one", title: "Saved", body: "Saved before backpressure" } }],
+        checkpoint: { cursor: 1 },
+        complete: false,
+      };
+      throw new SyncStoreError("asset_storage_full", "Pending attachment budget reached.");
+    },
+  });
+  const installation = await runner.create({ definitionId: definition.id, enabled: true });
+  const before = Date.now();
+  await expect(runner.run({ definitionId: definition.id })).rejects.toMatchObject({ code: "asset_storage_full" });
+  expect(await database.syncStore.getCheckpoint(installation.id)).toMatchObject({ value: { cursor: 1 } });
+  const paused = await database.syncStore.getInstallation(installation.id);
+  expect(paused).toMatchObject({ state: "enabled", consecutiveFailures: 0, lastError: "asset_storage_full" });
+  expect(Date.parse(paused!.nextDueAt!)).toBeGreaterThanOrEqual(before + 60_000);
+  expect((await database.syncStore.listChanges()).items).toHaveLength(1);
 });

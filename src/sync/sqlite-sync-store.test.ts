@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { s } from "../core/json-schema.ts";
 import { SqliteRuntimeDatabase } from "../server/storage/sqlite-runtime-store.ts";
+import { describeSyncAsset, syncAssetUrl } from "./asset-store.ts";
 
 const definitions: SyncDefinitionContract[] = [
   {
@@ -886,10 +887,15 @@ describe("SQLite sync state", () => {
   });
 });
 
-async function createFixture(options: { createInstallation?: boolean } = {}): Promise<Fixture> {
+async function createFixture(
+  options: { createInstallation?: boolean; maximumPendingAssetBytes?: number } = {},
+): Promise<Fixture> {
   const directory = await mkdtemp(join(tmpdir(), "open-connector-sync-"));
   const databasePath = join(directory, "connect.sqlite");
-  const database = new SqliteRuntimeDatabase(databasePath, { syncDefinitions: definitions });
+  const database = new SqliteRuntimeDatabase(databasePath, {
+    syncDefinitions: definitions,
+    maximumPendingAssetBytes: options.maximumPendingAssetBytes,
+  });
   const connection = await database.connectionStore.set("github", "default", {
     authType: "api_key",
     apiKey: "test-token",
@@ -959,3 +965,109 @@ async function bindFixture(
   });
   return (await fixture.database.syncStore.getInstallation(id))!;
 }
+
+it("stages bytes durably before records, and rejects missing assets without advancing progress", async () => {
+  const f = await createFixture();
+  const staged = await f.database.syncStore.stageAsset({
+    runId: "run-1",
+    lease: f.lease,
+    name: "note.txt",
+    bytes: Buffer.from("hello"),
+  });
+  expect(await f.database.syncStore.getCheckpoint("github-prs")).toBeUndefined();
+  f.database.close();
+  f.database = new SqliteRuntimeDatabase(f.databasePath, { syncDefinitions: definitions });
+  const record = { id: "one", title: "Attachment", body: `[File](${syncAssetUrl(staged)})`, assets: [staged] };
+  const missing = describeSyncAsset({ name: "missing.txt", bytes: Buffer.from("missing") });
+  await expect(
+    f.database.syncStore.commitPage({
+      ...commitIdentity(f, 0, t1),
+      nextCheckpoint: { cursor: 1 },
+      upserts: [{ kind: "PullRequest", record: { ...record, assets: [missing] } }],
+    }),
+  ).rejects.toMatchObject({ code: "invalid_input" });
+  expect(await f.database.syncStore.getRecord("github-prs", "PullRequest", "one")).toBeUndefined();
+  expect(await f.database.syncStore.getCheckpoint("github-prs")).toBeUndefined();
+  const committed = await f.database.syncStore.commitPage({
+    ...commitIdentity(f, 0, t1),
+    nextCheckpoint: { cursor: 1 },
+    upserts: [{ kind: "PullRequest", record }],
+  });
+  expect(committed.changes).toHaveLength(1);
+  const unchanged = await f.database.syncStore.commitPage({
+    ...commitIdentity(f, 1, t2),
+    nextCheckpoint: { cursor: 2 },
+    upserts: [{ kind: "PullRequest", record }],
+  });
+  expect(unchanged.changes).toHaveLength(0);
+  const inspect = new DatabaseSync(f.databasePath);
+  try {
+    expect(
+      Buffer.from(
+        inspect.prepare("select bytes from sync_assets where sha256 = ?").get(staged.sha256)!.bytes as Uint8Array,
+      ).toString(),
+    ).toBe("hello");
+    expect(inspect.prepare("select count(*) as count from sync_change_assets").get()!.count).toBe(1);
+  } finally {
+    inspect.close();
+  }
+});
+
+it("backpressures acquisition until every pending reference to the shared bytes is acknowledged", async () => {
+  const f = await createFixture({ maximumPendingAssetBytes: 5 });
+  const store = f.database.syncStore;
+  const input = { runId: "run-1", lease: f.lease, name: "note.txt", bytes: Buffer.from("hello") };
+  const asset = await store.stageAsset(input);
+  const commit = (revision: number) =>
+    store.commitPage({
+      ...commitIdentity(f, revision, t1),
+      nextCheckpoint: { cursor: revision + 1 },
+      upserts: [
+        {
+          kind: "PullRequest",
+          record: { id: "one", title: String(revision), body: `[File](${syncAssetUrl(asset)})`, assets: [asset] },
+        },
+      ],
+    });
+  await commit(0);
+  // Identical bytes consume the budget once, even when several revisions need them.
+  expect(await store.stageAsset(input)).toEqual(asset);
+  await commit(1);
+  await expect(store.stageAsset({ ...input, bytes: Buffer.from("world") })).rejects.toMatchObject({
+    code: "asset_storage_full",
+  });
+  expect(await store.getCheckpoint("github-prs")).toMatchObject({ revision: 2 });
+  const inspect = new DatabaseSync(f.databasePath);
+  try {
+    // Drive the durable ACK boundary without a transport; the delivery PR owns HTTP preparation.
+    inspect
+      .prepare(
+        "update sync_outbox set state = 'delivered' where change_sequence = (select min(change_sequence) from sync_outbox)",
+      )
+      .run();
+    store.delivery.purge();
+    expect(inspect.prepare("select count(*) as count from sync_assets").get()!.count).toBe(1);
+    inspect.prepare("update sync_outbox set state = 'delivered'").run();
+    store.delivery.purge();
+    expect(inspect.prepare("select count(*) as count from sync_assets").get()!.count).toBe(0);
+    expect(await store.stageAsset({ ...input, bytes: Buffer.from("world") })).toMatchObject({ sizeBytes: 5 });
+  } finally {
+    inspect.close();
+  }
+});
+
+it("releases unfinished acquisition bytes after failure and fences stale workers", async () => {
+  const f = await createFixture();
+  const store = f.database.syncStore;
+  const input = { runId: "run-1", lease: f.lease, name: "empty.txt", bytes: Buffer.alloc(0) };
+  await store.stageAsset(input);
+  await store.finishRun({ runId: "run-1", ...f.lease, state: "failed", completedAt: t1 });
+  await expect(store.stageAsset(input)).rejects.toMatchObject({ code: "lease_lost" });
+  const inspect = new DatabaseSync(f.databasePath);
+  try {
+    expect(inspect.prepare("select count(*) as count from sync_assets").get()!.count).toBe(0);
+    expect(inspect.prepare("select count(*) as count from sync_staged_assets").get()!.count).toBe(0);
+  } finally {
+    inspect.close();
+  }
+});

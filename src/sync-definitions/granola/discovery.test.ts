@@ -3,6 +3,7 @@ import type { JsonObject } from "../../sync/sync-store.ts";
 
 import { describe, expect, it, vi } from "vitest";
 import { McpResponseSizeError } from "../../providers/mcp-client.ts";
+import { describeSyncAsset } from "../../sync/asset-store.ts";
 import { validateSyncValue } from "../../sync/sync-validation.ts";
 import { granolaMeetings } from "./definition.ts";
 import { discover } from "./discovery.ts";
@@ -52,6 +53,7 @@ function fixture(meetings: Meeting[], custom = true) {
     };
   });
   const context: SyncContext = {
+    assets: { stage: async (input) => describeSyncAsset(input) },
     provider: { request },
     config: granolaMeetings.defaultConfig,
     checkpoint: granolaMeetings.initialCheckpoint,
