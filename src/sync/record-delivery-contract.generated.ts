@@ -180,6 +180,19 @@ export const recordDeliveryEnvelopeSchema: Schema = {
                     description: "Provider-defined JSON object, limited to 16 KiB when canonically serialized.",
                     "x-open-connector-maximum-bytes": 16384,
                   },
+                  assetIds: {
+                    type: "array",
+                    maxItems: 1000,
+                    uniqueItems: true,
+                    description:
+                      "Complete set of destination asset identifiers referenced by this record. Assets are uploaded independently before record delivery. Omission means no asset references.",
+                    items: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 1024,
+                      pattern: "\\S",
+                    },
+                  },
                 },
               },
               committedAt: {
@@ -324,6 +337,12 @@ export interface SyncDeliveryEnvelope {
           attributes?: {
             [k: string]: unknown;
           };
+          /**
+           * Complete set of destination asset identifiers referenced by this record. Assets are uploaded independently before record delivery. Omission means no asset references.
+           *
+           * @maxItems 1000
+           */
+          assetIds?: string[];
         };
         committedAt: string;
       }

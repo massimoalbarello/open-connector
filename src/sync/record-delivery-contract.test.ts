@@ -17,6 +17,23 @@ const upsert = {
 };
 
 describe("record delivery contract", () => {
+  it.each([
+    { assetIds: [], valid: true },
+    { assetIds: ["invoice-123", "image-456"], valid: true },
+    { assetIds: ["invoice-123", "invoice-123"], valid: false },
+    { assetIds: [" "], valid: false },
+    { assetIds: [42], valid: false },
+    { assetIds: Array.from({ length: 1001 }, (_, i) => `asset-${i}`), valid: false },
+  ])("validates destination asset references: $valid", ({ assetIds, valid }) => {
+    expect(
+      validator.validate({
+        version: recordDeliveryContract.version,
+        batchId: "01991c55-a120-7394-aef7-b08403e90943",
+        records: [{ ...upsert, content: { ...upsert.content, assetIds } }],
+      }).valid,
+    ).toBe(valid);
+  });
+
   it("accepts the documented upsert envelope", () => {
     expect(
       validator.validate({
