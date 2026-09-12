@@ -1,4 +1,3 @@
-import type { SyncProvider } from "../../sync/provider-adapter.ts";
 import type { SyncContext } from "../../sync/sync-definition.ts";
 import type { JsonObject } from "../../sync/sync-store.ts";
 import type { Mock } from "vitest";
@@ -8,7 +7,7 @@ import { githubPullRequests } from "./definition.ts";
 
 interface GitHubPullRequestFixture {
   context: SyncContext;
-  graphql: Mock<SyncProvider["graphql"]>;
+  graphql: Mock<(query: string, variables?: JsonObject) => Promise<JsonObject>>;
   pull: Record<string, unknown>;
   comments: Record<string, unknown>[];
 }
@@ -72,29 +71,31 @@ export function githubPullRequestFixture(): GitHubPullRequestFixture {
     reviews: page(reviews),
     reviewThreads: page(threads),
   };
-  const graphql = vi.fn<SyncProvider["graphql"]>(async (query, variables = {}) => {
-    if (query.includes("SyncDiscover"))
-      return {
-        viewer: {
-          pullRequests: {
-            edges: variables.after
-              ? []
-              : [{ cursor: "record-cursor", node: { id: "PR_native", updatedAt: timestamp } }],
-            pageInfo: { hasNextPage: false },
+  const graphql = vi.fn<(query: string, variables?: JsonObject) => Promise<JsonObject>>(
+    async (query, variables = {}) => {
+      if (query.includes("SyncDiscover"))
+        return {
+          viewer: {
+            pullRequests: {
+              edges: variables.after
+                ? []
+                : [{ cursor: "record-cursor", node: { id: "PR_native", updatedAt: timestamp } }],
+              pageInfo: { hasNextPage: false },
+            },
           },
-        },
-      };
-    if (query.includes("SyncPullRequest")) return { node: structuredClone(pull) } as JsonObject;
-    if (query.includes("SyncVerifyPull"))
-      return { node: { updatedAt: pull.updatedAt, headRefOid: pull.headRefOid } } as JsonObject;
-    const offset = Number(variables.after);
-    if (variables.id === "thread-1") return { node: { comments: page(threadComments, offset) } } as JsonObject;
-    if (query.includes("comments(first:")) return { node: { comments: page(comments, offset) } } as JsonObject;
-    if (query.includes("reviews(first:")) return { node: { reviews: page(reviews, offset) } } as JsonObject;
-    throw new Error("Unexpected query");
-  });
+        };
+      if (query.includes("SyncPullRequest")) return { node: structuredClone(pull) } as JsonObject;
+      if (query.includes("SyncVerifyPull"))
+        return { node: { updatedAt: pull.updatedAt, headRefOid: pull.headRefOid } } as JsonObject;
+      const offset = Number(variables.after);
+      if (variables.id === "thread-1") return { node: { comments: page(threadComments, offset) } } as JsonObject;
+      if (query.includes("comments(first:")) return { node: { comments: page(comments, offset) } } as JsonObject;
+      if (query.includes("reviews(first:")) return { node: { reviews: page(reviews, offset) } } as JsonObject;
+      throw new Error("Unexpected query");
+    },
+  );
   const context: SyncContext = {
-    provider: { graphql },
+    provider: { request: (_operation, input = {}) => graphql(String(input.query), input.variables as JsonObject) },
     checkpoint: githubPullRequests.initialCheckpoint,
     config: { scope: "authored" },
     sourceId: "source",

@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { SSEClientTransport } from "@modelcontextprotocol/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/client/validators/cf-worker";
-import { providerFetch, providerResponseError } from "./provider-runtime.ts";
+import { providerFetch, ProviderRequestError } from "./provider-runtime.ts";
 
 const mcpConnectTimeoutMs = 60_000;
 const modernMcpProtocolVersion = "2026-07-28";
@@ -26,12 +26,24 @@ export interface McpClientOptions {
   maxResponseBytes?: number;
 }
 
+/** Allows callers to retry an oversized discovery response with a smaller request. */
+export class McpResponseSizeError extends ProviderRequestError {
+  constructor() {
+    super(502, "MCP response exceeds the size limit.");
+  }
+}
+
 export async function withMcpClient<T>(options: McpClientOptions, run: (client: Client) => Promise<T>): Promise<T> {
+  let responseSizeError: Error | undefined;
   const transportOptions = {
     fetch:
       options.maxResponseBytes === undefined
         ? options.fetcher
-        : limitMcpResponseBytes(options.fetcher ?? providerFetch, options.maxResponseBytes),
+        : limitMcpResponseBytes(options.fetcher ?? providerFetch, options.maxResponseBytes, (error) => {
+            responseSizeError = error;
+            // An SSE read error alone does not reject pending RPCs. Closing the client unblocks them.
+            void client.close().catch(() => undefined);
+          }),
     requestInit: {
       headers: options.headers,
       redirect: options.redirect,
@@ -54,13 +66,14 @@ export async function withMcpClient<T>(options: McpClientOptions, run: (client: 
     await client.connect(transport, { timeout: mcpConnectTimeoutMs, signal: options.signal });
     return await run(client);
   } catch (error) {
+    if (responseSizeError) throw responseSizeError;
     throw options.mapError ? options.mapError(error) : error;
   } finally {
     await client.close().catch(() => undefined);
   }
 }
 
-function limitMcpResponseBytes(fetcher: typeof fetch, maxBytes: number): typeof fetch {
+function limitMcpResponseBytes(fetcher: typeof fetch, maxBytes: number, onLimit: (error: Error) => void): typeof fetch {
   return async (input, init) => {
     const response = await fetcher(input, init);
     if (!response.body) return response;
@@ -69,7 +82,11 @@ function limitMcpResponseBytes(fetcher: typeof fetch, maxBytes: number): typeof 
       new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, controller) {
           size += chunk.byteLength;
-          if (size > maxBytes) throw providerResponseError("MCP response exceeds the size limit.");
+          if (size > maxBytes) {
+            const error = new McpResponseSizeError();
+            onLimit(error);
+            throw error;
+          }
           controller.enqueue(chunk);
         },
       }),

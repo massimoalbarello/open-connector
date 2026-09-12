@@ -50,9 +50,15 @@ Sync authors supply required `id`, non-empty `title` (plain text), and non-empty
 adds `provider`, `kind`, and the source namespace; it owns observation/commit times, hashes,
 revisions, operations, and delivery envelopes. Do not duplicate those framework fields in output.
 
-- Make the body understandable without provider-specific JSON: include a descriptive heading,
-  source context/URL, meaningful status and timestamps, participants, user-authored content, and
-  relevant nested activity. Preserve authored text and useful code/file locations.
+- Keep the body high signal and understandable without provider-specific JSON. Include source
+  content and context that helps readers understand the record: a descriptive heading, useful
+  source links, meaningful source status and dates, participants, and relevant nested activity.
+  Select facts for their value to the reader; do not dump fields just because the provider returns
+  them. Preserve authored text and useful code/file locations.
+- Omit empty sections and headings for unavailable optional content. Do not add connector-generated
+  absence placeholders (such as "No transcript available"), plan or permission notices, setup
+  instructions, sync diagnostics, or repetitive boilerplate to the body. Operational information
+  belongs in sync status or documentation.
 - Important facts in participants or attributes must also be represented in Markdown. Structured
   fields support machine filtering; they must not hide content from Markdown-only consumers.
 - Participants use shared identities and roles such as author, sender, recipient, or attendee.
@@ -105,6 +111,9 @@ and the next checkpoint. The framework persists opaque progress; the definition 
   do not persist checkpoints separately from the records they cover.
 - Resume interrupted backfills from committed progress. Repeated acquisition must be safe; do not
   promise exactly one provider fetch across a crash before commit.
+- Default backfills to all records the provider makes accessible unless the user selected a narrower
+  scope. Bound work per request and commit, not the total history or record count. Let the provider
+  enforce subscription limits; use advertised capabilities rather than encoding plan-specific lookbacks.
 - With timestamp filters, use provider-supported ordering, explicit boundary/tie handling, and a
   documented overlap where appropriate. Never blindly advance to local completion time. Preserve
   any fixed scan boundary and continuation state needed to avoid moving-window gaps.
@@ -115,7 +124,8 @@ and the next checkpoint. The framework persists opaque progress; the definition 
   where supported; do not claim a generic checkpoint makes an API incremental.
 - Do not overwrite a complete record with accidental partial content after a required API failure.
   Propagate the failure without advancing past it. Distinguish unavailable optional content from a
-  transient fetch failure; expose documented provider caps or intentional omissions in the body.
+  transient fetch failure. Document provider caps and intentional omissions in the definition's
+  documentation; report acquisition failures through sync status.
 - An item missing from an incremental page, a permission-filtered response, or a partial scan is not
   deleted. Emit deletes only from authoritative evidence or after a completed, same-scope snapshot.
 - Incompatible checkpoint changes require migration or an explicit reset/backfill policy. Never

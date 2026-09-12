@@ -2,7 +2,6 @@ import type { ProviderDefinition } from "../../core/types.ts";
 
 import { granolaActions } from "./actions.ts";
 import { granolaMcpEndpoint, granolaOAuthIssuer } from "./endpoints.ts";
-import { granolaMcpActions } from "./mcp-actions.ts";
 
 const service = "granola";
 
@@ -31,5 +30,5 @@ export const provider: ProviderDefinition = {
     },
   ],
   homepageUrl: "https://www.granola.ai",
-  actions: [...granolaActions, ...granolaMcpActions],
+  actions: granolaActions,
 };

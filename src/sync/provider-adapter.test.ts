@@ -26,7 +26,7 @@ describe("sync provider capability", () => {
         connections: database.connectionStore,
         signal: new AbortController().signal,
         createProvider: () => ({
-          async graphql() {
+          async request() {
             await database.connectionStore.set("example", "default", {
               authType: "api_key",
               apiKey: "replacement",
@@ -38,7 +38,9 @@ describe("sync provider capability", () => {
           },
         }),
       });
-      await expect(provider.graphql("query { record }")).rejects.toMatchObject({ code: "credential_changed" });
+      await expect(provider.request("scan", { continuation: "opaque-provider-cursor" })).rejects.toMatchObject({
+        code: "credential_changed",
+      });
     } finally {
       database.close();
     }
@@ -63,19 +65,25 @@ describe("sync provider capability", () => {
         signal: new AbortController().signal,
       });
       fetcher.mockResolvedValue(new Response(JSON.stringify({ data: { viewer: { id: "native" } } })));
-      expect(await provider.graphql("query { viewer { id } }")).toEqual({ viewer: { id: "native" } });
+      expect(await provider.request("graphql", { query: "query { viewer { id } }" })).toEqual({
+        viewer: { id: "native" },
+      });
       expect(fetcher.mock.calls[0]?.[0]).toBe("https://api.github.com/graphql");
       expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
         redirect: "error",
         headers: { authorization: "Bearer private-token" },
       });
-      await expect(provider.graphql("mutation { deleteIssue }")).rejects.toThrow("queries only");
+      await expect(provider.request("graphql", { query: "mutation { deleteIssue }" })).rejects.toThrow("queries only");
       fetcher.mockResolvedValue(
         new Response(JSON.stringify({ data: { viewer: {} }, errors: [{ message: "unavailable" }] })),
       );
-      await expect(provider.graphql("query { viewer { id } }")).rejects.toThrow("partial data was discarded");
+      await expect(provider.request("graphql", { query: "query { viewer { id } }" })).rejects.toThrow(
+        "partial data was discarded",
+      );
       await database.connectionStore.set("github", "default", { ...credential, apiKey: "replacement" });
-      await expect(provider.graphql("query { viewer { id } }")).rejects.toThrow("credential changed");
+      await expect(provider.request("graphql", { query: "query { viewer { id } }" })).rejects.toThrow(
+        "credential changed",
+      );
     } finally {
       database.close();
     }

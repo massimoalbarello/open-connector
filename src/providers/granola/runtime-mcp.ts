@@ -1,12 +1,23 @@
 import type { CredentialValidationResult, CredentialValidatorOptions, ResolvedCredential } from "../../core/types.ts";
-import type { OAuthProviderContext, ProviderActionHandlerSubset, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { OAuthProviderContext, ProviderActionHandlers, ProviderRuntimeHandler } from "../provider-runtime.ts";
+import type { GranolaMeeting } from "./actions.ts";
 import type { Client } from "@modelcontextprotocol/client";
 
 import { SdkHttpError, UnauthorizedError } from "@modelcontextprotocol/client";
-import { optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import {
+  looseArray,
+  optionalRecord,
+  optionalString,
+  positiveInteger,
+  requiredRawString,
+  requiredString,
+  requiredStringArray,
+} from "../../core/cast.ts";
 import { withMcpClient } from "../mcp-client.ts";
 import {
   providerResponseError,
+  providerUserAgent,
+  providerInputError,
   ProviderRequestError,
   readProviderJsonBody,
   requiredInputString,
@@ -14,25 +25,134 @@ import {
   runProviderRequest,
 } from "../provider-runtime.ts";
 import { granolaMcpEndpoint, granolaOAuthIssuer } from "./endpoints.ts";
+import { parseGranolaFolders, parseGranolaMeetings, parseGranolaTranscript } from "./mcp-response.ts";
 
-export const granolaMcpActionHandlers: ProviderActionHandlerSubset<
+const granolaMcpCursorPrefix = "granola-mcp:";
+
+export const granolaMcpActionHandlers: ProviderActionHandlers<
   "granola",
   ProviderRuntimeHandler<OAuthProviderContext>
 > = {
-  mcp_list_tools: (input, context) =>
-    withGranolaClient(context, (client, signal) =>
-      client.listTools({ cursor: optionalString(input.cursor) }, { signal }),
-    ),
-  mcp_call_tool: (input, context) =>
-    withGranolaClient(context, async (client, signal) => {
-      const name = requiredInputString(input.toolName, "toolName");
-      const result = await client.callTool({ name, arguments: optionalRecord(input.arguments) ?? {} }, { signal });
-      if (result.isError) {
-        throw new ProviderRequestError(502, `Granola MCP tool ${name} failed.`, result);
+  async list_notes(input, context) {
+    for (const field of ["created_before", "created_after", "updated_after"]) {
+      if (input[field] !== undefined) {
+        throw providerInputError(
+          `${field} requires an API key connection; Granola MCP does not expose note creation or update timestamps.`,
+        );
       }
-      return { result };
-    }),
+    }
+    const meetings = await listGranolaMeetings(context, optionalString(input.folder_id));
+    const page = paginateGranolaMcp(meetings, input);
+    return {
+      notes: page.items.map(({ id, title }) => ({ id, title })),
+      hasMore: page.hasMore,
+      cursor: page.nextCursor,
+      nextCursor: page.nextCursor,
+    };
+  },
+  async get_note(input, context) {
+    const id = requiredInputString(input.note_id, "note_id");
+    const meeting = (await getGranolaMeetings(context, [id]))[0]!;
+    return {
+      note: {
+        id: meeting.id,
+        title: meeting.title,
+        summary_markdown: meeting.summary,
+        transcript: input.include === "transcript" ? [{ text: await getGranolaTranscript(context, id) }] : undefined,
+      },
+    };
+  },
+  async list_folders(input, context) {
+    const text = await callGranolaMcpTool(context, "list_meeting_folders", {});
+    const page = paginateGranolaMcp(parseGranolaFolders(text), input);
+    return { folders: page.items, hasMore: page.hasMore, cursor: page.nextCursor, nextCursor: page.nextCursor };
+  },
+  async list_meetings(_input, context) {
+    return { meetings: await listGranolaMeetings(context) };
+  },
+  async get_meetings(input, context) {
+    const ids = requiredStringArray(input.meeting_ids, "meeting_ids", providerInputError);
+    return { meetings: await getGranolaMeetings(context, ids) };
+  },
+  async get_meeting_transcript(input, context) {
+    const meetingId = requiredInputString(input.meeting_id, "meeting_id");
+    return { meeting_id: meetingId, transcript: await getGranolaTranscript(context, meetingId) };
+  },
 };
+
+async function listGranolaMeetings(context: OAuthProviderContext, folderId?: string): Promise<GranolaMeeting[]> {
+  const text = await callGranolaMcpTool(context, "list_meetings", { time_range: "last_30_days", folder_id: folderId });
+  return parseGranolaMeetings(text);
+}
+
+async function getGranolaMeetings(context: OAuthProviderContext, ids: string[]): Promise<GranolaMeeting[]> {
+  const text = await callGranolaMcpTool(context, "get_meetings", { meeting_ids: ids });
+  const meetings = parseGranolaMeetings(text);
+  const byId = new Map(meetings.map((meeting) => [meeting.id, meeting]));
+  if (meetings.length !== ids.length || ids.some((id) => !byId.has(id))) {
+    throw providerResponseError("Granola did not return every requested meeting.");
+  }
+  return ids.map((id) => byId.get(id)!);
+}
+
+async function getGranolaTranscript(context: OAuthProviderContext, meetingId: string): Promise<string> {
+  const text = await callGranolaMcpTool(context, "get_meeting_transcript", { meeting_id: meetingId });
+  return parseGranolaTranscript(text, meetingId);
+}
+
+interface GranolaMcpPage<T> {
+  items: T[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+function paginateGranolaMcp<T extends { id: string }>(items: T[], input: Record<string, unknown>): GranolaMcpPage<T> {
+  const cursor = optionalString(input.cursor);
+  let offset = 0;
+  if (cursor) {
+    const index = cursor.startsWith(granolaMcpCursorPrefix)
+      ? items.findIndex((item) => item.id === cursor.slice(granolaMcpCursorPrefix.length))
+      : -1;
+    if (index === -1) throw providerInputError("Invalid or expired Granola MCP cursor. Restart from the first page.");
+    offset = index + 1;
+  }
+  const pageSize = positiveInteger(input.page_size ?? 10, "page_size", providerInputError);
+  const page = items.slice(offset, offset + pageSize);
+  const hasMore = offset + page.length < items.length;
+  return { items: page, hasMore, nextCursor: hasMore ? `${granolaMcpCursorPrefix}${page.at(-1)!.id}` : null };
+}
+
+/** Read advertised tool schemas without inferring capabilities from the account's subscription. */
+export function listGranolaMcpTools(context: OAuthProviderContext, cursor?: string): Promise<Record<string, unknown>> {
+  return withGranolaClient(context, (client, signal) => client.listTools({ cursor }, { signal }));
+}
+
+/** Execute a Granola tool through the same authenticated MCP transport for actions and acquisition. */
+export function callGranolaMcpTool(
+  context: OAuthProviderContext,
+  name: string,
+  input: Record<string, unknown>,
+): Promise<string> {
+  return withGranolaClient(context, async (client, signal) => {
+    const result = await client.callTool({ name, arguments: input }, { signal });
+    if (result.isError) {
+      const message = looseArray(result.content)
+        .map((item) => optionalString(optionalRecord(item)?.text))
+        .filter(Boolean)
+        .join("\n");
+      throw new ProviderRequestError(502, `Granola MCP tool ${name} failed${message ? `: ${message}` : "."}`, result);
+    }
+    if (!Array.isArray(result.content) || result.content.length === 0)
+      throw providerResponseError("Granola MCP returned no content.");
+    return result.content
+      .map((item) => {
+        const block = requiredResponseRecord(item, "Granola MCP content");
+        if (block.type !== "text") throw providerResponseError("Granola MCP returned unsupported content.");
+        return requiredRawString(block.text, "Granola MCP text", providerResponseError);
+      })
+      .join("\n");
+  });
+}
 
 function withGranolaClient<T>(
   context: OAuthProviderContext,
@@ -44,7 +164,7 @@ function withGranolaClient<T>(
         endpoint: new URL(granolaMcpEndpoint),
         transport: "streamable_http",
         fetcher: context.fetcher,
-        headers: { authorization: `Bearer ${context.accessToken}` },
+        headers: { authorization: `Bearer ${context.accessToken}`, "user-agent": providerUserAgent },
         redirect: "manual",
         signal,
         maxResponseBytes: 16 * 1024 * 1024,

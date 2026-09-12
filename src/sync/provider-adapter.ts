@@ -4,7 +4,8 @@ import type { JsonObject } from "./sync-store.ts";
 import { SyncStoreError } from "./sync-store.ts";
 
 export interface SyncProvider {
-  graphql(query: string, variables?: JsonObject): Promise<JsonObject>;
+  /** Adapter-owned read operation; credentials never reach the acquisition definition. */
+  request(operation: string, input?: JsonObject): Promise<JsonObject>;
 }
 
 export interface SyncProviderContext {
@@ -30,11 +31,9 @@ export function createSyncProvider(options: SyncProviderOptions): SyncProvider {
     options.assertActive?.();
   };
   return {
-    async graphql(query, variables) {
-      if (!/^\s*query\b/.test(query) || /\b(mutation|subscription)\b/.test(query))
-        throw new SyncStoreError("invalid_input", "Sync GraphQL accepts queries only.");
+    async request(operation, input) {
       await assertPinned();
-      const result = await provider.graphql(query, variables);
+      const result = await provider.request(operation, input);
       await assertPinned();
       return result;
     },

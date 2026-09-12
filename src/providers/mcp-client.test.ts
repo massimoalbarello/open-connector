@@ -29,7 +29,7 @@ describe("MCP response limits", () => {
           },
           (client) => client.listTools(),
         ),
-      ).rejects.toThrow();
+      ).rejects.toThrow("size limit");
       expect(cancelled).toBe(true);
     },
   );
