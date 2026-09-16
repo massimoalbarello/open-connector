@@ -59,7 +59,9 @@ describe("headless runtime", () => {
     expect((await (await request("/v1/connections")).json()).data[0].id).toBe(connection.id);
     const docs = await request("/docs");
     expect(docs.status).toBe(200);
-    expect(await docs.text()).toContain(`${publicOrigin}/openapi.json`);
+    const reference = await docs.text();
+    expect(reference).toContain("/connector/openapi.json");
+    expect(reference).not.toContain(`${publicOrigin}/openapi.json`);
   });
 
   it("derives the provider callback from the host URL and honors the host return URI", async () => {
@@ -143,6 +145,7 @@ describe("headless runtime", () => {
   it("allows one active runtime and releases the slot on initialization failure or close", async () => {
     const options = await fixture();
     await expect(createConnectorRuntime({ ...options, publicOrigin: "file:///bad" })).rejects.toThrow("publicOrigin");
+    await expect(createConnectorRuntime({ ...options, transitFiles: { maxBytes: 0 } })).rejects.toThrow("maxBytes");
     runtime = await createConnectorRuntime(options);
     await expect(createConnectorRuntime(options)).rejects.toThrow("Only one");
     await runtime.close();

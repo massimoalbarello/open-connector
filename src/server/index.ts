@@ -12,6 +12,7 @@ import { registerStaticRoutes } from "./api/static-routes.ts";
 import { createConnectorRuntime } from "./connector-runtime.ts";
 import { logger } from "./logger.ts";
 import { resolveServerAssets } from "./server-assets.ts";
+import { createDirectoryMigrationSource } from "./storage/migration-source.ts";
 import { migratePostgresRuntimeDatabase, sqliteMigrationsNotice } from "./storage/node-runtime-database.ts";
 import { DEFAULT_RUN_LIMIT } from "./storage/runtime-store.ts";
 
@@ -64,8 +65,8 @@ async function main(): Promise<void> {
     publicOrigin,
     assets,
     encryptionKey: process.env.OOMOL_CONNECT_ENCRYPTION_KEY,
-    adminToken: process.env.OOMOL_CONNECT_ADMIN_TOKEN,
-    runtimeToken: process.env.OOMOL_CONNECT_RUNTIME_TOKEN,
+    adminToken: optionalEnv("OOMOL_CONNECT_ADMIN_TOKEN"),
+    runtimeToken: optionalEnv("OOMOL_CONNECT_RUNTIME_TOKEN"),
     jwt: {
       jwksUri: process.env.OOMOL_CONNECT_JWKS_URI,
       issuer: process.env.OOMOL_CONNECT_JWT_ISSUER,
@@ -121,7 +122,7 @@ async function main(): Promise<void> {
         logger.info({ url: `http://${hostname}:${info.port}` }, "connect server listening");
         logger.info({ dataDir }, "runtime data directory");
         logger.info({ backend: databaseUrl ? "postgresql" : "sqlite" }, "runtime database ready");
-        if (!process.env.OOMOL_CONNECT_ADMIN_TOKEN) {
+        if (!optionalEnv("OOMOL_CONNECT_ADMIN_TOKEN")) {
           logger.warn("local admin authentication is disabled; set OOMOL_CONNECT_ADMIN_TOKEN to require bearer tokens");
         }
         if (!runtime.runtimeAuthConfigured) {
@@ -168,7 +169,7 @@ async function runMigrateCommand(): Promise<void> {
     connectionString: databaseUrl,
     connectionTimeoutMs: databaseConnectTimeoutMs,
     logger,
-    migrations: assets.migrations,
+    migrations: createDirectoryMigrationSource(assets.migrationDirectory),
   });
 }
 
