@@ -216,10 +216,12 @@ export class ConnectServer {
         }),
       );
     });
-    if (this.options.serveDocumentation !== false)
-      app.get("/docs", async (context, next) =>
-        (await loadDocsHandler(`${this.options.publicOrigin}/openapi.json`))(context, next),
-      );
+    if (this.options.serveDocumentation !== false) {
+      // Path-only so the browser resolves it against whichever host it reached the server through: the public
+      // origin may name a different host (a default localhost origin, a reverse proxy) and /openapi.json sends no CORS.
+      const openapiUrl = `${new URL(this.options.publicOrigin).pathname.replace(/\/+$/, "")}/openapi.json`;
+      app.get("/docs", async (context, next) => (await loadDocsHandler(openapiUrl))(context, next));
+    }
 
     // Schema-free listing. The action detail view loads full schemas on demand
     // from /api/actions/:actionId. The catalog is immutable at runtime, so the

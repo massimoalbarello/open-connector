@@ -17,24 +17,35 @@ import { createConnectApp } from "./connect-app.ts";
 import { cleanupStagedTransitFiles, createNodeTransitFileUpload } from "./files/node-transit-file-upload.ts";
 import { TransitFileService } from "./files/transit-files.ts";
 import { createSecretCodec } from "./secrets/secret-codec.ts";
+import { isStandaloneExecutable } from "./server-assets.ts";
 import { createDirectoryMigrationSource } from "./storage/migration-source.ts";
 import { createNodeRuntimeDatabase } from "./storage/node-runtime-database.ts";
 import { DEFAULT_RUN_LIMIT } from "./storage/runtime-store.ts";
 
+/** Where the runtime reads its catalog and migrations from. The package default is its bundled assets directory. */
 export interface ConnectorAssets {
+  /** Directory of generated provider catalog JSON files. */
   catalogDir: string;
+  /** Schema-free startup index of `catalogDir`, or undefined when the generator did not write one. */
   catalogIndexFile?: string;
+  /** Directory of SQL migrations: `*.sql` for SQLite and `postgresql/*.sql` for PostgreSQL. */
   migrationDirectory: string;
 }
 
+/** Use PostgreSQL instead of the SQLite database under `dataDir`. */
 export interface ConnectorPostgresOptions {
   connectionString: string;
+  /** Connection pool size. */
   poolMax?: number;
+  /** Time allowed to establish one connection. */
   connectionTimeoutMs?: number;
 }
 
+/** Provider egress policy. It is process-wide, which is why one runtime may be active per process. */
 export interface ConnectorNetworkOptions {
+  /** Let self-hosted providers reach instance hosts on private networks; loopback, link-local and cloud metadata stay blocked. */
   allowPrivateNetwork?: boolean;
+  /** Hosts exempt from resolved-address validation, for domains a corporate VPN resolves to placeholder addresses. */
   trustedHosts?: readonly string[];
 }
 
@@ -42,8 +53,11 @@ export interface ConnectorS3Options extends S3TransitClientOptions {
   bucket: string;
 }
 
+/** Retention and size limit of the files exchanged with providers. */
 export interface ConnectorTransitFileOptions {
+  /** Lifetime of a transit file before cleanup. Defaults to one day. */
   ttlSeconds?: number;
+  /** Maximum upload size. Defaults to 100 MiB. */
   maxBytes?: number;
   /** Omit to store transit files under dataDir/files. */
   s3?: ConnectorS3Options;
@@ -51,22 +65,34 @@ export interface ConnectorTransitFileOptions {
 
 /** Explicit configuration for one Node.js or Bun runtime. Environment variables are owned by the host. */
 export interface ConnectorRuntimeOptions {
+  /** Writable directory for the SQLite database, local transit files and upload staging. */
   dataDir: string;
   /** External HTTP(S) URL, optionally including a mount path such as /connector. */
   publicOrigin: string;
+  /** Encrypts stored credentials, OAuth client configuration, pending OAuth state and replayed action responses. Omit to store them in plain text. */
   encryptionKey?: string;
+  /** Bearer token required for management requests such as connections, OAuth clients and policies. Omit to leave them open. */
   adminToken?: string;
+  /** Static bearer token for the /v1 and /mcp execution API. JWT verification and console-issued tokens are the alternatives. */
   runtimeToken?: string;
+  /** Verify /v1 bearer tokens as JWTs against a JWKS endpoint. */
   jwt?: RuntimeJwtConfig;
   postgres?: ConnectorPostgresOptions;
   network?: ConnectorNetworkOptions;
+  /** Allow or block actions and proxies by name. */
   actionPolicy?: ActionPolicyConfig;
+  /** Services, or `*`, whose connections may carry their own OAuth client instead of the configured one. */
   allowedCustomOAuth?: string[];
   transitFiles?: ConnectorTransitFileOptions;
+  /** Maximum number of recent action run records to retain. */
   runLimit?: number;
+  /** Read action JSON schemas from the catalog files on demand instead of holding them in memory. Defaults to true. */
   lazySchemas?: boolean;
+  /** Provider files whose action schemas stay cached while `lazySchemas` is on. */
   schemaCacheFiles?: number;
+  /** Override the bundled catalog and migrations. */
   assets?: ConnectorAssets;
+  /** Receives startup and request diagnostics. Omit for silence. */
   logger?: RuntimeLogger;
   /** The standalone host opts into API-reference HTML. Authorization completion pages are always available. */
   apiReference?: boolean;
@@ -84,8 +110,7 @@ let runtimeActive = false;
 
 /** Directory to include in a host's Bun compile.assets. Its basename keeps connector assets namespaced. */
 export function getConnectorAssetDirectory(): string {
-  const standalone = (globalThis as { Bun?: { isStandaloneExecutable?: boolean } }).Bun?.isStandaloneExecutable;
-  return standalone
+  return isStandaloneExecutable()
     ? join(import.meta.dirname, "open-connector")
     : fileURLToPath(new URL("../../assets/open-connector/", import.meta.url));
 }
@@ -117,6 +142,11 @@ async function openRuntime(options: ConnectorRuntimeOptions): Promise<ConnectorR
   const publicOrigin = `${publicUrl.origin}${mountPath}`;
   if (!options.dataDir.trim()) throw new Error("dataDir must not be empty.");
   const dataDir = resolve(options.dataDir);
+  const ttlSeconds = options.transitFiles?.ttlSeconds ?? 86400;
+  const maxBytes = options.transitFiles?.maxBytes ?? 100 * 1024 * 1024;
+  if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0)
+    throw new Error("transitFiles.ttlSeconds must be a positive number of seconds.");
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) throw new Error("transitFiles.maxBytes must be a positive number.");
   const assetDirectory = getConnectorAssetDirectory();
   const assets = options.assets ?? {
     catalogDir: join(assetDirectory, "catalog/apps"),
@@ -162,8 +192,6 @@ async function openRuntime(options: ConnectorRuntimeOptions): Promise<ConnectorR
   );
   let closeFiles = (): void => {};
   try {
-    const ttlSeconds = options.transitFiles?.ttlSeconds ?? 86400;
-    const maxBytes = options.transitFiles?.maxBytes ?? 100 * 1024 * 1024;
     let transitFiles: IStagedTransitFileService;
     if (options.transitFiles?.s3) {
       const { createS3TransitClient, S3TransitFileService } = await import("./files/s3-transit-files.ts");
