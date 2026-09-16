@@ -28,6 +28,9 @@ describe("headless runtime", () => {
     expect((await request("/v1/health", undefined, "runtime-token")).status).toBe(200);
     expect((await request("/")).status).toBe(404);
     expect((await request("/docs")).status).toBe(404);
+    const missing = await request("/api/nope");
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: { code: "not_found", message: "Not found." } });
     expect((await runtime.fetch(new Request("https://host.example/unrelated"))).status).toBe(404);
     expect((await request("/v1/connections", undefined, "runtime-token")).status).toBe(401);
 
