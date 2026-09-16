@@ -1,21 +1,14 @@
-import type { MigrationSource } from "./storage/migration-source.ts";
+import type { ConnectorAssets } from "./connector-runtime.ts";
 
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { catalogIndexFileName } from "../catalog-index.ts";
-import { createDirectoryMigrationSource, defaultMigrationSource } from "./storage/migration-source.ts";
 
 /**
  * Locations of the assets that are generated or built outside `src` and read
- * by the server at startup.
+ * by the server at startup: the runtime's catalog and migrations plus the web console.
  */
-export interface ServerAssets {
-  /** Directory of generated provider catalog JSON files. */
-  catalogDir: string;
-  /** Schema-free startup index of `catalogDir`, or undefined when the generator did not write one. */
-  catalogIndexFile: string | undefined;
-  migrations: MigrationSource;
-  migrationDirectory: string;
+export interface ServerAssets extends ConnectorAssets {
   /** Built web console directory, or undefined when the console is not built (index.html missing). */
   staticRoot: string | undefined;
   /**
@@ -42,7 +35,6 @@ export async function resolveServerAssets(): Promise<ServerAssets> {
     return {
       catalogDir: join(root, "apps"),
       catalogIndexFile: await resolveExistingFile(join(root, catalogIndexFileName)),
-      migrations: createDirectoryMigrationSource(join(root, "migrations")),
       migrationDirectory: join(root, "migrations"),
       staticRoot: await resolveStaticRoot(join(root, "web")),
       embedded: true,
@@ -53,7 +45,6 @@ export async function resolveServerAssets(): Promise<ServerAssets> {
   return {
     catalogDir: join(cwd, "catalog/apps"),
     catalogIndexFile: await resolveExistingFile(join(cwd, "catalog", catalogIndexFileName)),
-    migrations: defaultMigrationSource,
     migrationDirectory: join(import.meta.dirname, "../../migrations"),
     staticRoot: await resolveStaticRoot(join(cwd, "dist/web")),
     embedded: false,
@@ -61,7 +52,7 @@ export async function resolveServerAssets(): Promise<ServerAssets> {
 }
 
 /** Only Bun defines the `Bun` global; Node and workerd never do, so the read is safe everywhere. */
-function isStandaloneExecutable(): boolean {
+export function isStandaloneExecutable(): boolean {
   return (globalThis as { Bun?: { isStandaloneExecutable?: boolean } }).Bun?.isStandaloneExecutable === true;
 }
 
