@@ -1568,27 +1568,46 @@ function connectionManagementPaths(): Record<string, unknown> {
       updatedAt: jsonSchema.number(),
     },
   );
-  const field = jsonSchema.looseObject("One input a connection or OAuth client form asks for.", {
+  const field = jsonSchema.object("One input a connection or OAuth client form asks for.", {
     key: jsonSchema.string(),
     label: jsonSchema.string(),
-    inputType: jsonSchema.string("Form control hint, such as text or password."),
+    inputType: jsonSchema.stringEnum("Suggested form control.", ["text", "password", "textarea", "json"]),
     required: jsonSchema.boolean(),
     secret: jsonSchema.boolean("Whether the value is stored as a secret and never returned."),
+    placeholder: jsonSchema.optional(jsonSchema.string("Input placeholder.")),
+    description: jsonSchema.optional(jsonSchema.string("Where the user obtains this value.")),
     location: jsonSchema.optional(
       jsonSchema.stringEnum(
         "Request object an OAuth client field is submitted in; absent for clientId and clientSecret.",
         ["extra", "secretExtra"],
       ),
     ),
+    defaultValue: jsonSchema.optional(jsonSchema.string("Value applied when an OAuth client field is omitted.")),
+  });
+  const authorizationOption = jsonSchema.object("One selectable authorization option.", {
+    id: jsonSchema.string(),
+    label: jsonSchema.string(),
+    description: jsonSchema.string(),
+    required: jsonSchema.boolean(),
+    defaultSelected: jsonSchema.boolean(),
+    risk: jsonSchema.stringEnum("How much access the option grants.", ["standard", "sensitive", "destructive"]),
+    requires: jsonSchema.optional(jsonSchema.stringArray("Option ids that must be selected together with this one.")),
   });
   const setup = jsonSchema.object("Setup requirements and OAuth client state for one provider, without saved values.", {
     service: jsonSchema.string(),
     auth: jsonSchema.array(
-      jsonSchema.looseObject("One supported credential type with its form metadata.", {
+      jsonSchema.object("One supported credential type with its form metadata.", {
         type: jsonSchema.stringEnum("Credential type.", ["no_auth", "api_key", "custom_credential", "oauth2"]),
         fields: jsonSchema.optional(jsonSchema.array(field)),
         clientFields: jsonSchema.optional(jsonSchema.array(field)),
+        clientSetup: jsonSchema.optional(
+          jsonSchema.object("How to register the provider OAuth app.", {
+            docsUrl: jsonSchema.optional(jsonSchema.string("Provider page where the OAuth app is registered.")),
+            steps: jsonSchema.stringArray("Ordered setup steps."),
+          }),
+        ),
         scopes: jsonSchema.optional(jsonSchema.stringArray("Provider scopes the connector requests.")),
+        authorizationOptions: jsonSchema.optional(jsonSchema.array(authorizationOption)),
       }),
     ),
     oauthClient: jsonSchema.optional(
