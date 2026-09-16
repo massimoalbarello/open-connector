@@ -206,6 +206,7 @@ export class ActionRunner {
     const context: ExecutionContext = {
       getCredential,
       signal,
+      logger: this.options.logger,
     };
     if (this.options.transitFiles) {
       context.transitFiles = this.options.transitFiles;

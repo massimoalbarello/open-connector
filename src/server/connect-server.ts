@@ -269,7 +269,9 @@ export class ConnectServer {
     app.delete("/mcp", (context) => this.rejectMcpMethod(context));
     app.get("/mcp/tools", async (context) => context.json({ tools: (await loadMcpModule()).listMcpToolSummaries() }));
 
-    this.options.registerStaticRoutes?.(app);
+    // Without a console the API owns every unknown path; a console host layers its fallback over these 404s.
+    if (this.options.registerStaticRoutes) this.options.registerStaticRoutes(app);
+    else app.notFound(notFound);
     app.onError((error, context) => {
       if (error instanceof HttpRequestError) {
         if (context.req.path.startsWith("/v1/")) {
