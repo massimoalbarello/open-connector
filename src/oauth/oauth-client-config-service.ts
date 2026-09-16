@@ -86,12 +86,22 @@ export class OAuthClientConfigService {
   async listConfigs(): Promise<OAuthClientConfigSummary[]> {
     const configured = new Map((await this.store.list()).map((config) => [config.service, config]));
     return this.listOAuthProviders()
-      .map((provider) => this.toSummary(provider.service, provider.auth, configured.get(provider.service)))
+      .map((provider) =>
+        this.toSummary(
+          provider.service,
+          provider.auth,
+          normalizeStoredOAuthClientConfig(configured.get(provider.service)),
+        ),
+      )
       .sort((left, right) => Number(right.configured) - Number(left.configured));
   }
 
   async getSummary(service: string): Promise<OAuthClientConfigSummary> {
-    return this.toSummary(service, this.getOAuthDefinition(service), await this.store.get(service));
+    return this.toSummary(
+      service,
+      this.getOAuthDefinition(service),
+      normalizeStoredOAuthClientConfig(await this.store.get(service)),
+    );
   }
 
   async getConfig(service: string): Promise<OAuthClientConfig | undefined> {

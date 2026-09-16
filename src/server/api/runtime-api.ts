@@ -174,6 +174,15 @@ export function unknownActionFailure(actionId: string): RuntimeFailureInput {
   };
 }
 
+export function unknownServiceFailure(service: string): RuntimeFailureInput {
+  return {
+    status: 404,
+    errorCode: "unknown_service",
+    message: `Unknown service: ${service}.`,
+    meta: { service },
+  };
+}
+
 /** Build a runtime failure response without writing it to the HTTP context. */
 export function serializeRuntimeFailure(input: RuntimeFailureInput): RuntimeActionHttpResult {
   const body: RuntimeFailureEnvelope = {

@@ -50,6 +50,7 @@ import {
   serializeRuntimeProvider,
   serializeRuntimeProviderSetup,
   unknownActionFailure,
+  unknownServiceFailure,
   writeRuntimeActionHttpResult,
   writeRuntimeFailure,
   writeRuntimeSuccess,
@@ -350,12 +351,7 @@ export class ConnectServer {
 
   private async getRuntimeProviderSetup(context: Context, service: string): Promise<Response> {
     const provider = this.options.catalog.providers.find((provider) => provider.service === service);
-    if (!provider)
-      return writeRuntimeFailure(context, {
-        status: 404,
-        errorCode: "unknown_service",
-        message: `Unknown service: ${service}.`,
-      });
+    if (!provider) return writeRuntimeFailure(context, unknownServiceFailure(service));
     const oauth = provider.auth.some((auth) => auth.type === "oauth2")
       ? await this.options.oauthClientConfigs.getSummary(service)
       : undefined;

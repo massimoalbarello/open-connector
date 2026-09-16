@@ -65,6 +65,36 @@ describe("OAuthClientConfigService", () => {
     expect(JSON.stringify(saved)).not.toContain("saved-secret");
   });
 
+  it("reports a required secretExtra field as missing on a stored config that predates secretExtra", async () => {
+    const provider = oauthProvider("legacy");
+    const auth = provider.auth[0]!;
+    if (auth.type !== "oauth2") throw new Error("Expected OAuth fixture");
+    auth.clientConfigFields = [
+      {
+        key: "developerToken",
+        label: "Developer token",
+        inputType: "password",
+        required: true,
+        secret: true,
+        location: "secretExtra",
+      },
+    ];
+    const store = new MemoryOAuthClientConfigStore();
+    await store.set({
+      service: provider.service,
+      clientId: "client",
+      clientSecret: "secret",
+      extra: {},
+    } as OAuthClientConfig);
+    const service = new OAuthClientConfigService({
+      catalog: createCatalogStore([provider]),
+      origin: "http://localhost:3000",
+      store,
+    });
+    expect((await service.getSummary(provider.service)).missingFields).toEqual(["developerToken"]);
+    expect((await service.listConfigs()).map((config) => config.missingFields)).toEqual([["developerToken"]]);
+  });
+
   it("normalizes a requested scope subset and rejects provider-undeclared scopes", () => {
     const service = new OAuthClientConfigService({
       catalog: createCatalogStore([oauthProvider("example")]),
