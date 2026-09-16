@@ -78,7 +78,8 @@ jobs:
           node-version: "24"
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      - run: npm install --global npm@11
+      # Lifecycle scripts must not run in the job that holds the OIDC token.
+      - run: npm install --global --ignore-scripts npm@11
       - uses: actions/download-artifact@v8
         with:
           name: headless-package
