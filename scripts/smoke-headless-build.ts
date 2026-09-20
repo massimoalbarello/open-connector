@@ -49,6 +49,12 @@ try {
       await prepared.dispose();
     }
     if (providers !== undefined) await assert.rejects(readdir(prepared.assets[0]!));
+    // Bun 1.4.0 writes an ad-hoc signature that macOS 27 refuses to start (oven-sh/bun#39837); re-sign it in place
+    // like scripts/build-binary.ts does so the smoke also runs on a macOS checkout.
+    if (process.platform === "darwin") {
+      const signed = Bun.spawnSync(["codesign", "--force", "--sign", "-", outfile], { stderr: "inherit" });
+      assert.ok(signed.success, `codesign failed with exit code ${signed.exitCode}`);
+    }
     const child = Bun.spawn([outfile, JSON.stringify(expected)], {
       cwd: execution,
       stdout: "inherit",

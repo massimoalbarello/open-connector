@@ -5,8 +5,6 @@ import { join } from "node:path";
 import { catalogIndexFileName } from "../catalog-index.ts";
 import { isStandaloneExecutable } from "./connector-assets.ts";
 
-export { isStandaloneExecutable } from "./connector-assets.ts";
-
 /**
  * Locations of the assets that are generated or built outside `src` and read
  * by the server at startup: the runtime's catalog and migrations plus the web console.
