@@ -31,10 +31,7 @@ describe.each(["action", "proxy"])("Gmail %s errors", (path) => {
     vi.stubGlobal("fetch", async () =>
       Response.json(
         { error: { code: 999, message: "Request rejected", errors: [{ reason }], credentials: "secret-token" } },
-        {
-          status,
-          headers: { "Retry-After": "Mon, 21 Sep 2026 12:00:00 GMT", "set-cookie": "secret-cookie" },
-        },
+        { status },
       ),
     );
     const result =
@@ -43,7 +40,7 @@ describe.each(["action", "proxy"])("Gmail %s errors", (path) => {
         : await proxy({ method: "GET", endpoint: "/users/me/profile" }, credentialContext);
     expect(result).toMatchObject({
       ok: false,
-      error: { code, details: { status, reason, headers: { "retry-after": "Mon, 21 Sep 2026 12:00:00 GMT" } } },
+      error: { code, details: { status } },
     });
     expect(JSON.stringify(result)).not.toContain("secret");
   });
@@ -56,15 +53,12 @@ describe.each(["action", "proxy"])("Gmail %s errors", (path) => {
     JSON.stringify({ error: { message: "rateLimitExceeded appears only in prose", errors: [] } }),
     "x".repeat(65 * 1024),
   ])("does not infer quotas from malformed or unrecognized payloads %#", async (body) => {
-    vi.stubGlobal("fetch", async () => new Response(body, { status: 403, headers: { "Retry-After": "" } }));
+    vi.stubGlobal("fetch", async () => new Response(body, { status: 403 }));
     const result =
       path === "action"
         ? await executors["gmail.get_profile"]!({}, credentialContext)
         : await proxy({ method: "GET", endpoint: "/users/me/profile" }, credentialContext);
     expect(result).toMatchObject({ ok: false, error: { code: "authorization_failed", details: { status: 403 } } });
-    if (result.ok) throw new Error("Expected failure");
-    expect(result.error?.details).not.toHaveProperty("reason", expect.any(String));
-    expect(result.error?.details).not.toHaveProperty("headers", expect.any(Object));
     expect(JSON.stringify(result)).not.toContain("secret");
   });
 });

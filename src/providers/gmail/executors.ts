@@ -1126,16 +1126,6 @@ const gmailQuotaReasons = new Set([
   "dailyLimitExceeded",
   "quotaExceeded",
 ]);
-const gmailErrorReasons = new Set([
-  ...gmailQuotaReasons,
-  "authError",
-  "forbidden",
-  "insufficientPermissions",
-  "domainPolicy",
-  "badRequest",
-  "notFound",
-  "backendError",
-]);
 
 async function readGmailError(response: Response): Promise<ProviderRequestError> {
   const text = await readProviderErrorTextBody(response, "gmail error response");
@@ -1145,17 +1135,15 @@ async function readGmailError(response: Response): Promise<ProviderRequestError>
   } catch {
     // A malformed response must not expose its raw body or change status classification.
   }
-  const reasons = looseArray(error?.errors)
-    .map((entry) => optionalString(optionalRecord(entry)?.reason))
-    .filter((reason): reason is string => reason !== undefined && gmailErrorReasons.has(reason));
-  const reason = reasons.find((value) => gmailQuotaReasons.has(value)) ?? reasons[0];
-  const code =
-    response.status === 403 && reason !== undefined && gmailQuotaReasons.has(reason) ? "rate_limited" : undefined;
+  const rateLimited =
+    response.status === 403 &&
+    looseArray(error?.errors).some((entry) =>
+      gmailQuotaReasons.has(optionalString(optionalRecord(entry)?.reason) ?? ""),
+    );
   return new ProviderRequestError(
     response.status,
     optionalString(error?.message) ?? `gmail request failed with ${response.status}`,
     undefined,
-    code,
-    { headers: response.headers, reason },
+    rateLimited ? "rate_limited" : undefined,
   );
 }

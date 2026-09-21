@@ -24,7 +24,6 @@ import {
 } from "../core/cast.ts";
 import { createGuardedFetch } from "../core/guarded-fetch.ts";
 import { readBoundedResponseBytes } from "../core/request.ts";
-import { readRetryAfterHeader } from "../core/retry-after.ts";
 
 /**
  * Fetch-compatible function accepted by provider runtime helpers and tests.
@@ -259,29 +258,19 @@ export interface ProviderInputFile {
   sizeBytes: number;
 }
 
-/** Safe response metadata carried alongside the existing provider error details. */
-interface ProviderResponseMetadata {
-  headers?: Headers;
-  /** A provider-owned allowlisted reason, never arbitrary response content. */
-  reason?: string;
-}
-
-/** Error raised for provider API responses and mapped to stable execution errors. */
+/**
+ * Error raised for provider API responses and mapped to stable execution errors.
+ */
 export class ProviderRequestError extends Error {
   readonly status: number;
   readonly details?: unknown;
   readonly code?: string;
-  readonly headers?: Record<string, string>;
-  readonly reason?: string;
 
-  constructor(status: number, message: string, details?: unknown, code?: string, metadata?: ProviderResponseMetadata) {
+  constructor(status: number, message: string, details?: unknown, code?: string) {
     super(message);
     this.status = status;
     this.details = details;
     this.code = code;
-    const retryAfter = readRetryAfterHeader(metadata?.headers?.get("retry-after"));
-    this.headers = retryAfter === undefined ? undefined : { "retry-after": retryAfter };
-    this.reason = metadata?.reason;
   }
 }
 
@@ -704,11 +693,7 @@ export function defineProviderProxy(input: ProviderProxyDefinition): ProviderPro
           }
           throw new ProviderRequestError(
             response.status,
-            (await readProviderErrorTextBody(response, "proxy error response")) ||
-              `provider request failed with HTTP ${response.status}`,
-            undefined,
-            undefined,
-            { headers: response.headers },
+            await readProviderProxyErrorMessage(response, `provider request failed with HTTP ${response.status}`),
           );
         }
 
@@ -1094,9 +1079,7 @@ export async function readProviderJson<T>(response: Response, source: string): P
   }
 
   const text = await readProviderErrorTextBody(response, `${source} error response`);
-  throw new ProviderRequestError(response.status, text || `${source} request failed`, undefined, undefined, {
-    headers: response.headers,
-  });
+  throw new ProviderRequestError(response.status, text || `${source} request failed`);
 }
 
 export interface ReadProviderJsonBodyOptions {
@@ -1263,8 +1246,6 @@ export function toProviderExecutionError(error: unknown, fallbackMessage: string
         details: {
           status: error.status,
           details: error.details,
-          headers: error.headers,
-          reason: error.reason,
         },
       },
     };
