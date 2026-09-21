@@ -292,11 +292,6 @@ stored credentials local and lets the provider proxy executor apply provider-spe
 Successful responses use the standard `/v1` success envelope with `data.status`, `data.headers`, and
 `data.data`.
 
-Gmail actions and proxies classify HTTP 403 responses with structured `rateLimitExceeded`,
-`userRateLimitExceeded`, `dailyLimitExceeded`, or `quotaExceeded` reasons as `rate_limited`.
-The runtime returns HTTP 429 while preserving the upstream status as `data.status: 403`.
-Other Gmail 403s remain `authorization_failed`; classification does not inspect message text.
-
 Most proxies run under the same 30 second per-request budget as actions, covering the upstream request
 and the response body read. A provider that does not answer in time returns HTTP 500 with `errorCode`
 `provider_error` and `data.status` 504. A minority of providers ship a hand-written proxy that keeps
