@@ -24,7 +24,7 @@ import {
 } from "../core/cast.ts";
 import { createGuardedFetch } from "../core/guarded-fetch.ts";
 import { readBoundedResponseBytes } from "../core/request.ts";
-import { parseRetryAfter } from "../core/retry-after.ts";
+import { readRetryAfterHeader } from "../core/retry-after.ts";
 
 /**
  * Fetch-compatible function accepted by provider runtime helpers and tests.
@@ -279,7 +279,7 @@ export class ProviderRequestError extends Error {
     this.status = status;
     this.details = details;
     this.code = code;
-    const retryAfter = parseRetryAfter(metadata?.headers?.get("retry-after"));
+    const retryAfter = readRetryAfterHeader(metadata?.headers?.get("retry-after"));
     this.headers = retryAfter === undefined ? undefined : { "retry-after": retryAfter };
     this.reason = metadata?.reason;
   }

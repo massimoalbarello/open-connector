@@ -99,7 +99,7 @@ describe("runtime connected apps", () => {
 });
 
 describe("runtime action HTTP results", () => {
-  it.each(["60", "Mon, 21 Sep 2026 12:00:00 GMT"])(
+  it.each(["60", "Mon, 21 Sep 2026 12:00:00 GMT", "2026-09-21T12:00:00Z", "1790000000", "1790000000000"])(
     "restores Retry-After %s after JSON persistence",
     async (retryAfter) => {
       const serialized = serializeRuntimeActionResult({
@@ -127,7 +127,7 @@ describe("runtime action HTTP results", () => {
     },
   );
 
-  it.each([undefined, "invalid", "60\r\nset-cookie: secret"])(
+  it.each([undefined, "", "60\r\nset-cookie: secret"])(
     "does not emit unsafe cooldowns from stored failures %#",
     async (value) => {
       const result = serializeRuntimeFailure({

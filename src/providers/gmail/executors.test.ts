@@ -56,7 +56,7 @@ describe.each(["action", "proxy"])("Gmail %s errors", (path) => {
     JSON.stringify({ error: { message: "rateLimitExceeded appears only in prose", errors: [] } }),
     "x".repeat(65 * 1024),
   ])("does not infer quotas from malformed or unrecognized payloads %#", async (body) => {
-    vi.stubGlobal("fetch", async () => new Response(body, { status: 403, headers: { "Retry-After": "invalid" } }));
+    vi.stubGlobal("fetch", async () => new Response(body, { status: 403, headers: { "Retry-After": "" } }));
     const result =
       path === "action"
         ? await executors["gmail.get_profile"]!({}, credentialContext)

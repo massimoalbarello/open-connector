@@ -294,9 +294,11 @@ Successful responses use the standard `/v1` success envelope with `data.status`,
 
 Action and proxy failures keep the upstream HTTP status in `data.status`; the runtime HTTP status
 continues to follow `errorCode` (for example, `rate_limited` returns HTTP 429). When available,
-`data.headers["retry-after"]` contains the upstream delay-seconds or IMF-fixdate value, also sent as
-the HTTP `Retry-After` header. Missing or malformed values are omitted. Only this response header is
-copied into failure metadata. Action idempotency replay preserves both the JSON value and HTTP
+`data.headers["retry-after"]` preserves the upstream value, also sent as the HTTP `Retry-After`
+header. Empty values, values over 128 characters, and non-printable/non-ASCII values are omitted.
+Only this response header is copied into failure metadata. The runtime does not interpret dates or
+numeric units; consumers should follow HTTP delay-seconds/HTTP-date semantics unless their provider
+documents another format. Action idempotency replay preserves both the JSON value and HTTP
 header exactly; replay does not recalculate a relative delay or make another provider request.
 
 Gmail actions and proxies expose an allowlisted `data.reason` from `error.errors[].reason`.
