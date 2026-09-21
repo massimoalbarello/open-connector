@@ -98,6 +98,49 @@ describe("runtime connected apps", () => {
 });
 
 describe("runtime action HTTP results", () => {
+  it.each(["60", "Mon, 21 Sep 2026 12:00:00 GMT"])(
+    "restores Retry-After %s after JSON persistence",
+    async (retryAfter) => {
+      const serialized = serializeRuntimeActionResult({
+        actionId: "gmail.get_profile",
+        executionId: "execution-1",
+        auditPersisted: true,
+        result: {
+          ok: false,
+          error: {
+            code: "rate_limited",
+            message: "Quota exceeded",
+            details: { status: 403, reason: "userRateLimitExceeded", headers: { "retry-after": retryAfter } },
+          },
+        },
+      });
+      const persisted = parseRuntimeActionHttpResult(JSON.parse(JSON.stringify(serialized)));
+      const app = new Hono().get("/", (context) => writeRuntimeActionHttpResult(context, persisted));
+      const response = await app.request("/");
+      expect(response.status).toBe(429);
+      expect(response.headers.get("retry-after")).toBe(retryAfter);
+      await expect(response.json()).resolves.toMatchObject({
+        errorCode: "rate_limited",
+        data: { status: 403, reason: "userRateLimitExceeded", headers: { "retry-after": retryAfter } },
+      });
+    },
+  );
+
+  it.each([undefined, "invalid", "60\r\nset-cookie: secret"])(
+    "does not emit unsafe cooldowns from stored failures %#",
+    async (value) => {
+      const result = serializeRuntimeFailure({
+        status: 429,
+        errorCode: "rate_limited",
+        message: "Busy",
+        data: { headers: { "retry-after": value, "set-cookie": "secret" } },
+      });
+      const app = new Hono().get("/", (context) => writeRuntimeActionHttpResult(context, result));
+      const response = await app.request("/");
+      expect(response.headers.has("retry-after")).toBe(false);
+      expect(response.headers.has("set-cookie")).toBe(false);
+    },
+  );
   it("serializes a successful execution without changing its wire shape", () => {
     expect(
       serializeRuntimeActionResult({

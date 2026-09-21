@@ -2971,48 +2971,70 @@ describe("ConnectServer", () => {
     expect(executions).toBe(1);
   });
 
-  it("replays terminal action failures for an idempotency key", async () => {
-    let executions = 0;
-    const providerLoader = new ActionProviderLoader(async (_input, context) => {
-      executions += 1;
-      await context.getCredential("example");
-      return {
-        ok: false,
-        error: { code: "provider_error", message: "Provider rejected the request." },
-      };
-    });
-    const app = createTestServer(
-      [
-        {
-          ...apiKeyProvider,
-          actions: [echoAction],
+  it.each([
+    { code: "provider_error", status: 500, details: undefined, retryAfter: null },
+    {
+      code: "rate_limited",
+      status: 429,
+      details: { status: 403, reason: "userRateLimitExceeded", headers: { "retry-after": "60" } },
+      retryAfter: "60",
+    },
+    {
+      code: "provider_error",
+      status: 500,
+      details: { status: 503, headers: { "retry-after": "Mon, 21 Sep 2026 12:00:00 GMT" } },
+      retryAfter: "Mon, 21 Sep 2026 12:00:00 GMT",
+    },
+  ])(
+    "replays $code action failures and cooldowns for an idempotency key",
+    async ({ code, status, details, retryAfter }) => {
+      const database = new SqliteRuntimeDatabase(":memory:");
+      requestDatabases.push(database);
+      let executions = 0;
+      const providerLoader = new ActionProviderLoader(async (_input, context) => {
+        executions += 1;
+        await context.getCredential("example");
+        return {
+          ok: false,
+          error: { code, message: "Provider rejected the request.", details },
+        };
+      });
+      const app = createTestServer(
+        [
+          {
+            ...apiKeyProvider,
+            actions: [echoAction],
+          },
+        ],
+        { providerLoader, idempotency: database.idempotencyStore },
+      ).createApp();
+
+      await app.request("/api/connections/example", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ authType: "api_key", values: { apiKey: "example-key" } }),
+      });
+      const request = {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "request-failure",
         },
-      ],
-      { providerLoader },
-    ).createApp();
+        body: JSON.stringify({ input: { message: "hello" } }),
+      };
+      const first = await app.request("/v1/actions/example.echo", request);
+      const firstBody = await first.json();
+      const replay = await app.request("/v1/actions/example.echo", request);
 
-    await app.request("/api/connections/example", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ authType: "api_key", values: { apiKey: "example-key" } }),
-    });
-    const request = {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "idempotency-key": "request-failure",
-      },
-      body: JSON.stringify({ input: { message: "hello" } }),
-    };
-    const first = await app.request("/v1/actions/example.echo", request);
-    const firstBody = await first.json();
-    const replay = await app.request("/v1/actions/example.echo", request);
-
-    expect(first.status).toBe(500);
-    expect(replay.status).toBe(500);
-    await expect(replay.json()).resolves.toEqual(firstBody);
-    expect(executions).toBe(1);
-  });
+      expect(first.status).toBe(status);
+      expect(replay.status).toBe(status);
+      expect(firstBody).toMatchObject({ errorCode: code, data: details ?? null });
+      expect(first.headers.get("retry-after")).toBe(retryAfter);
+      expect(replay.headers.get("retry-after")).toBe(retryAfter);
+      await expect(replay.json()).resolves.toEqual(firstBody);
+      expect(executions).toBe(1);
+    },
+  );
 
   it("replays audited internal failures instead of retrying them", async () => {
     let executions = 0;
@@ -3429,32 +3451,51 @@ describe("ConnectServer", () => {
     });
   });
 
-  it("maps provider proxy failures to stable v1 envelopes", async () => {
-    const app = createTestServer([apiKeyProvider], {
-      providerLoader: new ProxyProviderLoader(async () => ({
-        ok: false,
-        error: {
-          code: "authorization_failed",
-          message: "Provider rejected the credential.",
-          details: { status: 401 },
-        },
-      })),
-    }).createApp();
+  it.each([
+    { code: "authorization_failed", status: 403, details: { status: 401 }, retryAfter: null },
+    {
+      code: "rate_limited",
+      status: 429,
+      details: { status: 403, reason: "userRateLimitExceeded", headers: { "retry-after": "60" } },
+      retryAfter: "60",
+    },
+    { code: "rate_limited", status: 429, details: { status: 429, headers: { "retry-after": "30" } }, retryAfter: "30" },
+    {
+      code: "provider_error",
+      status: 500,
+      details: { status: 503, headers: { "retry-after": "Mon, 21 Sep 2026 12:00:00 GMT" } },
+      retryAfter: "Mon, 21 Sep 2026 12:00:00 GMT",
+    },
+  ])(
+    "maps $code proxy failures to stable v1 envelopes and cooldown headers",
+    async ({ code, status, details, retryAfter }) => {
+      const app = createTestServer([apiKeyProvider], {
+        providerLoader: new ProxyProviderLoader(async () => ({
+          ok: false,
+          error: {
+            code,
+            message: "Provider rejected the credential.",
+            details,
+          },
+        })),
+      }).createApp();
 
-    const response = await app.request("/v1/proxy/example", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ endpoint: "/items", method: "GET" }),
-    });
+      const response = await app.request("/v1/proxy/example", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ endpoint: "/items", method: "GET" }),
+      });
 
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({
-      success: false,
-      errorCode: "authorization_failed",
-      message: "Provider rejected the credential.",
-      data: { status: 401 },
-    });
-  });
+      expect(response.status).toBe(status);
+      expect(response.headers.get("retry-after")).toBe(retryAfter);
+      await expect(response.json()).resolves.toMatchObject({
+        success: false,
+        errorCode: code,
+        message: "Provider rejected the credential.",
+        data: details,
+      });
+    },
+  );
 
   it("uploads, serves, and deletes local transit files", async () => {
     const rootDir = await createTempDir();

@@ -29,6 +29,15 @@ afterEach(() => {
 });
 
 describe("ProviderRequestError", () => {
+  it("exposes only Retry-After from upstream response headers", () => {
+    const error = new ProviderRequestError(503, "Unavailable", undefined, undefined, {
+      headers: new Headers({ "Retry-After": "120", "set-cookie": "secret", authorization: "secret" }),
+    });
+    expect(toProviderExecutionError(error, "failed")).toMatchObject({
+      error: { code: "provider_error", details: { status: 503, headers: { "retry-after": "120" } } },
+    });
+    expect(JSON.stringify(toProviderExecutionError(error, "failed"))).not.toContain("secret");
+  });
   it("keeps provider error codes on the shared request error", () => {
     const error = new ProviderRequestError(429, "Provider quota exhausted", { retryAfter: 30 }, "rate_limited");
 
@@ -65,6 +74,11 @@ describe("toProviderExecutionError", () => {
 });
 
 describe("readProviderJson", () => {
+  it("keeps cooldown metadata on shared action failures", async () => {
+    await expect(
+      readProviderJson(new Response("Unavailable", { status: 503, headers: { "Retry-After": "60" } }), "provider"),
+    ).rejects.toMatchObject({ status: 503, headers: { "retry-after": "60" } });
+  });
   it("includes bounded non-ok response text in provider errors", async () => {
     await expect(readProviderJson(new Response('{"error":"nope"}', { status: 400 }), "provider")).rejects.toMatchObject(
       {
@@ -399,6 +413,38 @@ function stubFetchSequence(responses: Response[]): Array<{ url: string; init: Re
 }
 
 describe("provider egress SSRF guard", () => {
+  it("preserves status and cooldown when a proxy error body exceeds its read limit", async () => {
+    stubFetchSequence([new Response("x".repeat(65 * 1024), { status: 429, headers: { "Retry-After": "60" } })]);
+    const proxy = defineProviderProxy({
+      service: "test_service",
+      baseUrl: "https://api.example.com",
+      auth: { type: "bearer" },
+    });
+    await expect(proxy({ method: "GET", endpoint: "/items" }, executionContext)).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "rate_limited",
+        message: "provider request failed with HTTP 429",
+        details: { status: 429, headers: { "retry-after": "60" } },
+      },
+    });
+  });
+  it("keeps cooldown metadata on shared proxy failures", async () => {
+    stubFetchSequence([
+      new Response("Busy", { status: 429, headers: { "Retry-After": "60", "set-cookie": "secret" } }),
+    ]);
+    const proxy = defineProviderProxy({
+      service: "test_service",
+      baseUrl: "https://api.example.com",
+      auth: { type: "bearer" },
+    });
+    const result = await proxy({ method: "GET", endpoint: "/items" }, executionContext);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "rate_limited", details: { status: 429, headers: { "retry-after": "60" } } },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
   it("does not fetch when a proxy endpoint escapes its provider origin", async () => {
     const calls = stubFetchSequence([]);
     const proxy = defineProviderProxy({

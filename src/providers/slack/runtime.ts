@@ -10,6 +10,7 @@ import {
   defineProviderExecutors,
   isAbortLikeError,
   ProviderRequestError,
+  readProviderErrorTextBody,
   providerUserAgent,
   requireOAuthCredential,
 } from "../provider-runtime.ts";
@@ -642,7 +643,7 @@ async function slackUploadFile(input: Record<string, unknown>, context: SlackAct
 
   const uploadUrl = requiredString(uploadUrlPayload.upload_url, "file.upload_url", slackResponseError);
   const fileId = requiredString(uploadUrlPayload.file_id, "file.file_id", slackResponseError);
-  await uploadSlackFileContent(uploadUrl, filename, content, optionalString(input.mimeType), context);
+  await uploadSlackFileContent(uploadUrl, content, optionalString(input.mimeType), context);
 
   const completePayload = await slackFormRequestJson<{
     ok: boolean;
@@ -768,11 +769,11 @@ async function slackFormRequestJson<T extends SlackPayloadError>(
 }
 
 async function readSlackResponseJson<T extends SlackPayloadError>(response: Response): Promise<T> {
-  const payload = (await response.json().catch(() => ({}))) as T;
   if (!response.ok) {
-    throw slackHttpError(response.status, payload);
+    throw await readSlackHttpError(response);
   }
-  assertSlackPayload(payload);
+  const payload = (await response.json().catch(() => ({}))) as T;
+  assertSlackPayload(payload, response);
   return payload;
 }
 
@@ -816,7 +817,13 @@ async function resolveSlackFileContent(
   try {
     const response = await context.fetcher(fileUrl, { signal: timeout.signal });
     if (!response.ok) {
-      throw new ProviderRequestError(400, `failed to fetch fileUrl: ${response.status}`);
+      throw new ProviderRequestError(
+        response.status,
+        `failed to fetch fileUrl: ${response.status}`,
+        undefined,
+        undefined,
+        { headers: response.headers },
+      );
     }
     return await readBoundedResponseBytes(response, {
       maxBytes: slackFileUrlMaxBytes,
@@ -841,7 +848,6 @@ async function resolveSlackFileContent(
 
 async function uploadSlackFileContent(
   uploadUrl: string,
-  filename: string,
   content: Uint8Array,
   mimeType: string | undefined,
   context: SlackActionContext,
@@ -860,9 +866,7 @@ async function uploadSlackFileContent(
     return;
   }
 
-  const message =
-    (await response.text().catch(() => "")) || `slack file upload failed with ${response.status}: ${filename}`;
-  throw new ProviderRequestError(response.status, message);
+  throw await readSlackHttpError(response);
 }
 
 function normalizeNextCursor(cursor: string | undefined): string | null {
@@ -1010,7 +1014,7 @@ function slackHeaders(accessToken: string): Record<string, string> {
   };
 }
 
-function assertSlackPayload(payload: SlackPayloadError): void {
+function assertSlackPayload(payload: SlackPayloadError, response: Response): void {
   if (payload.ok !== false) {
     return;
   }
@@ -1020,12 +1024,19 @@ function assertSlackPayload(payload: SlackPayloadError): void {
     case "not_authed":
     case "invalid_auth":
     case "token_revoked":
-      throw new ProviderRequestError(401, message, payload);
+      throw new ProviderRequestError(response.status, message, undefined, "authorization_failed", {
+        headers: response.headers,
+      });
     case "ratelimited":
     case "rate_limited":
-      throw new ProviderRequestError(429, message, payload);
+      throw new ProviderRequestError(response.status, "slack request rate limited", undefined, "rate_limited", {
+        headers: response.headers,
+        reason: payload.error,
+      });
     default:
-      throw new ProviderRequestError(400, message, payload);
+      throw new ProviderRequestError(response.status, message, undefined, "invalid_input", {
+        headers: response.headers,
+      });
   }
 }
 
@@ -1044,9 +1055,24 @@ function formatSlackPayloadError(payload: SlackPayloadError): string {
   return `${error}: ${details.join("; ")}`;
 }
 
-function slackHttpError(status: number, payload: SlackPayloadError): ProviderRequestError {
-  const message = payload.error ? formatSlackPayloadError(payload) : `slack request failed with ${status}`;
-  return new ProviderRequestError(status, message, payload);
+/** Share bounded HTTP error parsing between Slack actions and proxies. */
+export async function readSlackHttpError(response: Response): Promise<ProviderRequestError> {
+  const text = await readProviderErrorTextBody(response, "slack error response");
+  let payload: Record<string, unknown> | undefined;
+  try {
+    payload = optionalRecord(JSON.parse(text));
+  } catch {
+    // HTTP rate limits can have an empty or non-JSON response body.
+  }
+  const error = optionalString(payload?.error);
+  const reason = error === "ratelimited" || error === "rate_limited" ? error : undefined;
+  return new ProviderRequestError(
+    response.status,
+    reason ? "slack request rate limited" : (error ?? `slack request failed with ${response.status}`),
+    undefined,
+    undefined,
+    { headers: response.headers, reason },
+  );
 }
 
 function slackResponseError(message: string): ProviderRequestError {

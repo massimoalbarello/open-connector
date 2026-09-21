@@ -24,6 +24,7 @@ import {
 } from "../core/cast.ts";
 import { createGuardedFetch } from "../core/guarded-fetch.ts";
 import { readBoundedResponseBytes } from "../core/request.ts";
+import { parseRetryAfter } from "../core/retry-after.ts";
 
 /**
  * Fetch-compatible function accepted by provider runtime helpers and tests.
@@ -258,19 +259,29 @@ export interface ProviderInputFile {
   sizeBytes: number;
 }
 
-/**
- * Error raised for provider API responses and mapped to stable execution errors.
- */
+/** Safe response metadata carried alongside the existing provider error details. */
+interface ProviderResponseMetadata {
+  headers?: Headers;
+  /** A provider-owned allowlisted reason, never arbitrary response content. */
+  reason?: string;
+}
+
+/** Error raised for provider API responses and mapped to stable execution errors. */
 export class ProviderRequestError extends Error {
   readonly status: number;
   readonly details?: unknown;
   readonly code?: string;
+  readonly headers?: Record<string, string>;
+  readonly reason?: string;
 
-  constructor(status: number, message: string, details?: unknown, code?: string) {
+  constructor(status: number, message: string, details?: unknown, code?: string, metadata?: ProviderResponseMetadata) {
     super(message);
     this.status = status;
     this.details = details;
     this.code = code;
+    const retryAfter = parseRetryAfter(metadata?.headers?.get("retry-after"));
+    this.headers = retryAfter === undefined ? undefined : { "retry-after": retryAfter };
+    this.reason = metadata?.reason;
   }
 }
 
@@ -376,6 +387,8 @@ export interface ProviderProxyDefinition {
   auth: ProviderProxyAuth;
   allowedEndpoint?: (endpoint: string) => boolean;
   customizeRequest?: (input: ProviderProxyRequestCustomizationInput) => Promise<void> | void;
+  /** Parse a failed HTTP response using the same provider error rules as actions. */
+  readError?: (response: Response) => Promise<ProviderRequestError>;
   /** Provider-specific credential/signature headers that redirects must not forward cross-origin. */
   sensitiveHeaders?: readonly string[];
   /** Exact code-controlled origins that `customizeRequest` may select in addition to the resolved base origin. */
@@ -659,9 +672,16 @@ export function defineProviderProxy(input: ProviderProxyDefinition): ProviderPro
 
         const response = await egressFetch(url, init);
         if (!response.ok) {
+          if (input.readError) {
+            throw await input.readError(response);
+          }
           throw new ProviderRequestError(
             response.status,
-            await readProviderProxyErrorMessage(response, `provider request failed with HTTP ${response.status}`),
+            (await readProviderErrorTextBody(response, "proxy error response")) ||
+              `provider request failed with HTTP ${response.status}`,
+            undefined,
+            undefined,
+            { headers: response.headers },
           );
         }
 
@@ -1036,7 +1056,9 @@ export async function readProviderJson<T>(response: Response, source: string): P
   }
 
   const text = await readProviderErrorTextBody(response, `${source} error response`);
-  throw new ProviderRequestError(response.status, text || `${source} request failed`);
+  throw new ProviderRequestError(response.status, text || `${source} request failed`, undefined, undefined, {
+    headers: response.headers,
+  });
 }
 
 export interface ReadProviderJsonBodyOptions {
@@ -1203,6 +1225,8 @@ export function toProviderExecutionError(error: unknown, fallbackMessage: string
         details: {
           status: error.status,
           details: error.details,
+          headers: error.headers,
+          reason: error.reason,
         },
       },
     };

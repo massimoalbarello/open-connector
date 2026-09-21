@@ -7,10 +7,12 @@ import type {
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { GmailDraftResource, GmailMessageResource, GmailThreadResource } from "./message.ts";
 
+import { looseArray, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
   defineProviderExecutors,
   defineProviderProxy,
   ProviderRequestError,
+  readProviderErrorTextBody,
   readProviderJsonBody,
   requireOAuthCredential,
 } from "../provider-runtime.ts";
@@ -213,6 +215,7 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
   service,
   baseUrl: gmailApiBaseUrl,
   auth: { type: "oauth_bearer" },
+  readError: readGmailError,
 });
 
 export const credentialValidators: CredentialValidators = {
@@ -1106,33 +1109,45 @@ async function assertGmailResponse(response: Response): Promise<void> {
     return;
   }
 
-  const text = await response.text().catch(() => "");
-  const message = readGmailErrorMessage(text) || `gmail request failed with ${response.status}`;
-  if (response.status === 400) {
-    throw new ProviderRequestError(400, message);
-  }
-  if (response.status === 401 || response.status === 403) {
-    throw new ProviderRequestError(response.status, message);
-  }
-  if (response.status === 429) {
-    throw new ProviderRequestError(429, message);
-  }
-
-  throw new ProviderRequestError(response.status, message);
+  throw await readGmailError(response);
 }
 
-function readGmailErrorMessage(text: string): string {
-  if (!text) {
-    return "";
-  }
+const gmailQuotaReasons = new Set([
+  "rateLimitExceeded",
+  "userRateLimitExceeded",
+  "dailyLimitExceeded",
+  "quotaExceeded",
+]);
+const gmailErrorReasons = new Set([
+  ...gmailQuotaReasons,
+  "authError",
+  "forbidden",
+  "insufficientPermissions",
+  "domainPolicy",
+  "badRequest",
+  "notFound",
+  "backendError",
+]);
 
+async function readGmailError(response: Response): Promise<ProviderRequestError> {
+  const text = await readProviderErrorTextBody(response, "gmail error response");
+  let error: Record<string, unknown> | undefined;
   try {
-    const payload = JSON.parse(text) as { error?: { message?: string } | string };
-    if (typeof payload.error === "string") {
-      return payload.error;
-    }
-    return payload.error?.message ?? text;
+    error = optionalRecord(optionalRecord(JSON.parse(text))?.error);
   } catch {
-    return text;
+    // A malformed response must not expose its raw body or change status classification.
   }
+  const reasons = looseArray(error?.errors)
+    .map((entry) => optionalString(optionalRecord(entry)?.reason))
+    .filter((reason): reason is string => reason !== undefined && gmailErrorReasons.has(reason));
+  const reason = reasons.find((value) => gmailQuotaReasons.has(value)) ?? reasons[0];
+  const code =
+    response.status === 403 && reason !== undefined && gmailQuotaReasons.has(reason) ? "rate_limited" : undefined;
+  return new ProviderRequestError(
+    response.status,
+    optionalString(error?.message) ?? `gmail request failed with ${response.status}`,
+    undefined,
+    code,
+    { headers: response.headers, reason },
+  );
 }

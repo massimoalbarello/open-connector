@@ -1,5 +1,73 @@
-import { describe, expect, it } from "vitest";
-import { gmailActionHandlers } from "./executors.ts";
+import type { ExecutionContext } from "../../core/types.ts";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { executors, gmailActionHandlers, proxy } from "./executors.ts";
+
+afterEach(() => vi.unstubAllGlobals());
+
+const credentialContext: ExecutionContext = {
+  getCredential: async () => ({
+    authType: "oauth2",
+    accessToken: "secret-token",
+    tokenType: "Bearer",
+    metadata: {},
+    profile: { accountId: "me", displayName: "Test", grantedScopes: [] },
+  }),
+};
+
+describe.each(["action", "proxy"])("Gmail %s errors", (path) => {
+  it.each([
+    { status: 403, reason: "rateLimitExceeded", code: "rate_limited" },
+    { status: 403, reason: "userRateLimitExceeded", code: "rate_limited" },
+    { status: 403, reason: "dailyLimitExceeded", code: "rate_limited" },
+    { status: 403, reason: "quotaExceeded", code: "rate_limited" },
+    { status: 403, reason: "domainPolicy", code: "authorization_failed" },
+    { status: 403, reason: "insufficientPermissions", code: "authorization_failed" },
+    { status: 401, reason: "authError", code: "authorization_failed" },
+    { status: 401, reason: "rateLimitExceeded", code: "authorization_failed" },
+    { status: 429, reason: "userRateLimitExceeded", code: "rate_limited" },
+    { status: 503, reason: "backendError", code: "provider_error" },
+  ])("classifies HTTP $status / $reason", async ({ status, reason, code }) => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json(
+        { error: { code: 999, message: "Request rejected", errors: [{ reason }], credentials: "secret-token" } },
+        {
+          status,
+          headers: { "Retry-After": "Mon, 21 Sep 2026 12:00:00 GMT", "set-cookie": "secret-cookie" },
+        },
+      ),
+    );
+    const result =
+      path === "action"
+        ? await executors["gmail.get_profile"]!({}, credentialContext)
+        : await proxy({ method: "GET", endpoint: "/users/me/profile" }, credentialContext);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code, details: { status, reason, headers: { "retry-after": "Mon, 21 Sep 2026 12:00:00 GMT" } } },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+
+  it.each([
+    "secret raw error body",
+    "null",
+    JSON.stringify({ error: "secret raw string" }),
+    JSON.stringify({ error: { errors: [{ reason: "secret-unrecognized-reason" }] } }),
+    JSON.stringify({ error: { message: "rateLimitExceeded appears only in prose", errors: [] } }),
+    "x".repeat(65 * 1024),
+  ])("does not infer quotas from malformed or unrecognized payloads %#", async (body) => {
+    vi.stubGlobal("fetch", async () => new Response(body, { status: 403, headers: { "Retry-After": "invalid" } }));
+    const result =
+      path === "action"
+        ? await executors["gmail.get_profile"]!({}, credentialContext)
+        : await proxy({ method: "GET", endpoint: "/users/me/profile" }, credentialContext);
+    expect(result).toMatchObject({ ok: false, error: { code: "authorization_failed", details: { status: 403 } } });
+    if (result.ok) throw new Error("Expected failure");
+    expect(result.error?.details).not.toHaveProperty("reason", expect.any(String));
+    expect(result.error?.details).not.toHaveProperty("headers", expect.any(Object));
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+});
 
 function actionContext(fetcher: typeof fetch) {
   return {

@@ -1,8 +1,75 @@
 import type { ExecutionContext, ResolvedCredential } from "../../core/types.ts";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { executors as slackbotExecutors } from "../slackbot/executors.ts";
-import { credentialValidators, executors as slackExecutors } from "./executors.ts";
+import { credentialValidators, executors as slackExecutors, proxy } from "./executors.ts";
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe.each(["action", "bot action", "proxy"])("Slack %s rate limits", (path) => {
+  it.each(["ratelimited", "rate_limited", undefined])("keeps HTTP cooldowns for %s", async (reason) => {
+    vi.stubGlobal("fetch", async () =>
+      reason === undefined
+        ? new Response("secret raw body", { status: 429, headers: { "Retry-After": "60" } })
+        : Response.json(
+            { ok: false, error: reason, response_metadata: { messages: ["secret"] }, token: "secret" },
+            { status: 429, headers: { "Retry-After": "60", "set-cookie": "secret" } },
+          ),
+    );
+    const context: ExecutionContext = {
+      getCredential: async () => oauthCredential(path === "bot action" ? "bot" : "user"),
+    };
+    const result =
+      path === "proxy"
+        ? await proxy({ method: "GET", endpoint: "/conversations.list" }, context)
+        : await (
+            path === "bot action"
+              ? slackbotExecutors["slackbot.list_channels"]!
+              : slackExecutors["slack.list_channels"]!
+          )({}, context);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "rate_limited", details: { status: 429, reason, headers: { "retry-after": "60" } } },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+});
+
+describe("Slack application errors", () => {
+  it.each(["download", "upload"])("keeps cooldowns from the file %s step", async (step) => {
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const url = input.toString();
+      if ((step === "download" && url === "https://example.com/file.txt") || url === "https://files.slack.com/upload") {
+        return new Response("secret raw failure", { status: 429, headers: { "Retry-After": "60" } });
+      }
+      if (url === "https://example.com/file.txt") return new Response("file contents");
+      return Response.json({ ok: true, upload_url: "https://files.slack.com/upload", file_id: "F123" });
+    });
+    const result = await slackExecutors["slack.upload_file"]!(
+      { fileUrl: "https://example.com/file.txt", filename: "file.txt" },
+      { getCredential: async () => oauthCredential("user") },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "rate_limited", details: { status: 429, headers: { "retry-after": "60" } } },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+  it.each(["ratelimited", "rate_limited"])("keeps the real HTTP 200 status for %s", async (reason) => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json({ ok: false, error: reason, token: "secret" }, { headers: { "Retry-After": "30" } }),
+    );
+    const result = await slackExecutors["slack.list_channels"]!(
+      {},
+      { getCredential: async () => oauthCredential("user") },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "rate_limited", details: { status: 200, reason, headers: { "retry-after": "30" } } },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+});
 
 type OAuthCredential = Extract<ResolvedCredential, { authType: "oauth2" }>;
 
