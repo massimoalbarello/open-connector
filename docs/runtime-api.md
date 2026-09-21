@@ -292,6 +292,26 @@ stored credentials local and lets the provider proxy executor apply provider-spe
 Successful responses use the standard `/v1` success envelope with `data.status`, `data.headers`, and
 `data.data`.
 
+Action and proxy failures keep the upstream HTTP status in `data.status`; the runtime HTTP status
+continues to follow `errorCode` (for example, `rate_limited` returns HTTP 429). When available,
+`data.headers["retry-after"]` contains the upstream delay-seconds or IMF-fixdate value, also sent as
+the HTTP `Retry-After` header. Missing or malformed values are omitted. Only this response header is
+copied into failure metadata. Action idempotency replay preserves both the JSON value and HTTP
+header exactly; replay does not recalculate a relative delay or make another provider request.
+
+Gmail actions and proxies expose an allowlisted `data.reason` from `error.errors[].reason`.
+HTTP 403 with `rateLimitExceeded`, `userRateLimitExceeded`, `dailyLimitExceeded`, or `quotaExceeded`
+uses `rate_limited` with `data.status: 403`; other 403s remain `authorization_failed`. Other exposed
+Gmail reasons are `authError`, `forbidden`, `insufficientPermissions`, `domainPolicy`, `badRequest`,
+`notFound`, and `backendError`. Unknown reasons and raw error payloads are omitted.
+
+Slack actions and HTTP proxy failures expose `data.reason` only for `ratelimited` or `rate_limited`.
+The existing Slack `data.details.retryAfterSeconds` field is retained for HTTP 429 delay-seconds.
+An action reporting either reason in an HTTP 200 `{ "ok": false }` response still returns
+`rate_limited` with `data.status: 200`. Successful HTTP proxy responses remain pass-through envelopes.
+Cooldown extraction is supported by the shared proxy/JSON error helpers and the Gmail/Slack action
+parsers; provider-specific parsers that discard response headers cannot supply this metadata.
+
 Most proxies run under the same 30 second per-request budget as actions, covering the upstream request
 and the response body read. A provider that does not answer in time returns HTTP 500 with `errorCode`
 `provider_error` and `data.status` 504. A minority of providers ship a hand-written proxy that keeps

@@ -3,6 +3,7 @@ import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } f
 import { defineProviderProxy } from "../provider-runtime.ts";
 import {
   defineSlackProviderExecutors,
+  readSlackHttpError,
   slackActionHandlers,
   slackApiBaseUrl,
   slackCredentialValidators,
@@ -17,6 +18,7 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
   baseUrl: slackApiBaseUrl,
   auth: { type: "oauth_bearer" },
   skipDnsValidation: true,
+  readError: readSlackHttpError,
 });
 
 export const credentialValidators: CredentialValidators = slackCredentialValidators;

@@ -7,6 +7,7 @@ import type { Context } from "hono";
 
 import { optionalInteger, optionalRecord, requiredRecord } from "../../core/cast.ts";
 import { describeProviderAuth } from "../../core/provider-setup.ts";
+import { parseRetryAfter } from "../../core/retry-after.ts";
 
 type RuntimeStatus = 400 | 401 | 402 | 403 | 404 | 409 | 413 | 429 | 500 | 501;
 
@@ -247,6 +248,13 @@ export function parseRuntimeActionHttpResult(value: unknown): RuntimeActionHttpR
 
 /** Write a newly serialized or replayed action response. */
 export function writeRuntimeActionHttpResult(context: Context, result: RuntimeActionHttpResult): Response {
+  if (!result.body.success) {
+    const headers = optionalRecord(optionalRecord(result.body.data)?.headers);
+    const retryAfter = parseRetryAfter(headers?.["retry-after"]);
+    if (retryAfter !== undefined) {
+      context.header("Retry-After", retryAfter);
+    }
+  }
   return context.json(result.body, result.status);
 }
 

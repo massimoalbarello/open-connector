@@ -17,6 +17,7 @@ import {
   defineProviderExecutors,
   isAbortLikeError,
   ProviderRequestError,
+  readProviderErrorTextBody,
   providerUserAgent,
 } from "../provider-runtime.ts";
 import { slackConversationTypes } from "./constants.ts";
@@ -720,7 +721,7 @@ async function slackUploadFile(input: Record<string, unknown>, context: SlackAct
 
   const uploadUrl = requiredString(uploadUrlPayload.upload_url, "file.upload_url", slackResponseError);
   const fileId = requiredString(uploadUrlPayload.file_id, "file.file_id", slackResponseError);
-  await uploadSlackFileContent(uploadUrl, filename, content, optionalString(input.mimeType), context);
+  await uploadSlackFileContent(uploadUrl, content, optionalString(input.mimeType), context);
 
   const completePayload = await slackFormRequestJson<{
     ok: boolean;
@@ -846,13 +847,12 @@ async function slackFormRequestJson<T extends SlackPayloadError>(
 }
 
 async function readSlackResponseJson<T extends SlackPayloadError>(response: Response): Promise<T> {
-  const payload = (optionalRecord(await response.json().catch(() => undefined)) ?? {}) as T;
   if (!response.ok) {
-    throw slackHttpError(response.status, payload, response.headers.get("retry-after"));
+    throw await readSlackHttpError(response);
   }
-  assertSlackPayload(payload);
-  // Preserve HTTP/Slack failures (including Retry-After) above, but require
-  // affirmative success before any action can normalize an upstream payload.
+  const payload = (optionalRecord(await response.json().catch(() => undefined)) ?? {}) as T;
+  assertSlackPayload(payload, response);
+  // Require affirmative success before normalizing an upstream payload.
   if (payload.ok !== true) {
     throw slackResponseError("ok");
   }
@@ -899,7 +899,13 @@ async function resolveSlackFileContent(
   try {
     const response = await context.fetcher(fileUrl, { signal: timeout.signal });
     if (!response.ok) {
-      throw new ProviderRequestError(400, `failed to fetch fileUrl: ${response.status}`);
+      throw new ProviderRequestError(
+        response.status,
+        `failed to fetch fileUrl: ${response.status}`,
+        undefined,
+        undefined,
+        { headers: response.headers },
+      );
     }
     return await readBoundedResponseBytes(response, {
       maxBytes: slackFileUrlMaxBytes,
@@ -924,7 +930,6 @@ async function resolveSlackFileContent(
 
 async function uploadSlackFileContent(
   uploadUrl: string,
-  filename: string,
   content: Uint8Array,
   mimeType: string | undefined,
   context: SlackActionContext,
@@ -943,9 +948,7 @@ async function uploadSlackFileContent(
     return;
   }
 
-  const message =
-    (await response.text().catch(() => "")) || `slack file upload failed with ${response.status}: ${filename}`;
-  throw new ProviderRequestError(response.status, message);
+  throw await readSlackHttpError(response);
 }
 
 function normalizeNextCursor(cursor: string | undefined): string | null {
@@ -1256,7 +1259,7 @@ function slackHeaders(accessToken: string): Record<string, string> {
   };
 }
 
-function assertSlackPayload(payload: SlackPayloadError): void {
+function assertSlackPayload(payload: SlackPayloadError, response: Response): void {
   if (payload.ok !== false) {
     return;
   }
@@ -1266,12 +1269,19 @@ function assertSlackPayload(payload: SlackPayloadError): void {
     case "not_authed":
     case "invalid_auth":
     case "token_revoked":
-      throw new ProviderRequestError(401, message, payload);
+      throw new ProviderRequestError(response.status, message, undefined, "authorization_failed", {
+        headers: response.headers,
+      });
     case "ratelimited":
     case "rate_limited":
-      throw new ProviderRequestError(429, message, payload);
+      throw new ProviderRequestError(response.status, "slack request rate limited", undefined, "rate_limited", {
+        headers: response.headers,
+        reason: payload.error,
+      });
     default:
-      throw new ProviderRequestError(400, message, payload);
+      throw new ProviderRequestError(response.status, message, undefined, "invalid_input", {
+        headers: response.headers,
+      });
   }
 }
 
@@ -1290,17 +1300,28 @@ function formatSlackPayloadError(payload: SlackPayloadError): string {
   return `${error}: ${details.join("; ")}`;
 }
 
-function slackHttpError(status: number, payload: SlackPayloadError, retryAfter: string | null): ProviderRequestError {
-  const message = payload.error ? formatSlackPayloadError(payload) : `slack request failed with ${status}`;
-  if (status === 429 && retryAfter !== null && /^\d+$/.test(retryAfter)) {
-    const retryAfterSeconds = Number(retryAfter);
-    if (Number.isSafeInteger(retryAfterSeconds)) {
-      // The action envelope carries provider details; retain pacing so callers
-      // can resume the same page without guessing when this workspace may retry.
-      return new ProviderRequestError(status, message, { ...payload, retryAfterSeconds });
-    }
+/** Share bounded HTTP error parsing between Slack actions and proxies. */
+export async function readSlackHttpError(response: Response): Promise<ProviderRequestError> {
+  const text = await readProviderErrorTextBody(response, "slack error response");
+  let payload: Record<string, unknown> | undefined;
+  try {
+    payload = optionalRecord(JSON.parse(text));
+  } catch {
+    // HTTP rate limits can have an empty or non-JSON response body.
   }
-  return new ProviderRequestError(status, message, payload);
+  const error = optionalString(payload?.error);
+  const reason = error === "ratelimited" || error === "rate_limited" ? error : undefined;
+  const retryAfter = response.headers.get("retry-after");
+  const seconds = retryAfter !== null && /^\d+$/.test(retryAfter) ? Number(retryAfter) : NaN;
+  // Preserve the existing Slack cooldown field for clients already using it.
+  const details = response.status === 429 && Number.isSafeInteger(seconds) ? { retryAfterSeconds: seconds } : undefined;
+  return new ProviderRequestError(
+    response.status,
+    reason ? "slack request rate limited" : (error ?? `slack request failed with ${response.status}`),
+    details,
+    undefined,
+    { headers: response.headers, reason },
+  );
 }
 
 function slackResponseError(message: string): ProviderRequestError {
