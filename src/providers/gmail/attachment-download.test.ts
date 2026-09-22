@@ -165,12 +165,30 @@ describe("Gmail attachment HTTP and transit file boundary", () => {
     expect(await readdir(fixture.root)).toEqual([]);
   });
 
+  it.each(["rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded", "quotaExceeded"])(
+    "classifies attachment quota reason %s as rate limited",
+    async (reason) => {
+      const fixture = await createFixture((response) => {
+        response.statusCode = 403;
+        response.end(JSON.stringify({ error: { message: "Quota exceeded", errors: [{ reason }] } }));
+      });
+      expect(await download(fixture.context)).toMatchObject({
+        ok: false,
+        error: { code: "rate_limited", message: "Quota exceeded", details: { status: 403 } },
+      });
+      expect(await readdir(fixture.root)).toEqual([]);
+    },
+  );
+
   it("preserves upstream errors and refuses a store without streaming support before fetching", async () => {
     const fixture = await createFixture((response) => {
       response.statusCode = 403;
       response.end(JSON.stringify({ error: { message: "Permission denied" } }));
     });
-    expect(await download(fixture.context)).toMatchObject({ ok: false, error: { details: { status: 403 } } });
+    expect(await download(fixture.context)).toMatchObject({
+      ok: false,
+      error: { code: "authorization_failed", message: "Permission denied", details: { status: 403 } },
+    });
     expect(await readdir(fixture.root)).toEqual([]);
     fixture.requests.length = 0;
     const transitFiles = {

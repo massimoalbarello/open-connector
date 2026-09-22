@@ -16,7 +16,6 @@ import {
   ProviderRequestError,
   readProviderErrorTextBody,
   readProviderJsonBody,
-  readProviderProxyErrorMessage,
   requiredInputString,
   runProviderRequest,
 } from "../provider-runtime.ts";
@@ -71,12 +70,7 @@ export const gmailActionHandlers: ProviderActionHandlers<typeof service, ActionH
       { signal: context.signal, label: "Gmail attachment", timeoutMs: attachmentDownloadTimeoutMs },
       async (signal) => {
         const response = await fetcher(url, { headers: { authorization: `Bearer ${accessToken}` }, signal });
-        if (!response.ok) {
-          throw new ProviderRequestError(
-            response.status,
-            await readProviderProxyErrorMessage(response, `gmail request failed with ${response.status}`),
-          );
-        }
+        await assertGmailResponse(response);
         if (!response.body) throw new ProviderRequestError(502, "Gmail attachment response has no body");
         return transitFiles.createFromStream!({
           body: decodeGmailAttachment(response.body, transitFiles.maxBytes),
