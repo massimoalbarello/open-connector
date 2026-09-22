@@ -1,6 +1,7 @@
 import type { ExecutionContext } from "../../core/types.ts";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { serializeRuntimeActionResult } from "../../server/api/runtime-api.ts";
 import { executors, gmailActionHandlers, proxy } from "./executors.ts";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -60,6 +61,29 @@ describe.each(["action", "proxy"])("Gmail %s errors", (path) => {
         : await proxy({ method: "GET", endpoint: "/users/me/profile" }, credentialContext);
     expect(result).toMatchObject({ ok: false, error: { code: "authorization_failed", details: { status: 403 } } });
     expect(JSON.stringify(result)).not.toContain("secret");
+  });
+});
+
+describe("Gmail quota failures on the runtime action route", () => {
+  it("answers HTTP 429 while data.status keeps the upstream 403", async () => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json(
+        { error: { code: 403, message: "User-rate limit exceeded.", errors: [{ reason: "userRateLimitExceeded" }] } },
+        { status: 403 },
+      ),
+    );
+    const result = await executors["gmail.get_profile"]!({}, credentialContext);
+    expect(
+      serializeRuntimeActionResult({
+        actionId: "gmail.get_profile",
+        executionId: "execution-1",
+        auditPersisted: false,
+        result,
+      }),
+    ).toMatchObject({
+      status: 429,
+      body: { success: false, errorCode: "rate_limited", message: "User-rate limit exceeded.", data: { status: 403 } },
+    });
   });
 });
 
