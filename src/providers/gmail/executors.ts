@@ -38,6 +38,9 @@ import { gmailOAuthScopes } from "./scopes.ts";
 const service = "gmail";
 const gmailApiBaseUrl = "https://gmail.googleapis.com/gmail/v1";
 const detailHydrationBatchSize = 10;
+// Attachments may reach Gmail's 25 MB cap, and the base64 JSON envelope is a third larger again;
+// the default 30 s request budget covers fetch, decode, and disk write, so give this transfer longer.
+const attachmentDownloadTimeoutMs = 120_000;
 const defaultFetchEmailsMaxResults = 20;
 
 interface ActionContext {
@@ -63,22 +66,25 @@ export const gmailActionHandlers: ProviderActionHandlers<typeof service, ActionH
     const attachmentId = requiredInputString(input.attachmentId, "attachmentId");
     const userId = optionalString(input.userId) ?? context.userId;
     const url = `${gmailUserUrl(userId, "messages")}/${encodePathSegment(messageId)}/attachments/${encodePathSegment(attachmentId)}?fields=data,size`;
-    return runProviderRequest({ signal: context.signal, label: "Gmail attachment" }, async (signal) => {
-      const response = await fetcher(url, { headers: { authorization: `Bearer ${accessToken}` }, signal });
-      if (!response.ok) {
-        throw new ProviderRequestError(
-          response.status,
-          await readProviderProxyErrorMessage(response, `gmail request failed with ${response.status}`),
-        );
-      }
-      if (!response.body) throw new ProviderRequestError(502, "Gmail attachment response has no body");
-      return transitFiles.createFromStream!({
-        body: decodeGmailAttachment(response.body, transitFiles.maxBytes),
-        name: optionalString(input.fileName) ?? "attachment",
-        mimeType: optionalString(input.mimeType) ?? "application/octet-stream",
-        signal,
-      });
-    });
+    return runProviderRequest(
+      { signal: context.signal, label: "Gmail attachment", timeoutMs: attachmentDownloadTimeoutMs },
+      async (signal) => {
+        const response = await fetcher(url, { headers: { authorization: `Bearer ${accessToken}` }, signal });
+        if (!response.ok) {
+          throw new ProviderRequestError(
+            response.status,
+            await readProviderProxyErrorMessage(response, `gmail request failed with ${response.status}`),
+          );
+        }
+        if (!response.body) throw new ProviderRequestError(502, "Gmail attachment response has no body");
+        return transitFiles.createFromStream!({
+          body: decodeGmailAttachment(response.body, transitFiles.maxBytes),
+          name: optionalString(input.fileName) ?? "attachment",
+          mimeType: optionalString(input.mimeType) ?? "application/octet-stream",
+          signal,
+        });
+      },
+    );
   },
   async search_threads(input, { userId, accessToken, fetcher }) {
     const output = await listThreads(input, userId, accessToken, fetcher);
