@@ -142,6 +142,43 @@ describe("Granola REST and MCP execution", () => {
     expect(onCall).toHaveBeenCalledWith({ name: "get_meetings", arguments: { meeting_ids: ["a", "b"] } });
   });
 
+  it.each(["list_meetings", "get_meetings"])("normalizes current MCP timestamps for %s", async (name) => {
+    stubMcp({
+      result: {
+        content: [
+          {
+            type: "text",
+            text: `<meetings_data count="1"><meeting id="meeting-1" title="Planning" meeting_at="2026-11-18T18:37:16+00:00" created_at="2026-11-17T12:00:00Z" updated_at="2026-11-19T10:00:00Z"><known_participants>Ada</known_participants><summary><![CDATA[${summary}]]></summary></meeting></meetings_data>`,
+          },
+        ],
+      },
+    });
+    await expect(execute(name, name === "get_meetings" ? { meeting_ids: ["meeting-1"] } : {})).resolves.toMatchObject({
+      ok: true,
+      output: { meetings: [{ id: "meeting-1", date: "2026-11-18T18:37:16+00:00", attendees: "Ada", summary }] },
+    });
+  });
+
+  it.each([
+    '<summary status="empty">No summary. This note is empty: it has no notes and no AI summary has been generated for it.</summary>',
+    '<summary status="empty" />',
+  ])("normalizes explicitly empty MCP summaries without importing notices (%#)", async (empty) => {
+    stubMcp({
+      result: {
+        content: [
+          {
+            type: "text",
+            text: `<meetings_data count="1"><meeting id="meeting-1" title="New note" date="Nov 18, 2026 6:37 PM GMT">${empty}</meeting></meetings_data>`,
+          },
+        ],
+      },
+    });
+    await expect(execute("get_meetings", { meeting_ids: ["meeting-1"] })).resolves.toMatchObject({
+      ok: true,
+      output: { meetings: [{ id: "meeting-1", summary: "" }] },
+    });
+  });
+
   it.each([["a"], ["a", "other"]])("rejects missing or unexpected meeting details (%j)", async (...ids) => {
     stubMcp({ result: { content: [{ type: "text", text: meetingsXml(ids) }] } });
     await expect(execute("get_meetings", { meeting_ids: ["a", "b"] })).resolves.toMatchObject({
@@ -502,6 +539,14 @@ describe("Granola MCP response parsing", () => {
     ]);
   });
 
+  it("prefers occurrence timestamps over legacy dates without inventing missing summaries", () => {
+    expect(
+      parseGranolaMeetings(
+        '<meetings_data><meeting id="a" title="Planning" date="Nov 18" meeting_at="2026-11-18T18:37:16Z" /></meetings_data>',
+      ),
+    ).toEqual([{ id: "a", title: "Planning", date: "2026-11-18T18:37:16Z", attendees: "", summary: undefined }]);
+  });
+
   it.each([
     "not XML",
     "<access_notice>Only recent personal notes are available.</access_notice>",
@@ -512,6 +557,9 @@ describe("Granola MCP response parsing", () => {
     `<meetings_data next_cursor="next">${meetingXml("a")}</meetings_data>`,
     meetingsXml(["a", "a"]),
     '<meetings_data><meeting title="Missing identity" date=""/></meetings_data>',
+    '<meetings_data><meeting id="a" title="Missing occurrence" created_at="2026-11-18T18:37:16Z" updated_at="2026-11-19T10:00:00Z"/></meetings_data>',
+    '<meetings_data><meeting id="a" title="Inaccessible summary" meeting_at="2026-11-18T18:37:16Z"><summary status="not_included">Access denied</summary></meeting></meetings_data>',
+    '<meetings_data><meeting id="a" title="Invalid summary" meeting_at="2026-11-18T18:37:16Z"><summary><error>Unavailable</error></summary></meeting></meetings_data>',
   ])("rejects malformed or incomplete meeting data (%#)", (text) => {
     expect(() => parseGranolaMeetings(text)).toThrow();
   });
